@@ -23,6 +23,7 @@ class SignLineageBuildTest(unittest.TestCase):
         self.status = self.root / "status"
         self.deploy_log = self.root / "deploy.log"
         self.build_log = self.root / "build.log"
+        self.password_log = self.root / "password.log"
         self._create_build_tree()
         self._create_keys()
         self._create_commands()
@@ -44,7 +45,7 @@ class SignLineageBuildTest(unittest.TestCase):
             f"OUT={self.build}/out/target/product/salami\n"
             "breakfast() { :; }\n"
             "mka() { printf '%s\\n' \"$*\" > \"${YRRP_BUILD_LOG}\"; }\n"
-            "sign_target_files_apks() { cp \"${@: -2:1}\" \"${@: -1}\"; }\n"
+            "sign_target_files_apks() { cp \"${ANDROID_PW_FILE}\" \"${YRRP_PASSWORD_LOG}\"; cp \"${@: -2:1}\" \"${@: -1}\"; }\n"
             "ota_from_target_files() { cp \"${FAKE_OTA_SOURCE}\" \"${@: -1}\"; }\n"
         )
         apksigner = self.build / "out/host/linux-x86/bin/apksigner"
@@ -56,7 +57,9 @@ class SignLineageBuildTest(unittest.TestCase):
 
     def _create_keys(self) -> None:
         self.cert.mkdir()
-        (self.cert / "passwords").write_text("unused\n")
+        (self.cert / "passwords").write_text(
+            "[[[ synthetic-password ]]] /home/android/.android-certs/releasekey\n"
+        )
         for name in ("releasekey", "platform"):
             (self.cert / f"{name}.pk8").write_bytes(b"key")
             (self.cert / f"{name}.x509.pem").write_bytes(b"certificate")
@@ -105,6 +108,8 @@ class SignLineageBuildTest(unittest.TestCase):
             "YRRP_BUILD_DATE": BUILD_ID,
             "FAKE_OTA_SOURCE": str(self.fake_ota),
             "YRRP_BUILD_LOG": str(self.build_log),
+            "YRRP_PASSWORD_LOG": str(self.password_log),
+            "YRRP_RUNTIME_PASSWORD_FILE": str(self.root / "runtime-passwords"),
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
             "OTA_BASE_IMAGE_REF": "ghcr.io/yrrp/ota:main",
         }
@@ -115,6 +120,9 @@ class SignLineageBuildTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("complete", self.status.read_text().strip())
         self.assertEqual("target-files-package otatools", self.build_log.read_text().strip())
+        password_map = self.password_log.read_text()
+        self.assertIn(str(self.cert / "releasekey"), password_map)
+        self.assertNotIn("/home/android/.android-certs", password_map)
         invocation = self.deploy_log.read_text()
         self.assertIn(f"--build-id {BUILD_ID}", invocation)
         self.assertIn(f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip", invocation)

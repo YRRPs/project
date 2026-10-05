@@ -6,7 +6,8 @@ umask 077
 readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly build_root=${YRRP_BUILD_ROOT:-/opt/android}
 readonly cert_dir=${YRRP_CERT_DIR:-/home/android/.android-certs}
-readonly password_file=${cert_dir}/passwords
+readonly stored_password_file=${cert_dir}/passwords
+readonly password_file=${YRRP_RUNTIME_PASSWORD_FILE:-/home/android/.android-signing-passwords}
 readonly status_file=${YRRP_STATUS_FILE:-/home/android/signed-build.status}
 readonly output_dir=${build_root}/out/signed
 readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh}
@@ -35,6 +36,7 @@ record_exit() {
     if [[ -n "${verify_dir:-}" && -d "${verify_dir}" ]]; then
         rm -rf "${verify_dir}"
     fi
+    rm -f "${password_file}"
     if ((exit_code != 0)); then
         printf '%s-failed:%s\n' "${failure_domain}" "${exit_code}" > "${status_file}"
     fi
@@ -81,8 +83,11 @@ breakfast salami
 printf 'building-target-files\n' > "${status_file}"
 mka target-files-package otatools
 
+require_file "${stored_password_file}"
+sed "s|/home/android/.android-certs|${cert_dir}|g" \
+    "${stored_password_file}" > "${password_file}"
+chmod 0600 "${password_file}"
 export ANDROID_PW_FILE="${password_file}"
-require_file "${ANDROID_PW_FILE}"
 require_file "${cert_dir}/releasekey.pk8"
 require_file "${cert_dir}/releasekey.x509.pem"
 
