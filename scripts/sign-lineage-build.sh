@@ -5,13 +5,18 @@ umask 077
 
 readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly build_root=${YRRP_BUILD_ROOT:-/opt/android}
-readonly cert_dir=${YRRP_CERT_DIR:-/home/android/.android-certs}
+readonly cert_dir=${YRRP_CERT_DIR:-/opt/yrrp/signing}
 readonly stored_password_file=${cert_dir}/passwords
 readonly password_file=${YRRP_RUNTIME_PASSWORD_FILE:-/home/android/.android-signing-passwords}
 readonly status_file=${YRRP_STATUS_FILE:-/home/android/signed-build.status}
 readonly output_dir=${build_root}/out/signed
 readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh}
 failure_domain=signing
+
+: "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
+: "${OTA_BASE_IMAGE_REF:=ghcr.io/yim-s-riced-rom-project/ota-server:main}"
+: "${OTA_NETWORK:=proxy-net}"
+export OTA_PUBLIC_BASE_URL OTA_BASE_IMAGE_REF OTA_NETWORK
 
 readonly -a release_apks=(
     com.android.appsearch.apk.apk

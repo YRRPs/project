@@ -91,7 +91,12 @@ class SignLineageBuildTest(unittest.TestCase):
         )
         unzip.chmod(0o755)
 
-    def run_script(self, deploy_exit: int = 0) -> subprocess.CompletedProcess[str]:
+    def run_script(
+        self,
+        deploy_exit: int = 0,
+        *,
+        include_ota_environment: bool = True,
+    ) -> subprocess.CompletedProcess[str]:
         deploy = self.root / "deploy.sh"
         deploy.write_text(
             "#!/bin/sh\n"
@@ -113,7 +118,14 @@ class SignLineageBuildTest(unittest.TestCase):
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
             "OTA_BASE_IMAGE_REF": "ghcr.io/yrrp/ota:main",
         }
+        if not include_ota_environment:
+            env.pop("OTA_PUBLIC_BASE_URL")
+            env.pop("OTA_BASE_IMAGE_REF")
         return subprocess.run([str(SCRIPT)], capture_output=True, text=True, env=env)
+
+    def test_uses_yrrp_ota_defaults(self) -> None:
+        result = self.run_script(include_ota_environment=False)
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_success_deploys_exact_new_artifacts_before_complete(self) -> None:
         result = self.run_script()
