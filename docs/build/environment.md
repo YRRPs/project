@@ -19,7 +19,9 @@ Use `AndroidBuilder` for all source, build, and container-shell work. Access Tru
 | --- | --- | --- |
 | `/mnt/fast/docker/android/workspace` | `/opt/android` | Source, extracted blobs, and build output |
 | `/mnt/fast/docker/android/ccache` | `/ccache` | Compiler cache |
+| `/mnt/fast/docker/android/project` | `/opt/yrrp/project` (read-only) | Canonical signing and deployment tooling |
 | Docker volume `ssh-host-keys` | `/etc/ssh/host-keys` | Stable SSH host identity |
+| `/var/run/docker.sock` | `/var/run/docker.sock` | Host Docker control for local OTA deployment |
 
 `CCACHE_MAXSIZE=100G`; compression is disabled.
 
@@ -59,3 +61,6 @@ Artifacts reside under `/opt/android/out/target/product/salami/`.
 - SSH sessions need `/usr/sbin` and `/sbin` in `PATH`; Dockerfile configures this through `sshd`.
 - Runtime package experiments disappear when container is recreated unless added to Dockerfile.
 - Source, blobs, output, and ccache survive container recreation through bind mounts.
+- Builder Docker socket access equals root authority on TrueNAS host. SSH remains VPN-restricted, key-only, and single-tenant.
+- OTA release tooling refuses to replace containers not labeled as YRRP OTA resources.
+- OTA serving container joins external `proxy-net`, publishes no host ports, and never receives Docker socket.

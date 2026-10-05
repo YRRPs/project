@@ -61,16 +61,25 @@ Configure signing:
 export ANDROID_PW_FILE=/home/android/.android-certs/passwords
 ```
 
-## Signed build flow
+## Signed build and deployment flow
+
+Run canonical mounted signing entry point:
 
 ```bash
-cd /opt/android
-source build/envsetup.sh
-breakfast salami
-mka target-files-package otatools
+/opt/yrrp/project/scripts/sign-lineage-build.sh
 ```
 
-Then follow current LineageOS 23.2 `sign_target_files_apks` APEX mapping and generate OTA with `ota_from_target_files`.
+Script initializes build environment, runs `breakfast salami`, and executes `mka target-files-package otatools` before selecting target-files. This forces current source through build graph before signing and prevents a lone stale intermediate from being deployed.
+
+Before signing starts, script requires:
+
+- `OTA_PUBLIC_BASE_URL` with public HTTPS origin
+- `OTA_BASE_IMAGE_REF` for public YRRP OTA base
+- mounted Docker socket and working Docker/Buildx/Compose clients
+- existing external `proxy-net`
+- release signing keys under `/home/android/.android-certs`
+
+Script signs target-files, creates full OTA, verifies OTA and SystemUI certificates, extracts six matching install images, generates updater metadata/checksums, builds local latest-only release image, and replaces OTA container transactionally. Failed rollout restores previous healthy release and preserves newly signed artifacts for diagnosis.
 
 ## First verified signed build
 

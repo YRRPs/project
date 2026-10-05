@@ -3,11 +3,14 @@ set -Eeo pipefail
 
 umask 077
 
-readonly build_root=/opt/android
-readonly cert_dir=/home/android/.android-certs
+readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+readonly build_root=${YRRP_BUILD_ROOT:-/opt/android}
+readonly cert_dir=${YRRP_CERT_DIR:-/home/android/.android-certs}
 readonly password_file=${cert_dir}/passwords
-readonly status_file=/home/android/signed-build.status
+readonly status_file=${YRRP_STATUS_FILE:-/home/android/signed-build.status}
 readonly output_dir=${build_root}/out/signed
+readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh}
+failure_domain=signing
 
 readonly -a release_apks=(
     com.android.appsearch.apk.apk
@@ -33,7 +36,7 @@ record_exit() {
         rm -rf "${verify_dir}"
     fi
     if ((exit_code != 0)); then
-        printf 'signing-failed:%s\n' "${exit_code}" > "${status_file}"
+        printf '%s-failed:%s\n' "${failure_domain}" "${exit_code}" > "${status_file}"
     fi
 }
 trap record_exit EXIT
@@ -46,9 +49,37 @@ require_file() {
     fi
 }
 
+require_file "${deploy_script}"
+[[ -x "${deploy_script}" ]] || {
+    printf 'Deployment script is not executable: %s\n' "${deploy_script}" >&2
+    exit 1
+}
+[[ ${OTA_PUBLIC_BASE_URL:-} == https://* ]] || {
+    printf 'OTA_PUBLIC_BASE_URL must use HTTPS\n' >&2
+    exit 1
+}
+[[ -n ${OTA_BASE_IMAGE_REF:-} ]] || {
+    printf 'OTA_BASE_IMAGE_REF is required\n' >&2
+    exit 1
+}
+command -v docker >/dev/null 2>&1 || {
+    printf 'Docker CLI is required for automatic OTA deployment\n' >&2
+    exit 1
+}
+if [[ ! -S /var/run/docker.sock ]]; then
+    printf 'Docker socket is required for automatic OTA deployment\n' >&2
+    exit 1
+fi
+docker version >/dev/null
+docker buildx version >/dev/null
+docker compose version >/dev/null
+docker network inspect "${OTA_NETWORK:-proxy-net}" >/dev/null
+
 cd "${build_root}"
 source build/envsetup.sh
 breakfast salami
+printf 'building-target-files\n' > "${status_file}"
+mka target-files-package otatools
 
 export ANDROID_PW_FILE="${password_file}"
 require_file "${ANDROID_PW_FILE}"
@@ -78,7 +109,7 @@ if ((${#apex_payload_keys[@]} != 75)); then
 fi
 
 mkdir -p "${output_dir}"
-readonly build_date=$(date +%Y%m%d-%H%M%S)
+readonly build_date=${YRRP_BUILD_DATE:-$(date +%Y%m%d-%H%M%S)}
 readonly signed_target_files="${output_dir}/lineage-23.2-salami-${build_date}-signed-target_files.zip"
 readonly signed_ota="${output_dir}/lineage-23.2-salami-${build_date}-signed-ota.zip"
 
@@ -167,6 +198,14 @@ readonly summary="${output_dir}/lineage-23.2-salami-${build_date}-SHA256SUMS.txt
     printf '%s  %s\n' "${target_files_sha256}" "$(basename "${signed_target_files}")"
     printf '%s  %s\n' "${ota_sha256}" "$(basename "${signed_ota}")"
 } > "${summary}"
+
+printf 'preparing-ota-release\n' > "${status_file}"
+failure_domain=deployment
+OTA_STATUS_FILE="${status_file}" "${deploy_script}" \
+    --ota "${signed_ota}" \
+    --target-files "${signed_target_files}" \
+    --build-id "${build_date}"
+failure_domain=signing
 
 printf 'complete\n' > "${status_file}"
 printf 'Signed target files: %s\n' "${signed_target_files}"

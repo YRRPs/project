@@ -16,6 +16,10 @@ out/
 # Local Superpowers working documents
 /docs/superpowers/
 
+# Python state
+__pycache__/
+*.py[cod]
+
 # Editor and OS state
 .vscode/
 .idea/

@@ -8,8 +8,9 @@ Central planning and operational documentation for YRRP, a LineageOS 23.2 deriva
 - [`android`](https://github.com/Yim-s-Riced-ROM-Project/android): canonical `repo init` manifest
 - [`android_frameworks_base`](https://github.com/Yim-s-Riced-ROM-Project/android_frameworks_base): framework changes, including Pulse
 - [`android_build_server`](https://github.com/Yim-s-Riced-ROM-Project/android_build_server): reusable Docker-based Android builder
+- [`ota_server`](https://github.com/Yim-s-Riced-ROM-Project/ota_server): hardened latest-only OTA server base
 
-Future build dispatch and latest-only OTA serving will live in separate `ota_server` repository.
+Release signing now prepares and deploys one local latest-only OTA image through trusted builder. Reverse proxy and public HTTPS endpoint remain user-managed.
 
 ## Current state
 
