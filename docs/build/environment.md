@@ -20,6 +20,7 @@ Use `AndroidBuilder` for all source, build, and container-shell work. Access Tru
 | `/mnt/fast/docker/android/workspace` | `/opt/android` | Source, extracted blobs, and build output |
 | `/mnt/fast/docker/android/ccache` | `/ccache` | Compiler cache |
 | `/mnt/fast/docker/android/project` | `/opt/yrrp/project` (read-only) | Canonical signing and deployment tooling |
+| `/mnt/fast/docker/android/signing` | `/opt/yrrp/signing` | Persistent decrypted signing keys |
 | Docker volume `ssh-host-keys` | `/etc/ssh/host-keys` | Stable SSH host identity |
 | `/var/run/docker.sock` | `/var/run/docker.sock` | Host Docker control for local OTA deployment |
 

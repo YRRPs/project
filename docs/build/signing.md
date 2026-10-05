@@ -77,7 +77,7 @@ Before signing starts, script requires:
 - `OTA_BASE_IMAGE_REF` for public YRRP OTA base
 - mounted Docker socket and working Docker/Buildx/Compose clients
 - existing external `proxy-net`
-- release signing keys under `/home/android/.android-certs`
+- persistent release signing keys mounted at `/opt/yrrp/signing` through `YRRP_CERT_DIR`
 
 Script signs target-files, creates full OTA, verifies OTA and SystemUI certificates, extracts six matching install images, generates updater metadata/checksums, builds local latest-only release image, and replaces OTA container transactionally. Failed rollout restores previous healthy release and preserves newly signed artifacts for diagnosis.
 
