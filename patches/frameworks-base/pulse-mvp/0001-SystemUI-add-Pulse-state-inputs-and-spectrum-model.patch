@@ -1,0 +1,593 @@
+From 72ffff77eaab2d6d9c82963bf0b8095db466ae46 Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Sat, 3 Oct 2026 21:47:33 +0000
+Subject: [PATCH 1/5] SystemUI: add Pulse state inputs and spectrum model
+
+Change-Id: Idadde09ee09a34ec1e732429d84b1d8ffd228713
+---
+ .../pulse/PulsePlaybackRepositoryTest.kt      | 147 ++++++++++++++++++
+ .../pulse/PulseSettingsRepositoryTest.kt      |  66 ++++++++
+ .../pulse/PulseSpectrumProcessorTest.kt       | 107 +++++++++++++
+ .../pulse/PulsePlaybackRepository.kt          |  72 +++++++++
+ .../pulse/PulseSettingsRepository.kt          |  60 +++++++
+ .../pulse/PulseSpectrumProcessor.kt           |  81 ++++++++++
+ 6 files changed, 533 insertions(+)
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepositoryTest.kt
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepositoryTest.kt
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessorTest.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepository.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepository.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessor.kt
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepositoryTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepositoryTest.kt
+new file mode 100644
+index 000000000000..21bf4b99b20e
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepositoryTest.kt
+@@ -0,0 +1,147 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.navigationbar.pulse
++
++import android.media.AudioAttributes
++import android.media.AudioDeviceInfo
++import android.media.AudioManager
++import android.media.AudioPlaybackConfiguration
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.util.mockito.kotlinArgumentCaptor
++import com.android.systemui.util.mockito.whenever
++import com.google.common.truth.Truth.assertThat
++import kotlinx.coroutines.cancelAndJoin
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.flow.toList
++import kotlinx.coroutines.launch
++import kotlinx.coroutines.test.runCurrent
++import kotlinx.coroutines.test.runTest
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.mockito.Mock
++import org.mockito.Mockito.clearInvocations
++import org.mockito.Mockito.never
++import org.mockito.Mockito.verify
++import org.mockito.MockitoAnnotations
++import org.mockito.kotlin.any
++import org.mockito.kotlin.eq
++import org.mockito.kotlin.isNull
++
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class PulsePlaybackRepositoryTest : SysuiTestCase() {
++    @Mock private lateinit var audioManager: AudioManager
++    @Mock private lateinit var playbackConfig: AudioPlaybackConfiguration
++    @Mock private lateinit var audioDeviceInfo: AudioDeviceInfo
++
++    private lateinit var underTest: PulsePlaybackRepository
++
++    @Before
++    fun setUp() {
++        MockitoAnnotations.initMocks(this)
++        whenever(audioManager.activePlaybackConfigurations).thenReturn(emptyList())
++        whenever(playbackConfig.isActive).thenReturn(true)
++        whenever(playbackConfig.audioDeviceInfos).thenReturn(emptyList())
++        underTest = PulsePlaybackRepository(audioManager)
++    }
++
++    @Test
++    fun playbackActive_emitsCurrentStateAndChangedCallbackStateOnly() = runTest {
++        val values = mutableListOf<Boolean>()
++        val collectJob = backgroundScope.launch { underTest.isPlaybackActive.toList(values) }
++        runCurrent()
++        val callback = registeredCallback()
++
++        callback.onPlaybackConfigChanged(listOf(configForUsage(AudioAttributes.USAGE_MEDIA)))
++        callback.onPlaybackConfigChanged(listOf(configForUsage(AudioAttributes.USAGE_MEDIA)))
++        runCurrent()
++
++        assertThat(values).containsExactly(false, true).inOrder()
++        collectJob.cancelAndJoin()
++    }
++
++    @Test
++    fun playbackActive_acceptsMediaGameAndUnknownUsage() = runTest {
++        val acceptedUsages =
++            listOf(
++                AudioAttributes.USAGE_MEDIA,
++                AudioAttributes.USAGE_GAME,
++                AudioAttributes.USAGE_UNKNOWN,
++            )
++
++        acceptedUsages.forEach { usage ->
++            whenever(audioManager.activePlaybackConfigurations)
++                .thenReturn(listOf(configForUsage(usage)))
++            assertThat(underTest.isPlaybackActive.firstValue()).isTrue()
++        }
++    }
++
++    @Test
++    fun playbackActive_excludesInactiveAndNonVisualizableUsage() = runTest {
++        whenever(playbackConfig.isActive).thenReturn(false)
++        whenever(audioManager.activePlaybackConfigurations)
++            .thenReturn(listOf(configForUsage(AudioAttributes.USAGE_MEDIA)))
++        assertThat(underTest.isPlaybackActive.firstValue()).isFalse()
++
++        whenever(playbackConfig.isActive).thenReturn(true)
++        whenever(audioManager.activePlaybackConfigurations)
++            .thenReturn(listOf(configForUsage(AudioAttributes.USAGE_ALARM)))
++        assertThat(underTest.isPlaybackActive.firstValue()).isFalse()
++    }
++
++    @Test
++    fun playbackActive_excludesRemoteSubmixOnlyPlayback() = runTest {
++        whenever(audioDeviceInfo.type).thenReturn(AudioDeviceInfo.TYPE_REMOTE_SUBMIX)
++        whenever(playbackConfig.audioDeviceInfos).thenReturn(listOf(audioDeviceInfo))
++        whenever(audioManager.activePlaybackConfigurations)
++            .thenReturn(listOf(configForUsage(AudioAttributes.USAGE_MEDIA)))
++
++        assertThat(underTest.isPlaybackActive.firstValue()).isFalse()
++    }
++
++    @Test
++    fun collection_registersAndUnregistersSameCallback() = runTest {
++        val collectJob = backgroundScope.launch { underTest.isPlaybackActive.toList() }
++        runCurrent()
++        val callback = registeredCallback()
++        verify(audioManager, never()).unregisterAudioPlaybackCallback(any())
++
++        collectJob.cancelAndJoin()
++
++        verify(audioManager).unregisterAudioPlaybackCallback(eq(callback))
++    }
++
++    private fun configForUsage(usage: Int): AudioPlaybackConfiguration {
++        whenever(playbackConfig.audioAttributes)
++            .thenReturn(AudioAttributes.Builder().setUsage(usage).build())
++        return playbackConfig
++    }
++
++    private fun registeredCallback(): AudioManager.AudioPlaybackCallback {
++        val captor = kotlinArgumentCaptor<AudioManager.AudioPlaybackCallback>()
++        verify(audioManager).registerAudioPlaybackCallback(captor.capture(), isNull())
++        clearInvocations(audioManager)
++        return captor.value
++    }
++
++    private suspend fun kotlinx.coroutines.flow.Flow<Boolean>.firstValue(): Boolean {
++        return first()
++    }
++}
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepositoryTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepositoryTest.kt
+new file mode 100644
+index 000000000000..5e4d74fe126b
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepositoryTest.kt
+@@ -0,0 +1,66 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.navigationbar.pulse
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.shared.settings.data.repository.FakeSecureSettingsRepository
++import com.google.common.truth.Truth.assertThat
++import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.test.runTest
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class PulseSettingsRepositoryTest : SysuiTestCase() {
++    private val secureSettingsRepository = FakeSecureSettingsRepository()
++    private val underTest = PulseSettingsRepository(secureSettingsRepository)
++
++    @Test
++    fun config_defaultsToDisabledWhiteAnd48Dp() = runTest {
++        assertThat(underTest.config.first())
++            .isEqualTo(PulseConfig(enabled = false, color = 0xFFFFFF, heightDp = 48))
++    }
++
++    @Test
++    fun config_combinesSettingUpdates() = runTest {
++        secureSettingsRepository.setBoolean(PulseSettingsRepository.ENABLED_KEY, true)
++        secureSettingsRepository.setInt(PulseSettingsRepository.COLOR_KEY, 0x123456)
++        secureSettingsRepository.setInt(PulseSettingsRepository.HEIGHT_KEY, 72)
++
++        assertThat(underTest.config.first())
++            .isEqualTo(PulseConfig(enabled = true, color = 0x123456, heightDp = 72))
++    }
++
++    @Test
++    fun config_masksColorToLower24Bits() = runTest {
++        secureSettingsRepository.setInt(PulseSettingsRepository.COLOR_KEY, 0xAB123456.toInt())
++
++        assertThat(underTest.config.first().color).isEqualTo(0x123456)
++    }
++
++    @Test
++    fun config_clampsHeightToSupportedRange() = runTest {
++        secureSettingsRepository.setInt(PulseSettingsRepository.HEIGHT_KEY, 2)
++        assertThat(underTest.config.first().heightDp).isEqualTo(8)
++
++        secureSettingsRepository.setInt(PulseSettingsRepository.HEIGHT_KEY, 120)
++        assertThat(underTest.config.first().heightDp).isEqualTo(96)
++    }
++}
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessorTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessorTest.kt
+new file mode 100644
+index 000000000000..3129315e07e7
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessorTest.kt
+@@ -0,0 +1,107 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.navigationbar.pulse
++
++import com.google.common.truth.Truth.assertThat
++import org.junit.Test
++
++class PulseSpectrumProcessorTest {
++    private val underTest = PulseSpectrumProcessor()
++
++    @Test
++    fun process_returns32NormalizedBarsAndReusesArray() {
++        val fft = fullScaleFft()
++
++        val first = underTest.process(fft)
++        val second = underTest.process(fft)
++
++        assertThat(first).hasLength(32)
++        assertThat(first).isSameInstanceAs(second)
++        assertThat(first.all { it in 0f..1f }).isTrue()
++        assertThat(first.all { it > 0f }).isTrue()
++    }
++
++    @Test
++    fun process_skipsDcAndNyquistBins() {
++        val fft = ByteArray(66)
++        fft[0] = Byte.MAX_VALUE
++        fft[1] = Byte.MAX_VALUE
++
++        assertThat(underTest.process(fft).all { it == 0f }).isTrue()
++    }
++
++    @Test
++    fun process_assignsEachFftBinToOnlyOneBar() {
++        val fft = ByteArray(66)
++        fft[2] = Byte.MIN_VALUE
++        fft[3] = Byte.MIN_VALUE
++
++        val bars = underTest.process(fft)
++
++        assertThat(bars.count { it > 0f }).isEqualTo(1)
++    }
++
++    @Test
++    fun process_appliesNoiseFloor() {
++        val fft = ByteArray(66)
++        for (index in 2 until fft.size step 2) {
++            fft[index] = 1
++            fft[index + 1] = 1
++        }
++
++        assertThat(underTest.process(fft).all { it == 0f }).isTrue()
++    }
++
++    @Test
++    fun process_usesAttackAndDecaySmoothing() {
++        val attacked = underTest.process(fullScaleFft()).copyOf()
++        val decayed = underTest.process(ByteArray(66)).copyOf()
++
++        assertThat(attacked[0]).isWithin(0.001f).of(0.55f)
++        assertThat(decayed[0]).isWithin(0.001f).of(0.44f)
++    }
++
++    @Test
++    fun reset_clearsSmoothedState() {
++        underTest.process(fullScaleFft())
++
++        underTest.reset()
++
++        assertThat(underTest.process(ByteArray(66)).all { it == 0f }).isTrue()
++    }
++
++    @Test
++    fun process_malformedOrShortInputClearsSafely() {
++        underTest.process(fullScaleFft())
++
++        val malformed = underTest.process(ByteArray(65))
++        assertThat(malformed.all { it == 0f }).isTrue()
++
++        underTest.process(fullScaleFft())
++        val short = underTest.process(ByteArray(4))
++        assertThat(short.all { it == 0f }).isTrue()
++    }
++
++    private fun fullScaleFft(): ByteArray {
++        return ByteArray(66).also { fft ->
++            for (index in 2 until fft.size step 2) {
++                fft[index] = Byte.MIN_VALUE
++                fft[index + 1] = Byte.MIN_VALUE
++            }
++        }
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepository.kt b/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepository.kt
+new file mode 100644
+index 000000000000..d8b7d0dd0964
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulsePlaybackRepository.kt
+@@ -0,0 +1,72 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.navigationbar.pulse
++
++import android.media.AudioAttributes
++import android.media.AudioDeviceInfo
++import android.media.AudioManager
++import android.media.AudioPlaybackConfiguration
++import com.android.systemui.dagger.SysUISingleton
++import com.android.systemui.utils.coroutines.flow.conflatedCallbackFlow
++import javax.inject.Inject
++import kotlinx.coroutines.channels.awaitClose
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.distinctUntilChanged
++
++/** Reports whether local playback suitable for Pulse visualization is active. */
++@SysUISingleton
++class PulsePlaybackRepository @Inject constructor(private val audioManager: AudioManager) {
++    val isPlaybackActive: Flow<Boolean> =
++        conflatedCallbackFlow {
++                val callback =
++                    object : AudioManager.AudioPlaybackCallback() {
++                        override fun onPlaybackConfigChanged(
++                            configs: List<AudioPlaybackConfiguration>
++                        ) {
++                            trySend(configs.hasVisualizablePlayback())
++                        }
++                    }
++
++                audioManager.registerAudioPlaybackCallback(callback, null)
++                trySend(audioManager.activePlaybackConfigurations.hasVisualizablePlayback())
++                awaitClose { audioManager.unregisterAudioPlaybackCallback(callback) }
++            }
++            .distinctUntilChanged()
++
++    private fun List<AudioPlaybackConfiguration>.hasVisualizablePlayback(): Boolean {
++        return any { config ->
++            config.isActive &&
++                config.audioAttributes.usage in VISUALIZABLE_USAGES &&
++                !config.isRemoteSubmixOnly()
++        }
++    }
++
++    private fun AudioPlaybackConfiguration.isRemoteSubmixOnly(): Boolean {
++        val devices = audioDeviceInfos
++        return devices.isNotEmpty() &&
++            devices.all { device -> device.type == AudioDeviceInfo.TYPE_REMOTE_SUBMIX }
++    }
++
++    private companion object {
++        val VISUALIZABLE_USAGES =
++            setOf(
++                AudioAttributes.USAGE_UNKNOWN,
++                AudioAttributes.USAGE_MEDIA,
++                AudioAttributes.USAGE_GAME,
++            )
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepository.kt b/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepository.kt
+new file mode 100644
+index 000000000000..099217638a94
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSettingsRepository.kt
+@@ -0,0 +1,60 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.navigationbar.pulse
++
++import com.android.systemui.dagger.SysUISingleton
++import com.android.systemui.shared.settings.data.repository.SecureSettingsRepository
++import javax.inject.Inject
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.combine
++import kotlinx.coroutines.flow.distinctUntilChanged
++import kotlinx.coroutines.flow.map
++
++/** User-selected Pulse rendering configuration. */
++data class PulseConfig(val enabled: Boolean, val color: Int, val heightDp: Int)
++
++/** Provides Pulse configuration for the current user. */
++@SysUISingleton
++class PulseSettingsRepository
++@Inject
++constructor(secureSettingsRepository: SecureSettingsRepository) {
++    val config: Flow<PulseConfig> =
++        combine(
++                secureSettingsRepository.boolSetting(ENABLED_KEY, defaultValue = false),
++                secureSettingsRepository.intSetting(COLOR_KEY, defaultValue = DEFAULT_COLOR).map {
++                    it and RGB_MASK
++                },
++                secureSettingsRepository
++                    .intSetting(HEIGHT_KEY, defaultValue = DEFAULT_HEIGHT_DP)
++                    .map { it.coerceIn(MIN_HEIGHT_DP, MAX_HEIGHT_DP) },
++            ) { enabled, color, heightDp ->
++                PulseConfig(enabled, color, heightDp)
++            }
++            .distinctUntilChanged()
++
++    companion object {
++        const val ENABLED_KEY = "lineage_pulse_enabled"
++        const val COLOR_KEY = "lineage_pulse_color"
++        const val HEIGHT_KEY = "lineage_pulse_height_dp"
++
++        private const val DEFAULT_COLOR = 0xFFFFFF
++        private const val DEFAULT_HEIGHT_DP = 48
++        private const val MIN_HEIGHT_DP = 8
++        private const val MAX_HEIGHT_DP = 96
++        private const val RGB_MASK = 0xFFFFFF
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessor.kt b/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessor.kt
+new file mode 100644
+index 000000000000..c42a63095684
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/navigationbar/pulse/PulseSpectrumProcessor.kt
+@@ -0,0 +1,81 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.navigationbar.pulse
++
++import kotlin.math.exp
++import kotlin.math.ln
++import kotlin.math.max
++import kotlin.math.sqrt
++
++/** Converts Android Visualizer FFT output into smoothed logarithmic spectrum bars. */
++class PulseSpectrumProcessor {
++    private val bars = FloatArray(BAR_COUNT)
++
++    fun process(fft: ByteArray): FloatArray {
++        if (fft.size < MIN_FFT_SIZE || fft.size % 2 != 0) {
++            return clearBars()
++        }
++
++        val binCount = fft.size / 2 - 1
++        val logarithmicRange = ln((binCount + 1).toDouble())
++        for (barIndex in bars.indices) {
++            val startBin = logarithmicBoundary(barIndex, binCount, logarithmicRange)
++            val endBin =
++                max(startBin + 1, logarithmicBoundary(barIndex + 1, binCount, logarithmicRange))
++            val target = averageMagnitude(fft, startBin, endBin.coerceAtMost(binCount + 1))
++            val coefficient = if (target > bars[barIndex]) ATTACK else DECAY
++            bars[barIndex] += (target - bars[barIndex]) * coefficient
++        }
++        return bars
++    }
++
++    fun reset() {
++        bars.fill(0f)
++    }
++
++    private fun logarithmicBoundary(barIndex: Int, binCount: Int, logarithmicRange: Double): Int {
++        val boundary = (exp(logarithmicRange * barIndex / BAR_COUNT) - 1).toInt() + 1
++        val minimum = barIndex + 1
++        val maximum = binCount - BAR_COUNT + barIndex + 1
++        return boundary.coerceIn(minimum, maximum)
++    }
++
++    private fun averageMagnitude(fft: ByteArray, startBin: Int, endBin: Int): Float {
++        var sum = 0f
++        for (bin in startBin until endBin) {
++            val real = fft[bin * 2].toFloat()
++            val imaginary = fft[bin * 2 + 1].toFloat()
++            sum += sqrt(real * real + imaginary * imaginary) / MAX_MAGNITUDE
++        }
++        val average = sum / (endBin - startBin)
++        return ((average - NOISE_FLOOR) / (1f - NOISE_FLOOR)).coerceIn(0f, 1f)
++    }
++
++    private fun clearBars(): FloatArray {
++        reset()
++        return bars
++    }
++
++    private companion object {
++        const val BAR_COUNT = 32
++        const val MIN_FFT_SIZE = 2 + BAR_COUNT * 2
++        const val ATTACK = 0.55f
++        const val DECAY = 0.20f
++        const val NOISE_FLOOR = 0.02f
++        val MAX_MAGNITUDE = sqrt(2f * Byte.MIN_VALUE * Byte.MIN_VALUE)
++    }
++}
+-- 
+2.47.3
+

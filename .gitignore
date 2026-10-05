@@ -1,0 +1,22 @@
+# Signing material
+*.key
+*.pem
+*.pk8
+*.x509.pem
+release-keys/
+signing/
+
+# Build and release artifacts
+artifacts/
+out/
+*.img
+*.zip
+*.ota
+
+# Local Superpowers working documents
+/docs/superpowers/
+
+# Editor and OS state
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,5 @@
+bec2d66c5459022dae13a486e2e715a79c38f8f2736c222df7bc9aaf2b7bf9cf  0001-SystemUI-add-Pulse-state-inputs-and-spectrum-model.patch
+f51b4914c730a2ff010d34bba83ce197b4a822c57719526ed56ea7f5e1187dc4  0002-SystemUI-add-Pulse-FFT-capture-lifecycle.patch
+0f576cf07c456bbdaf5d87c61ecd7cf27709a4e7627573d5e552f41669984726  0003-SystemUI-add-Pulse-bottom-overlay.patch
+f858259f77afc256a8143fb037c85f588b09d2bc6367b10fc8680a4d4a137f9d  0004-SystemUI-coordinate-Pulse-runtime-state.patch
+a0af580558aaa84a5c39d022bfb30c342439efc40de38878da5794871d239f3f  0005-SystemUI-integrate-Pulse-with-navigation-lifecycle.patch
