@@ -14,7 +14,7 @@ readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh
 failure_domain=signing
 
 : "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
-: "${OTA_BASE_IMAGE_REF:=ghcr.io/yim-s-riced-rom-project/ota-server:main}"
+: "${OTA_BASE_IMAGE_REF:=ghcr.io/yrrps/ota-server:main}"
 : "${OTA_NETWORK:=proxy-net}"
 export OTA_PUBLIC_BASE_URL OTA_BASE_IMAGE_REF OTA_NETWORK
 

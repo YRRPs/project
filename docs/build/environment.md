@@ -4,7 +4,7 @@
 
 - TrueNAS host: `192.168.4.243`
 - Host deployment directory: `/mnt/fast/docker/android`
-- Canonical container source: [`Yim-s-Riced-ROM-Project/android_build_server`](https://github.com/Yim-s-Riced-ROM-Project/android_build_server)
+- Canonical container source: [`YRRPs/android_build_server`](https://github.com/YRRPs/android_build_server)
 - Container SSH profile: `ssh AndroidBuilder`
 - Container: `lineageos-builder`
 - SSH endpoint: `192.168.4.243:4242`
@@ -29,7 +29,7 @@ Use `AndroidBuilder` for all source, build, and container-shell work. Access Tru
 ## Baseline checkout
 
 ```text
-Manifest: https://github.com/Yim-s-Riced-ROM-Project/android.git
+Manifest: https://github.com/YRRPs/android.git
 Branch: lineage-23.2
 Projects: 1,164
 Device: salami

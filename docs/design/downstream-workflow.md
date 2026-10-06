@@ -6,7 +6,7 @@ Use YRRP manifest fork as one-step source entry point:
 
 ```bash
 repo init \
-  -u https://github.com/Yim-s-Riced-ROM-Project/android.git \
+  -u https://github.com/YRRPs/android.git \
   -b lineage-23.2 \
   --git-lfs
 repo sync

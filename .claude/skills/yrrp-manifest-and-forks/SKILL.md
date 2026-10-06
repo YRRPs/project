@@ -1,6 +1,6 @@
 ---
 name: yrrp-manifest-and-forks
-description: Use when changing which repositories the ROM builds from or publishing YRRP repos — "fork <repo>", "add a fork to the manifest", "override a Lineage project", "our manifest", "default.xml", "repo sync fails", "hooks is different", "--force-sync not enabled", "switch the checkout to our manifest", "push to frameworks_base", "Yim-s-Riced-ROM-Project", "new repo in the org", "GHCR image is stale", "Dependabot PRs", "merge dependabot", "builder image main tag", "workflow didn't publish". Covers the org's repository map, adding a forked project, the force-sync trap, and GHCR publishing races. NOT for building or signing (yrrp-signed-ota-release).
+description: Use when changing which repositories the ROM builds from or publishing YRRP repos — "fork <repo>", "add a fork to the manifest", "override a Lineage project", "our manifest", "default.xml", "repo sync fails", "hooks is different", "--force-sync not enabled", "switch the checkout to our manifest", "push to frameworks_base", "YRRPs", "new repo in the org", "GHCR image is stale", "Dependabot PRs", "merge dependabot", "builder image main tag", "workflow didn't publish". Covers the org's repository map, adding a forked project, the force-sync trap, and GHCR publishing races. NOT for building or signing (yrrp-signed-ota-release).
 ---
 
 # YRRP manifest and forks
@@ -9,7 +9,7 @@ Announce first: **Using yrrp-manifest-and-forks to change the source topology.**
 
 ## Repository map
 
-GitHub org `Yim-s-Riced-ROM-Project`, all public, Apache-2.0 for original work:
+GitHub org `YRRPs`, all public, Apache-2.0 for original work:
 
 | Repo | Local path | Role |
 |---|---|---|
@@ -17,15 +17,15 @@ GitHub org `Yim-s-Riced-ROM-Project`, all public, Apache-2.0 for original work:
 | `android` | — | repo manifest; `default.xml` overrides Lineage projects |
 | `android_frameworks_base` | builder `/opt/android/frameworks/base` | Pulse fork, branch `lineage-23.2` |
 | `android_vendor_extra` | `~/Documents/Projects/android_vendor_extra`, builder `vendor/extra` | product overrides inherited first by `vendor/lineage/config/common.mk` (Updater URL); put new properties here instead of forking `vendor/lineage` |
-| `android_build_server` | `~/Documents/Projects/android_build_server` | builder image → `ghcr.io/yim-s-riced-rom-project/android-build-server:main` |
-| `ota_server` | `~/Documents/Projects/ota_server` | Nginx OTA base → `ghcr.io/yim-s-riced-rom-project/ota-server:main` |
+| `android_build_server` | `~/Documents/Projects/android_build_server` | builder image → `ghcr.io/yrrps/android-build-server:main` |
+| `ota_server` | `~/Documents/Projects/ota_server` | Nginx OTA base → `ghcr.io/yrrps/ota-server:main` |
 
 Forks go in the org, never the user's personal profile.
 
 ## Adding a forked project
 
 1. Fork the Lineage repo into the org, keeping the `android_<path>` name.
-2. In `android/default.xml`, replace the project's entry with one using `remote="yrrp"` (the remote fetches `https://github.com/Yim-s-Riced-ROM-Project`). Keep the original `path` and `groups`.
+2. In `android/default.xml`, replace the project's entry with one using `remote="yrrp"` (the remote fetches `https://github.com/YRRPs`). Keep the original `path` and `groups`.
 3. Push the manifest, then on the builder run `repo sync <path>` for that path only.
 
 ## The force-sync trap

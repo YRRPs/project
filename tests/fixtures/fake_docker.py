@@ -14,7 +14,7 @@ with log.open("a", encoding="utf-8") as stream:
 
 mode = os.environ.get("FAKE_DOCKER_MODE", "initial")
 state_path = Path(os.environ.get("FAKE_DOCKER_STATE", log.with_suffix(".state")))
-base_digest = "ghcr.io/yim-s-riced-rom-project/ota-server@sha256:" + "b" * 64
+base_digest = "ghcr.io/yrrps/ota-server@sha256:" + "b" * 64
 
 if args[:1] == ["version"] or args[:2] in (["buildx", "version"], ["compose", "version"]):
     print("fake docker")

@@ -4,11 +4,11 @@ Central planning and operational documentation for YRRP, a LineageOS 23.2 deriva
 
 ## Repository map
 
-- [`project`](https://github.com/Yim-s-Riced-ROM-Project/project): research, architecture, build/signing helpers, install guides, and release planning
-- [`android`](https://github.com/Yim-s-Riced-ROM-Project/android): canonical `repo init` manifest
-- [`android_frameworks_base`](https://github.com/Yim-s-Riced-ROM-Project/android_frameworks_base): framework changes, including Pulse
-- [`android_build_server`](https://github.com/Yim-s-Riced-ROM-Project/android_build_server): reusable Docker-based Android builder
-- [`ota_server`](https://github.com/Yim-s-Riced-ROM-Project/ota_server): hardened latest-only OTA server base
+- [`project`](https://github.com/YRRPs/project): research, architecture, build/signing helpers, install guides, and release planning
+- [`android`](https://github.com/YRRPs/android): canonical `repo init` manifest
+- [`android_frameworks_base`](https://github.com/YRRPs/android_frameworks_base): framework changes, including Pulse
+- [`android_build_server`](https://github.com/YRRPs/android_build_server): reusable Docker-based Android builder
+- [`ota_server`](https://github.com/YRRPs/ota_server): hardened latest-only OTA server base
 
 Release signing now prepares and deploys one local latest-only OTA image through trusted builder. Reverse proxy and public HTTPS endpoint remain user-managed.
 
@@ -16,7 +16,7 @@ Release signing now prepares and deploys one local latest-only OTA image through
 
 - Baseline: LineageOS `lineage-23.2`
 - Device: OnePlus 11 (`salami`)
-- Manifest: `Yim-s-Riced-ROM-Project/android`, branch `lineage-23.2`
+- Manifest: `YRRPs/android`, branch `lineage-23.2`
 - Pulse source: `android_frameworks_base`, branch `lineage-23.2`, head `36269fa52cee`
 - Pulse ROM: `lineage-23.2-20261004-UNOFFICIAL-salami.zip`
 - Pulse ROM SHA-256: `0f66af474c6ac68ad21372dd473313e9e7b8468973f4a42efd8211e1cf0aeb62`

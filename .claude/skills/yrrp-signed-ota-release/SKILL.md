@@ -62,7 +62,7 @@ Signature checks the script already performs, for manual diagnosis: OTA cert in 
 
 ## Redeploy without rebuilding
 
-If only `ota_server` changed (Nginx config, base image), do not rebuild or re-sign. Wait for the `ota_server` GitHub workflow to publish `ghcr.io/yim-s-riced-rom-project/ota-server:main`, then run `deploy-ota-release.sh` against the existing signed OTA and target-files in `/opt/android/out/signed/`. It builds a local `yrrp-ota-release:<id>` image (never pushed), swaps `yrrp-ota-server` on `proxy-net`, and rolls back on any failure or signal.
+If only `ota_server` changed (Nginx config, base image), do not rebuild or re-sign. Wait for the `ota_server` GitHub workflow to publish `ghcr.io/yrrps/ota-server:main`, then run `deploy-ota-release.sh` against the existing signed OTA and target-files in `/opt/android/out/signed/`. It builds a local `yrrp-ota-release:<id>` image (never pushed), swaps `yrrp-ota-server` on `proxy-net`, and rolls back on any failure or signal.
 
 ## Known gaps
 

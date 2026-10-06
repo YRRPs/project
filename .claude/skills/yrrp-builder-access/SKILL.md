@@ -22,7 +22,7 @@ Do not build, sync, or edit source on the TrueNAS host. Only `sudo docker` is pa
 |---|---|---|
 | `/opt/android` | `/mnt/fast/docker/android/workspace` | ~270 GB Lineage checkout, UID 950 |
 | `/ccache` | `/mnt/fast/docker/android/ccache` | ccache |
-| `/opt/yrrp/project` (read-only) | `/mnt/fast/docker/android/project` | clone of `Yim-s-Riced-ROM-Project/project` |
+| `/opt/yrrp/project` (read-only) | `/mnt/fast/docker/android/project` | clone of `YRRPs/project` |
 | `/opt/yrrp/signing` | `/mnt/fast/docker/android/signing` | release keys (see yrrp-signing-keys) |
 | `/var/run/docker.sock` | host socket | lets the builder deploy the OTA container |
 

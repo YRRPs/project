@@ -35,7 +35,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
             "FAKE_DOCKER_LOG": str(self.log),
             "FAKE_DOCKER_MODE": mode,
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
-            "OTA_BASE_IMAGE_REF": "ghcr.io/yim-s-riced-rom-project/ota-server:main",
+            "OTA_BASE_IMAGE_REF": "ghcr.io/yrrps/ota-server:main",
             "OTA_WORK_DIR": str(self.root / "work"),
             "OTA_LOCK_FILE": str(self.root / "deploy.lock"),
             "OTA_HEALTH_TIMEOUT": "1",
