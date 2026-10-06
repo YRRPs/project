@@ -211,3 +211,40 @@ Not yet observed on device: speaker and Bluetooth playback, gesture/three-button
 
 - Visualizer setup runs on the SystemUI main thread; check for jank or ANR during audioserver restart.
 - A session-specific capture that delivers only silent frames latches Pulse off after the 1 s startup timeout (no session-0 retry). Look for `Pulse stopped: startup timeout` while audio plays.
+
+### Device-entry fix and observability (release `20261006-075443`)
+
+Release `20261006-015450` installed but Pulse never ran. The controller gated on `DeviceEntryInteractor.isDeviceEntered`, which only emits with `SceneContainerFlag` enabled; on salami it is disabled, so the gate stayed `false`.
+
+```text
+29fa0b70d414  SystemUI: gate Pulse on keyguard-gone without scene container
+bb07b63193ca  SystemUI: make Pulse decisions observable
+```
+
+- The gate now uses `KeyguardTransitionInteractor.isFinishedIn(Scenes.Gone, KeyguardState.GONE)`.
+- `PulseController` is a Dumpable and logs transitions to the `PulseLog` buffer. Read both with:
+
+```bash
+adb shell dumpsys activity service com.android.systemui/.SystemUIService PulseController PulseLog
+```
+
+- `vendor/extra` (`Yim-s-Riced-ROM-Project/android_vendor_extra`) sets `lineage.updater.uri=https://ota.yimura.dev/updates/{device}.json`.
+
+```text
+OTA:          lineage-23.2-salami-20261006-075443-signed-ota.zip
+Size:         2,180,311,543 bytes
+SHA-256:      de6ad8082a99ac8dcfb969fe6c8a966ead5b95bcaab96ba95e43d68f9afd4fd6
+Target-files: 12baaad9253bb9067ed791ec609f3809e626ef8ef5288b679e96480c3f647fa0
+Framework:    bb07b63193ca
+```
+
+Observed on salami (2026-10-06): Pulse renders during Spotify speaker playback with gesture navigation; Taskbar host; `lineage.updater.uri` present after the update.
+
+```text
+activeHost=TASKBAR  navigationVisible=true  keyguardGone=true  awake=true
+playbackActive=true eligible=true blockedBy=none captureActive=true
+frameGateReady=true overlayShown=true windowAttached=true
+Window{… Pulse0}
+```
+
+Still pending: Bluetooth, three-button navigation, every teardown gate, offloaded/protected playback, SystemUI and audioserver restart recovery, frame rate, allocations.
