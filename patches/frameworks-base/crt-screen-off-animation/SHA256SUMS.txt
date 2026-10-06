@@ -1,0 +1,1 @@
+18f24f3f923ffe3464d25e2264926ba0c6854025811e0b25a1698241dda5fac6  0001-SystemUI-add-CRT-screen-off-animation.patch

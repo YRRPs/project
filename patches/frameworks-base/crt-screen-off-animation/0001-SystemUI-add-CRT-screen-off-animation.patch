@@ -1,0 +1,2184 @@
+From 224468bd4cd3d437b5376b7cece3506bc5d96038 Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Tue, 6 Oct 2026 11:39:18 +0000
+Subject: [PATCH] SystemUI: add CRT screen-off animation
+
+Add an opt-in CRT-style unlocked screen-off animation. CrtCollapseReveal
+closes a mask vertically into a thin beam with a phosphor trail and
+red/blue fringe, then contracts it to centre, ending on the scrim's end
+colour. It draws masks over live content and captures no pixels.
+
+LightRevealScrim gains a temporary screen-off override slot so base
+wake and biometric effects keep updating underneath. The new
+CrtScreenOffAnimationCoordinator samples Settings.Secure
+lineage_screen_off_animation (0 Stock, 1 CRT; anything else or a read
+failure falls back to Stock) once per accepted transition, installs and
+clears the override, and exposes a dump plus a transition-only
+LogBuffer. UnlockedScreenOffAnimationController keeps its stock gates,
+500 ms reveal, 600 ms AOD delay and jank CUJs, and reports a typed
+blocked reason.
+
+Host tests were written but not executed: SystemUiRavenTests and
+SystemUiRoboTests fail to compile on unrelated baseline fixtures
+(FakeWifiRepository, FakeScreenRecordingService, BatteryRepositoryTest
+and others); no CRT file reported an error. m SystemUI-core SystemUI
+passes.
+
+Claude-Session: https://claude.ai/code/session_01XX5x15qd28QzgfxhtVz4at
+---
+ .../statusbar/CrtCollapseRevealTest.kt        | 343 ++++++++++++++
+ .../CrtScreenOffAnimationCoordinatorTest.kt   | 420 ++++++++++++++++++
+ ...creenOffAnimationSettingsRepositoryTest.kt | 154 +++++++
+ ...nlockedScreenOffAnimationControllerTest.kt | 177 ++++++++
+ .../log/dagger/CrtScreenOffAnimationLog.kt    |  25 ++
+ .../systemui/log/dagger/LogModule.java        |   8 +
+ .../systemui/statusbar/CrtCollapseReveal.kt   |  72 +++
+ .../systemui/statusbar/LightRevealScrim.kt    | 213 ++++++++-
+ .../phone/CrtScreenOffAnimationCoordinator.kt | 286 ++++++++++++
+ .../ScreenOffAnimationSettingsRepository.kt   |  93 ++++
+ .../UnlockedScreenOffAnimationController.kt   | 100 ++---
+ 11 files changed, 1831 insertions(+), 60 deletions(-)
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/CrtCollapseRevealTest.kt
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinatorTest.kt
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepositoryTest.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/log/dagger/CrtScreenOffAnimationLog.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/statusbar/CrtCollapseReveal.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinator.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepository.kt
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/CrtCollapseRevealTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/CrtCollapseRevealTest.kt
+new file mode 100644
+index 000000000000..a07529a46164
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/CrtCollapseRevealTest.kt
+@@ -0,0 +1,343 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.statusbar
++
++import android.graphics.Canvas
++import android.graphics.Color
++import android.graphics.Paint
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.google.common.collect.Range
++import com.google.common.truth.Truth.assertThat
++import org.junit.Assume.assumeFalse
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.mockito.ArgumentMatchers.anyFloat
++import org.mockito.ArgumentMatchers.anyInt
++import org.mockito.kotlin.any
++import org.mockito.kotlin.mock
++import org.mockito.kotlin.never
++import org.mockito.kotlin.times
++import org.mockito.kotlin.verify
++
++/**
++ * Geometry, final-black, and override-ownership tests for [CrtCollapseReveal] on a real
++ * [LightRevealScrim]. Drawing is checked through a mock [Canvas]; no pixels are read back.
++ */
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class CrtCollapseRevealTest : SysuiTestCase() {
++
++    private lateinit var scrim: LightRevealScrim
++    private var density = 1f
++
++    @Before
++    fun setUp() {
++        // Ravenwood cannot construct Views; this suite runs under Robolectric and on device.
++        assumeFalse(SysuiTestCase.isRavenwoodTest())
++        density = context.resources.displayMetrics.density
++        scrim = createScrim(PORTRAIT_WIDTH, PORTRAIT_HEIGHT)
++    }
++
++    @Test
++    fun revealOne_hasFullOverscannedApertureAndNoEmission() {
++        applyCrt(1f)
++
++        assertAperture(
++            left = -0.03f * PORTRAIT_WIDTH,
++            top = 0f,
++            right = 1.03f * PORTRAIT_WIDTH,
++            bottom = PORTRAIT_HEIGHT.toFloat(),
++        )
++        assertNoEmission()
++
++        scrim.screenOffRevealEffectOverride = CrtCollapseReveal
++        val canvas = mock<Canvas>()
++        drawScrim(canvas)
++        verify(canvas, never()).drawColor(anyInt())
++        verify(canvas, never())
++            .drawRect(anyFloat(), anyFloat(), anyFloat(), anyFloat(), any<Paint>())
++    }
++
++    @Test
++    fun firstHalf_closesVerticallyAndMonotonically() {
++        var previousTop = -1f
++        var previousBottom = Float.MAX_VALUE
++        for (amount in floatArrayOf(1f, 0.875f, 0.75f, 0.625f, 0.5f)) {
++            applyCrt(amount)
++
++            assertThat(scrim.crtApertureTop).isAtLeast(previousTop)
++            assertThat(scrim.crtApertureBottom).isAtMost(previousBottom)
++            assertThat(scrim.crtApertureLeft).isWithin(TOLERANCE).of(-0.03f * PORTRAIT_WIDTH)
++            assertThat(scrim.crtApertureRight).isWithin(TOLERANCE).of(1.03f * PORTRAIT_WIDTH)
++            assertNoEmission()
++            previousTop = scrim.crtApertureTop
++            previousBottom = scrim.crtApertureBottom
++        }
++        assertThat(previousTop).isGreaterThan(0f)
++        assertThat(previousBottom).isLessThan(PORTRAIT_HEIGHT.toFloat())
++    }
++
++    @Test
++    fun phaseBoundary_hasThinFullWidthHorizontalAperture() {
++        applyCrt(0.5f)
++
++        val beamHalfHeight = maxOf(1f, density)
++        val centerY = PORTRAIT_HEIGHT / 2f
++        assertAperture(
++            left = -0.03f * PORTRAIT_WIDTH,
++            top = centerY - beamHalfHeight,
++            right = 1.03f * PORTRAIT_WIDTH,
++            bottom = centerY + beamHalfHeight,
++        )
++        assertThat(scrim.crtBeamHalfHeight).isWithin(TOLERANCE).of(beamHalfHeight)
++        assertNoEmission()
++    }
++
++    @Test
++    fun secondHalf_contractsHorizontallyTowardCenter() {
++        val centerX = PORTRAIT_WIDTH / 2f
++        var previousWidth = Float.MAX_VALUE
++        for (amount in floatArrayOf(0.5f, 0.375f, 0.25f, 0.125f, 0f)) {
++            applyCrt(amount)
++
++            val apertureWidth = scrim.crtApertureRight - scrim.crtApertureLeft
++            assertThat(apertureWidth).isAtMost(previousWidth)
++            assertThat((scrim.crtApertureLeft + scrim.crtApertureRight) / 2f)
++                .isWithin(TOLERANCE)
++                .of(centerX)
++            previousWidth = apertureWidth
++        }
++        assertThat(scrim.crtApertureLeft).isWithin(TOLERANCE).of(centerX)
++        assertThat(scrim.crtApertureRight).isWithin(TOLERANCE).of(centerX)
++    }
++
++    @Test
++    fun allEmissionAlphasStayInBounds() {
++        val unit = Range.closed(0f, 1f)
++        for (step in 0..100) {
++            applyCrt(step / 100f)
++
++            assertThat(scrim.crtCoreAlpha).isIn(unit)
++            assertThat(scrim.crtTrailAlpha).isIn(unit)
++            assertThat(scrim.crtRedFringeAlpha).isIn(unit)
++            assertThat(scrim.crtBlueFringeAlpha).isIn(unit)
++            assertThat(scrim.crtTrailAlpha).isAtMost(scrim.crtCoreAlpha)
++            assertThat(scrim.crtRedFringeAlpha).isAtMost(scrim.crtCoreAlpha)
++            assertThat(scrim.crtBlueFringeAlpha).isAtMost(scrim.crtCoreAlpha)
++        }
++
++        applyCrt(0.25f)
++        assertThat(scrim.crtCoreAlpha).isWithin(TOLERANCE).of(1f)
++    }
++
++    @Test
++    fun revealZero_hasNoEmissionAndDrawsExactOpaqueBlack() {
++        scrim.screenOffRevealEffectOverride = CrtCollapseReveal
++        scrim.revealAmount = 0f
++
++        assertNoEmission()
++        val canvas = mock<Canvas>()
++        drawScrim(canvas)
++        verify(canvas).drawColor(Color.BLACK)
++        verify(canvas, never())
++            .drawRect(anyFloat(), anyFloat(), anyFloat(), anyFloat(), any<Paint>())
++    }
++
++    @Test
++    fun beamPhase_drawsOnlyMaskAndBeamRects() {
++        scrim.screenOffRevealEffectOverride = CrtCollapseReveal
++        scrim.revealAmount = 0.25f
++
++        val canvas = mock<Canvas>()
++        drawScrim(canvas)
++
++        // Top, bottom, left, right masks; then trail, red fringe, blue fringe, white core.
++        verify(canvas, times(8))
++            .drawRect(anyFloat(), anyFloat(), anyFloat(), anyFloat(), any<Paint>())
++        verify(canvas, never()).drawColor(anyInt())
++    }
++
++    @Test
++    fun geometry_usesCurrentPortraitDimensions() {
++        applyCrt(1f)
++
++        assertThat(scrim.crtApertureRight).isWithin(TOLERANCE).of(1.03f * PORTRAIT_WIDTH)
++        assertThat(scrim.crtApertureBottom).isWithin(TOLERANCE).of(PORTRAIT_HEIGHT.toFloat())
++        applyCrt(0.5f)
++        assertThat((scrim.crtApertureTop + scrim.crtApertureBottom) / 2f)
++            .isWithin(TOLERANCE)
++            .of(PORTRAIT_HEIGHT / 2f)
++    }
++
++    @Test
++    fun geometry_usesCurrentLandscapeDimensions() {
++        scrim = createScrim(LANDSCAPE_WIDTH, LANDSCAPE_HEIGHT)
++
++        applyCrt(1f)
++        assertAperture(
++            left = -0.03f * LANDSCAPE_WIDTH,
++            top = 0f,
++            right = 1.03f * LANDSCAPE_WIDTH,
++            bottom = LANDSCAPE_HEIGHT.toFloat(),
++        )
++        applyCrt(0.5f)
++        assertThat((scrim.crtApertureTop + scrim.crtApertureBottom) / 2f)
++            .isWithin(TOLERANCE)
++            .of(LANDSCAPE_HEIGHT / 2f)
++    }
++
++    @Test
++    fun calculation_doesNotRetainPriorScrimDimensions() {
++        applyCrt(0.25f)
++        scrim.layout(0, 0, LANDSCAPE_WIDTH, LANDSCAPE_HEIGHT)
++        applyCrt(0.25f)
++        val rotated = snapshot(scrim)
++
++        val fresh = createScrim(LANDSCAPE_WIDTH, LANDSCAPE_HEIGHT)
++        CrtCollapseReveal.setRevealAmountOnScrim(0.25f, fresh)
++
++        assertThat(rotated).isEqualTo(snapshot(fresh))
++    }
++
++    @Test
++    fun screenOffOverride_becomesActiveWithoutReplacingBase() {
++        val base = RecordingRevealEffect()
++        val override = RecordingRevealEffect()
++        scrim.revealEffect = base
++
++        scrim.screenOffRevealEffectOverride = override
++        scrim.revealAmount = 0.4f
++
++        assertThat(scrim.revealEffect).isSameInstanceAs(base)
++        assertThat(scrim.activeRevealEffect).isSameInstanceAs(override)
++        assertThat(override.lastRevealAmount).isEqualTo(0.4f)
++    }
++
++    @Test
++    fun baseEffectUpdate_duringOverrideDoesNotReplaceActiveEffect() {
++        val override = RecordingRevealEffect()
++        val latestBase = RecordingRevealEffect()
++        scrim.screenOffRevealEffectOverride = override
++
++        scrim.revealEffect = latestBase
++        scrim.revealAmount = 0.3f
++
++        assertThat(scrim.activeRevealEffect).isSameInstanceAs(override)
++        assertThat(override.lastRevealAmount).isEqualTo(0.3f)
++        assertThat(latestBase.lastRevealAmount).isNull()
++    }
++
++    @Test
++    fun clearingOverride_appliesLatestBaseEffectAtCurrentAmount() {
++        val override = RecordingRevealEffect()
++        val latestBase = RecordingRevealEffect()
++        scrim.screenOffRevealEffectOverride = override
++        scrim.revealEffect = latestBase
++        scrim.revealAmount = 0.25f
++
++        scrim.screenOffRevealEffectOverride = null
++
++        assertThat(scrim.activeRevealEffect).isSameInstanceAs(latestBase)
++        assertThat(latestBase.lastRevealAmount).isEqualTo(0.25f)
++    }
++
++    @Test
++    fun switchingAwayFromCrt_resetsAllCrtPrimitiveState() {
++        scrim.screenOffRevealEffectOverride = CrtCollapseReveal
++        scrim.revealAmount = 0.25f
++        assertThat(scrim.crtCoreAlpha).isGreaterThan(0f)
++
++        scrim.screenOffRevealEffectOverride = null
++
++        assertThat(snapshot(scrim)).isEqualTo(List(11) { 0f })
++    }
++
++    @Test
++    fun clearingOverride_restoresBaseInterpolatedRevealAmount() {
++        scrim.interpolatedRevealAmount = 1f
++        scrim.screenOffRevealEffectOverride = CrtCollapseReveal
++        scrim.revealAmount = 0.05f
++        assertThat(scrim.isScrimAlmostOccludes).isTrue()
++
++        scrim.screenOffRevealEffectOverride = null
++
++        assertThat(scrim.interpolatedRevealAmount).isEqualTo(1f)
++    }
++
++    private fun createScrim(width: Int, height: Int): LightRevealScrim =
++        LightRevealScrim(context, null, width, height).apply { layout(0, 0, width, height) }
++
++    private fun applyCrt(amount: Float) = CrtCollapseReveal.setRevealAmountOnScrim(amount, scrim)
++
++    private fun drawScrim(canvas: Canvas) {
++        LightRevealScrim::class
++            .java
++            .getDeclaredMethod("onDraw", Canvas::class.java)
++            .apply { isAccessible = true }
++            .invoke(scrim, canvas)
++    }
++
++    private fun assertAperture(left: Float, top: Float, right: Float, bottom: Float) {
++        assertThat(scrim.crtApertureLeft).isWithin(TOLERANCE).of(left)
++        assertThat(scrim.crtApertureTop).isWithin(TOLERANCE).of(top)
++        assertThat(scrim.crtApertureRight).isWithin(TOLERANCE).of(right)
++        assertThat(scrim.crtApertureBottom).isWithin(TOLERANCE).of(bottom)
++    }
++
++    private fun assertNoEmission() {
++        assertThat(scrim.crtCoreAlpha).isEqualTo(0f)
++        assertThat(scrim.crtTrailAlpha).isEqualTo(0f)
++        assertThat(scrim.crtRedFringeAlpha).isEqualTo(0f)
++        assertThat(scrim.crtBlueFringeAlpha).isEqualTo(0f)
++    }
++
++    private fun snapshot(target: LightRevealScrim): List<Float> =
++        with(target) {
++            listOf(
++                crtApertureLeft,
++                crtApertureTop,
++                crtApertureRight,
++                crtApertureBottom,
++                crtBeamHalfHeight,
++                crtGlowHalfHeight,
++                crtFringeOffset,
++                crtCoreAlpha,
++                crtTrailAlpha,
++                crtRedFringeAlpha,
++                crtBlueFringeAlpha,
++            )
++        }
++
++    private class RecordingRevealEffect : LightRevealEffect {
++        var lastRevealAmount: Float? = null
++
++        override fun setRevealAmountOnScrim(amount: Float, scrim: LightRevealScrim) {
++            lastRevealAmount = amount
++        }
++    }
++
++    private companion object {
++        const val PORTRAIT_WIDTH = 1080
++        const val PORTRAIT_HEIGHT = 2400
++        const val LANDSCAPE_WIDTH = 2400
++        const val LANDSCAPE_HEIGHT = 1080
++        const val TOLERANCE = 0.001f
++    }
++}
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinatorTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinatorTest.kt
+new file mode 100644
+index 000000000000..94594f1117ad
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinatorTest.kt
+@@ -0,0 +1,420 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.statusbar.phone
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.dump.DumpManager
++import com.android.systemui.log.LogBuffer
++import com.android.systemui.log.LogMessageImpl
++import com.android.systemui.log.core.LogMessage
++import com.android.systemui.statusbar.CrtCollapseReveal
++import com.android.systemui.statusbar.LightRevealEffect
++import com.android.systemui.statusbar.LightRevealScrim
++import com.android.systemui.statusbar.phone.CrtScreenOffAnimationCoordinator.Companion.TAG
++import com.google.common.truth.Truth.assertThat
++import com.google.common.truth.Truth.assertWithMessage
++import java.io.PrintWriter
++import java.io.StringWriter
++import kotlinx.coroutines.flow.MutableStateFlow
++import org.junit.Before
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.mockito.kotlin.any
++import org.mockito.kotlin.anyOrNull
++import org.mockito.kotlin.doAnswer
++import org.mockito.kotlin.doReturn
++import org.mockito.kotlin.doThrow
++import org.mockito.kotlin.mock
++import org.mockito.kotlin.never
++import org.mockito.kotlin.times
++import org.mockito.kotlin.verify
++import org.mockito.kotlin.whenever
++
++/**
++ * Coordinator lifecycle, dump, and log tests. The scrim is a mock: override ownership semantics on
++ * a real [LightRevealScrim] are covered by CrtCollapseRevealTest.
++ */
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class CrtScreenOffAnimationCoordinatorTest : SysuiTestCase() {
++    private val settings = MutableStateFlow(STOCK_SETTING)
++    private val settingsRepository = mock<ScreenOffAnimationSettingsRepository>()
++    private val dumpManager = mock<DumpManager>()
++    private val logBuffer = mock<LogBuffer>()
++    private val scrim = mock<LightRevealScrim>()
++    private val loggedMessages = mutableListOf<String>()
++
++    private lateinit var underTest: CrtScreenOffAnimationCoordinator
++
++    @Before
++    fun setUp() {
++        whenever(settingsRepository.setting).thenReturn(settings)
++        // LogBuffer.dump needs android.icu: record printed messages instead.
++        whenever(logBuffer.obtain(any(), any(), any(), anyOrNull())).thenAnswer {
++            LogMessageImpl.create().apply {
++                reset(
++                    it.getArgument(0),
++                    it.getArgument(1),
++                    0L,
++                    it.getArgument(2),
++                    it.getArgument(3),
++                )
++            }
++        }
++        doAnswer {
++                val message = it.getArgument<LogMessage>(0)
++                loggedMessages += message.messagePrinter(message)
++            }
++            .whenever(logBuffer)
++            .commit(any())
++        underTest = CrtScreenOffAnimationCoordinator(settingsRepository, dumpManager, logBuffer)
++    }
++
++    @Test
++    fun initialize_registersNormalDumpableOnce() {
++        underTest.initialize(scrim)
++        underTest.initialize(scrim)
++
++        verify(dumpManager, times(1)).registerNormalDumpable(TAG, underTest)
++    }
++
++    @Test
++    fun crtStart_installsOverride() {
++        settings.value = CRT_SETTING
++        underTest.initialize(scrim)
++
++        underTest.start(normalMode = true)
++
++        verify(scrim).screenOffRevealEffectOverride = CrtCollapseReveal
++        val dump = dump()
++        assertThat(dump).contains("selectedEffect=CRT\n")
++        assertThat(dump).contains("overrideActive=true\n")
++        assertThat(dump).contains("animationState=RUNNING\n")
++    }
++
++    @Test
++    fun stockStart_doesNotInstallOverride() {
++        underTest.initialize(scrim)
++
++        underTest.start(normalMode = true)
++
++        verify(scrim, never()).screenOffRevealEffectOverride = CrtCollapseReveal
++        assertThat(dump()).contains("selectedEffect=STOCK\n")
++        assertThat(dump()).contains("overrideActive=false\n")
++    }
++
++    @Test
++    fun minMode_forcesStock() {
++        settings.value = CRT_SETTING
++        underTest.initialize(scrim)
++
++        underTest.start(normalMode = false)
++
++        verify(scrim, never()).screenOffRevealEffectOverride = CrtCollapseReveal
++        val dump = dump()
++        assertThat(dump).contains("minMode=true\n")
++        assertThat(dump).contains("selectedEffect=STOCK\n")
++    }
++
++    @Test
++    fun setting_isSampledOncePerAcceptedTransition() {
++        settings.value = CRT_SETTING
++        underTest.initialize(scrim)
++
++        underTest.start(normalMode = true)
++        underTest.start(normalMode = true)
++        verify(settingsRepository, times(1)).setting
++
++        underTest.complete()
++        underTest.start(normalMode = true)
++        verify(settingsRepository, times(2)).setting
++    }
++
++    @Test
++    fun settingChange_duringAnimation_appliesOnlyToNextTransition() {
++        settings.value = CRT_SETTING
++        underTest.initialize(scrim)
++        underTest.start(normalMode = true)
++
++        settings.value = STOCK_SETTING
++        assertThat(dump()).contains("overrideActive=true\n")
++        verify(scrim, never()).screenOffRevealEffectOverride = null
++
++        underTest.complete()
++        underTest.start(normalMode = true)
++
++        verify(scrim, times(1)).screenOffRevealEffectOverride = CrtCollapseReveal
++        assertThat(dump()).contains("selectedEffect=STOCK\n")
++    }
++
++    @Test
++    fun complete_clearsOverride() {
++        startCrt()
++
++        underTest.complete()
++
++        verify(scrim).screenOffRevealEffectOverride = null
++        val dump = dump()
++        assertThat(dump).contains("overrideActive=false\n")
++        assertThat(dump).contains("animationState=IDLE\n")
++        assertThat(dump).contains("lastEndReason=COMPLETED\n")
++    }
++
++    @Test
++    fun cancel_clearsOverride() {
++        startCrt()
++
++        underTest.cancel(CrtCancellationReason.ANIMATOR_CANCELLED)
++
++        verify(scrim).screenOffRevealEffectOverride = null
++        val dump = dump()
++        assertThat(dump).contains("overrideActive=false\n")
++        assertThat(dump).contains("lastEndReason=ANIMATOR_CANCELLED\n")
++    }
++
++    @Test
++    fun repeatedCompleteAndCancel_areIdempotent() {
++        startCrt()
++
++        underTest.complete()
++        underTest.complete()
++        underTest.cancel(CrtCancellationReason.WAKE)
++        underTest.cancel(CrtCancellationReason.ANIMATOR_CANCELLED)
++
++        verify(scrim, times(1)).screenOffRevealEffectOverride = null
++        val dump = dump()
++        assertThat(dump).contains("completions=1\n")
++        assertThat(dump).contains("cancellations=0\n")
++        assertThat(dump).contains("lastEndReason=COMPLETED\n")
++    }
++
++    @Test
++    fun crtLifecycle_neverWritesBaseRevealEffect() {
++        startCrt()
++
++        underTest.complete()
++
++        // The coordinator only owns the temporary slot, so base effect updates are left alone.
++        verify(scrim, never()).revealEffect = any<LightRevealEffect>()
++    }
++
++    @Test
++    fun wakeCancellation_exposesLatestBaseEffect() {
++        startCrt()
++
++        underTest.cancel(CrtCancellationReason.WAKE)
++
++        verify(scrim).screenOffRevealEffectOverride = null
++        verify(scrim, never()).revealEffect = any<LightRevealEffect>()
++        assertThat(dump()).contains("lastEndReason=WAKE\n")
++    }
++
++    @Test
++    fun installFailure_clearsOverrideAndDoesNotEscape() {
++        settings.value = CRT_SETTING
++        doThrow(IllegalStateException("secret detail"))
++            .whenever(scrim)
++            .screenOffRevealEffectOverride = CrtCollapseReveal
++        underTest.initialize(scrim)
++
++        underTest.start(normalMode = true)
++
++        verify(scrim).screenOffRevealEffectOverride = null
++        val dump = dump()
++        assertThat(dump).contains("overrideActive=false\n")
++        assertThat(dump).contains("selectedEffect=STOCK\n")
++        val log = loggedMessages.joinToString("\n")
++        assertThat(log).contains("failed stage=install exception=IllegalStateException")
++        assertThat(log).doesNotContain("secret detail")
++
++        underTest.complete()
++        assertThat(dump()).contains("completions=1\n")
++    }
++
++    @Test
++    fun dump_containsEveryDocumentedField() {
++        val dump = dump()
++
++        for (field in DUMP_FIELDS) {
++            assertWithMessage(field).that(dump).containsMatch("(?m)^$field=")
++        }
++        assertThat(dump.lines().filter { it.isNotEmpty() }).hasSize(DUMP_FIELDS.size)
++    }
++
++    @Test
++    fun dump_reportsKnownFalseBlockedReason() {
++        underTest.onStockDecision(
++            ScreenOffAnimationDecision.blocked(ScreenOffAnimationBlockedReason.ANIMATIONS_DISABLED)
++        )
++
++        val dump = dump()
++        assertThat(dump).contains("stockEligible=false\n")
++        assertThat(dump).contains("blockedBy=ANIMATIONS_DISABLED\n")
++
++        underTest.onStockDecision(ScreenOffAnimationDecision.ELIGIBLE)
++        assertThat(dump()).contains("stockEligible=true\n")
++        assertThat(dump()).contains("blockedBy=none\n")
++    }
++
++    @Test
++    fun counters_trackStartCompletionAndCancellation() {
++        underTest.initialize(scrim)
++
++        underTest.start(normalMode = true)
++        underTest.complete()
++        underTest.start(normalMode = true)
++        underTest.cancel(CrtCancellationReason.WAKE)
++        underTest.start(normalMode = false)
++
++        val dump = dump()
++        assertThat(dump).contains("starts=3\n")
++        assertThat(dump).contains("completions=1\n")
++        assertThat(dump).contains("cancellations=1\n")
++        assertThat(dump).contains("animationState=RUNNING\n")
++    }
++
++    @Test
++    fun logBuffer_recordsOnlyTransitions() {
++        val blocked = ScreenOffAnimationDecision.blocked(ScreenOffAnimationBlockedReason.NOT_SHADE)
++        settings.value = CRT_SETTING
++        underTest.initialize(scrim)
++
++        repeat(5) { underTest.onStockDecision(blocked) }
++        repeat(5) { underTest.onStockDecision(ScreenOffAnimationDecision.ELIGIBLE) }
++        underTest.start(normalMode = true)
++        underTest.complete()
++        underTest.complete()
++
++        assertThat(loggedMessages)
++            .containsExactly(
++                "stock eligible=false blockedBy=NOT_SHADE",
++                "stock eligible=true blockedBy=none",
++                "transition started setting=1 normalMode=true selected=CRT",
++                "override installed",
++                "transition ended=COMPLETED",
++            )
++            .inOrder()
++    }
++
++    @Test
++    fun dumpAndLogs_excludeSensitiveOrIdentifyingData() {
++        settings.value = CRT_SETTING
++        underTest.initialize(scrim)
++        underTest.onStockDecision(
++            ScreenOffAnimationDecision.blocked(ScreenOffAnimationBlockedReason.SHADE_EXPANDED)
++        )
++        underTest.start(normalMode = true)
++        underTest.cancel(CrtCancellationReason.WAKE)
++
++        val output = dump() + loggedMessages.joinToString("\n")
++
++        for (term in FORBIDDEN_TERMS) {
++            assertWithMessage(term).that(output).doesNotContain(term)
++        }
++        for (line in dump().lines().filter { it.isNotEmpty() }) {
++            assertWithMessage(line).that(line).matches(DUMP_LINE_ALLOW_LIST)
++        }
++    }
++
++    @Test
++    fun initialize_withNewScrimWhileOverrideActive_clearsOldScrim() {
++        startCrt()
++        val newScrim = mock<LightRevealScrim>()
++
++        underTest.initialize(newScrim)
++
++        verify(scrim).screenOffRevealEffectOverride = null
++        assertThat(dump()).contains("overrideActive=false\n")
++        underTest.complete()
++        verify(newScrim, never()).screenOffRevealEffectOverride = null
++        verify(dumpManager, times(1)).registerNormalDumpable(TAG, underTest)
++    }
++
++    @Test
++    fun sampleFailure_fallsBackToStockWithoutEscaping() {
++        underTest.initialize(scrim)
++        doThrow(IllegalStateException("secret detail")).whenever(settingsRepository).setting
++
++        underTest.start(normalMode = true)
++
++        verify(scrim, never()).screenOffRevealEffectOverride = CrtCollapseReveal
++        val log = loggedMessages.joinToString("\n")
++        assertThat(log).contains("failed stage=sample exception=IllegalStateException")
++        assertThat(log).doesNotContain("secret detail")
++
++        doReturn(settings).whenever(settingsRepository).setting
++        val dump = dump()
++        assertThat(dump).contains("selectedEffect=STOCK\n")
++        assertThat(dump).contains("overrideActive=false\n")
++        assertThat(dump).contains("animationState=RUNNING\n")
++        assertThat(dump).contains("starts=1\n")
++    }
++
++    @Test
++    fun clearFailure_stillCountsCompletionAndEndsIdle() {
++        startCrt()
++        doThrow(IllegalStateException("secret detail"))
++            .whenever(scrim)
++            .screenOffRevealEffectOverride = null
++
++        underTest.complete()
++
++        val dump = dump()
++        assertThat(dump).contains("completions=1\n")
++        assertThat(dump).contains("animationState=IDLE\n")
++        assertThat(dump).contains("overrideActive=false\n")
++        assertThat(dump).contains("lastEndReason=COMPLETED\n")
++        assertThat(loggedMessages.joinToString("\n"))
++            .contains("failed stage=clear exception=IllegalStateException")
++    }
++
++    private fun startCrt() {
++        settings.value = CRT_SETTING
++        underTest.initialize(scrim)
++        underTest.start(normalMode = true)
++        verify(scrim).screenOffRevealEffectOverride = CrtCollapseReveal
++    }
++
++    private fun dump(): String =
++        StringWriter().also { underTest.dump(PrintWriter(it), emptyArray()) }.toString()
++
++    private companion object {
++        val STOCK_SETTING = ScreenOffAnimationSetting(0, ScreenOffAnimationSelection.STOCK)
++        val CRT_SETTING = ScreenOffAnimationSetting(1, ScreenOffAnimationSelection.CRT)
++        val DUMP_FIELDS =
++            listOf(
++                "settingValue",
++                "selectedEffect",
++                "stockEligible",
++                "blockedBy",
++                "minMode",
++                "overrideActive",
++                "animationState",
++                "lastEndReason",
++                "starts",
++                "completions",
++                "cancellations",
++            )
++        val FORBIDDEN_TERMS = listOf("package=", "uid=", "content=", "pixel=", "biometric=")
++        const val DUMP_LINE_ALLOW_LIST =
++            "^(settingValue|selectedEffect|stockEligible|blockedBy|minMode|overrideActive|" +
++                "animationState|lastEndReason|starts|completions|cancellations)" +
++                "=(true|false|-?\\d+|[A-Z_]+|none)$"
++    }
++}
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepositoryTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepositoryTest.kt
+new file mode 100644
+index 000000000000..adf6864f6a27
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepositoryTest.kt
+@@ -0,0 +1,154 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.statusbar.phone
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.shared.settings.data.repository.FakeSecureSettingsRepository
++import com.android.systemui.shared.settings.data.repository.SecureSettingsRepository
++import com.android.systemui.statusbar.phone.ScreenOffAnimationSettingsRepository.Companion.SETTING_KEY
++import com.google.common.truth.Truth.assertThat
++import kotlinx.coroutines.ExperimentalCoroutinesApi
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.emitAll
++import kotlinx.coroutines.flow.flow
++import kotlinx.coroutines.test.StandardTestDispatcher
++import kotlinx.coroutines.test.TestScope
++import kotlinx.coroutines.test.advanceTimeBy
++import kotlinx.coroutines.test.runCurrent
++import kotlinx.coroutines.test.runTest
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@OptIn(ExperimentalCoroutinesApi::class)
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class ScreenOffAnimationSettingsRepositoryTest : SysuiTestCase() {
++    private val secureSettingsRepository = FakeSecureSettingsRepository()
++
++    @Test
++    fun missingSetting_defaultsToStock() = runTest {
++        val underTest = createRepository()
++        runCurrent()
++
++        assertThat(underTest.setting.value)
++            .isEqualTo(ScreenOffAnimationSetting(0, ScreenOffAnimationSelection.STOCK))
++    }
++
++    @Test
++    fun zero_selectsStock() = runTest {
++        secureSettingsRepository.setInt(SETTING_KEY, 0)
++        val underTest = createRepository()
++        runCurrent()
++
++        assertThat(underTest.setting.value.selection).isEqualTo(ScreenOffAnimationSelection.STOCK)
++    }
++
++    @Test
++    fun one_selectsCrt() = runTest {
++        secureSettingsRepository.setInt(SETTING_KEY, 1)
++        val underTest = createRepository()
++        runCurrent()
++
++        assertThat(underTest.setting.value)
++            .isEqualTo(ScreenOffAnimationSetting(1, ScreenOffAnimationSelection.CRT))
++    }
++
++    @Test
++    fun unknownValue_selectsStock() = runTest {
++        secureSettingsRepository.setInt(SETTING_KEY, 7)
++        val underTest = createRepository()
++        runCurrent()
++
++        assertThat(underTest.setting.value)
++            .isEqualTo(ScreenOffAnimationSetting(7, ScreenOffAnimationSelection.STOCK))
++    }
++
++    @Test
++    fun readFailure_selectsStock() = runTest {
++        val failing = FailingSecureSettingsRepository(failures = Int.MAX_VALUE)
++        val underTest = createRepository(failing)
++        runCurrent()
++
++        assertThat(underTest.setting.value)
++            .isEqualTo(ScreenOffAnimationSetting(0, ScreenOffAnimationSelection.STOCK))
++
++        // A permanent failure retries a bounded number of times, then settles on Stock.
++        advanceTimeBy(3_000)
++        runCurrent()
++        assertThat(underTest.setting.value)
++            .isEqualTo(ScreenOffAnimationSetting(0, ScreenOffAnimationSelection.STOCK))
++        assertThat(failing.reads).isEqualTo(4)
++    }
++
++    @Test
++    fun transientReadFailure_recoversOnRetry() = runTest {
++        secureSettingsRepository.setInt(SETTING_KEY, 1)
++        val failing =
++            FailingSecureSettingsRepository(failures = 1, delegate = secureSettingsRepository)
++        val underTest = createRepository(failing)
++        runCurrent()
++        assertThat(underTest.setting.value.selection).isEqualTo(ScreenOffAnimationSelection.STOCK)
++
++        advanceTimeBy(1_000)
++        runCurrent()
++
++        assertThat(underTest.setting.value)
++            .isEqualTo(ScreenOffAnimationSetting(1, ScreenOffAnimationSelection.CRT))
++        assertThat(failing.reads).isEqualTo(2)
++    }
++
++    @Test
++    fun settingChange_updatesNextSample() = runTest {
++        val underTest = createRepository()
++        runCurrent()
++        assertThat(underTest.setting.value.selection).isEqualTo(ScreenOffAnimationSelection.STOCK)
++
++        secureSettingsRepository.setInt(SETTING_KEY, 1)
++        runCurrent()
++        assertThat(underTest.setting.value.selection).isEqualTo(ScreenOffAnimationSelection.CRT)
++
++        secureSettingsRepository.setInt(SETTING_KEY, 0)
++        runCurrent()
++        assertThat(underTest.setting.value.selection).isEqualTo(ScreenOffAnimationSelection.STOCK)
++    }
++
++    private fun TestScope.createRepository(
++        repository: SecureSettingsRepository = secureSettingsRepository
++    ) =
++        ScreenOffAnimationSettingsRepository(
++            repository,
++            backgroundScope,
++            StandardTestDispatcher(testScheduler),
++        )
++
++    /** A secure-settings source whose first [failures] reads fail, then delegate. */
++    private class FailingSecureSettingsRepository(
++        private val failures: Int,
++        private val delegate: SecureSettingsRepository = FakeSecureSettingsRepository(),
++    ) : SecureSettingsRepository by delegate {
++        var reads = 0
++            private set
++
++        override fun intSetting(name: String, defaultValue: Int): Flow<Int> = flow {
++            reads++
++            if (reads <= failures) throw IllegalStateException("unreadable")
++            emitAll(delegate.intSetting(name, defaultValue))
++        }
++    }
++}
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationControllerTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationControllerTest.kt
+index 4f451012f385..2cdbefcbbca6 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationControllerTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationControllerTest.kt
+@@ -16,14 +16,21 @@
+ 
+ package com.android.systemui.statusbar.phone
+ 
++import android.animation.ValueAnimator
+ import android.os.Handler
+ import android.os.PowerManager
++import android.platform.test.annotations.DisableFlags
+ import android.platform.test.annotations.RequiresFlagsEnabled
++import android.provider.Settings
+ import android.testing.TestableLooper.RunWithLooper
+ import android.view.Display
++import android.view.View
++import android.view.ViewGroup
+ import androidx.test.ext.junit.runners.AndroidJUnit4
+ import androidx.test.filters.SmallTest
+ import com.android.internal.jank.InteractionJankMonitor
++import com.android.internal.jank.InteractionJankMonitor.CUJ_SCREEN_OFF
++import com.android.internal.jank.InteractionJankMonitor.CUJ_SCREEN_OFF_SHOW_AOD
+ import com.android.server.display.feature.flags.Flags as displayManagerFlags
+ import com.android.server.power.feature.flags.Flags as powerManagerFlags
+ import com.android.systemui.DejankUtils
+@@ -34,6 +41,9 @@ import com.android.systemui.keyguard.WakefulnessLifecycle
+ import com.android.systemui.shade.ShadeViewController
+ import com.android.systemui.shade.domain.interactor.PanelExpansionInteractor
+ import com.android.systemui.shade.domain.interactor.ShadeLockscreenInteractor
++import com.android.systemui.shared.Flags as SharedFlags
++import com.android.systemui.statusbar.CircleReveal
++import com.android.systemui.statusbar.CrtCollapseReveal
+ import com.android.systemui.statusbar.LiftReveal
+ import com.android.systemui.statusbar.LightRevealEffect
+ import com.android.systemui.statusbar.LightRevealScrim
+@@ -42,6 +52,7 @@ import com.android.systemui.statusbar.StatusBarStateControllerImpl
+ import com.android.systemui.testKosmos
+ import com.android.systemui.util.mockito.eq
+ import com.android.systemui.util.settings.GlobalSettings
++import com.google.common.truth.Truth.assertThat
+ import junit.framework.Assert.assertFalse
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import org.junit.After
+@@ -50,7 +61,12 @@ import org.junit.Test
+ import org.junit.runner.RunWith
+ import org.mockito.ArgumentCaptor
+ import org.mockito.Mock
++import org.mockito.Mockito.any
++import org.mockito.Mockito.anyBoolean
++import org.mockito.Mockito.anyFloat
+ import org.mockito.Mockito.anyLong
++import org.mockito.Mockito.inOrder
++import org.mockito.Mockito.mock
+ import org.mockito.Mockito.never
+ import org.mockito.Mockito.times
+ import org.mockito.Mockito.verify
+@@ -79,6 +95,7 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
+     @Mock private lateinit var powerManager: PowerManager
+     @Mock private lateinit var displayStateInteractor: DisplayStateInteractor
+     @Mock private lateinit var handler: Handler
++    @Mock private lateinit var crtCoordinator: CrtScreenOffAnimationCoordinator
+ 
+     val kosmos = testKosmos()
+ 
+@@ -101,6 +118,7 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
+                 { panelExpansionInteractor },
+                 { displayStateInteractor },
+                 handler,
++                crtCoordinator,
+             )
+         controller.initialize(centralSurfaces, shadeViewController, lightRevealScrim)
+     }
+@@ -110,6 +128,7 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
+         // Tell the screen off controller to cancel the animations and clean up its state, or
+         // subsequent tests will act unpredictably as the animator continues running.
+         controller.onStartedWakingUp()
++        DejankUtils.setImmediate(false)
+     }
+ 
+     /**
+@@ -246,4 +265,162 @@ class UnlockedScreenOffAnimationControllerTest : SysuiTestCase() {
+         // Clean up
+         DejankUtils.setImmediate(false)
+     }
++
++    @Test
++    fun acceptedNormalStart_invokesCoordinatorOnceBeforeAnimatorCallback() {
++        givenAcceptedState()
++        DejankUtils.setImmediate(true)
++
++        controller.startAnimation()
++
++        val order = inOrder(crtCoordinator, lightRevealScrim)
++        order.verify(crtCoordinator).start(true)
++        order.verify(lightRevealScrim).revealEffect = revealEffect
++        verify(crtCoordinator, times(1)).start(anyBoolean())
++    }
++
++    @Test
++    fun acceptedMinMode_startsCoordinatorWithNormalModeFalse() {
++        givenAcceptedState(minMode = true)
++
++        controller.startAnimation()
++
++        verify(crtCoordinator).start(false)
++        assertThat(lightRevealAnimator().duration).isEqualTo(100L)
++    }
++
++    @Test
++    fun rejectedStart_reportsTypedDecisionAndNeverStartsCoordinator() {
++        `when`(dozeParameters.canControlUnlockedScreenOff()).thenReturn(false)
++
++        controller.startAnimation()
++
++        verify(crtCoordinator)
++            .onStockDecision(
++                ScreenOffAnimationDecision.blocked(
++                    ScreenOffAnimationBlockedReason.CANNOT_CONTROL_UNLOCKED_SCREEN_OFF
++                )
++            )
++        verify(crtCoordinator, never()).start(anyBoolean())
++    }
++
++    @DisableFlags(SharedFlags.FLAG_AMBIENT_AOD)
++    @Test
++    fun wake_cancelsCoordinatorBeforeRestoringFullReveal() {
++        givenAcceptedState()
++        DejankUtils.setImmediate(true)
++        controller.startAnimation()
++
++        controller.onStartedWakingUp()
++
++        val order = inOrder(crtCoordinator, lightRevealScrim)
++        order.verify(crtCoordinator).cancel(CrtCancellationReason.WAKE)
++        order.verify(lightRevealScrim).revealAmount = 1f
++    }
++
++    @Test
++    fun naturalEnd_completesCoordinator() {
++        givenAcceptedState()
++        DejankUtils.setImmediate(true)
++        controller.startAnimation()
++
++        lightRevealAnimator().end()
++
++        verify(crtCoordinator).complete()
++        verify(crtCoordinator, never()).cancel(CrtCancellationReason.ANIMATOR_CANCELLED)
++    }
++
++    @Test
++    fun animatorCancel_cancelsBeforeTrailingComplete() {
++        givenAcceptedState()
++        DejankUtils.setImmediate(true)
++        controller.startAnimation()
++
++        lightRevealAnimator().cancel()
++
++        // The cancellation ends the transition first, so the trailing onAnimationEnd completion
++        // is a coordinator no-op (see CrtScreenOffAnimationCoordinatorTest idempotence).
++        val order = inOrder(crtCoordinator)
++        order.verify(crtCoordinator).cancel(CrtCancellationReason.ANIMATOR_CANCELLED)
++        order.verify(crtCoordinator).complete()
++    }
++
++    @Test
++    fun normalRevealDuration_remains500Ms() {
++        givenAcceptedState()
++
++        controller.startAnimation()
++
++        assertThat(lightRevealAnimator().duration).isEqualTo(500L)
++    }
++
++    @Test
++    fun aodSchedulingDelay_remains600Ms() {
++        givenAcceptedState()
++
++        controller.startAnimation()
++
++        verify(handler).postDelayed(any(Runnable::class.java), eq(600L))
++    }
++
++    @Test
++    fun existingScreenOffCuj_stillBeginsAndEnds() {
++        val rootView = mock(ViewGroup::class.java)
++        `when`(notifShadeWindowController.windowRootView).thenReturn(rootView)
++        givenAcceptedState()
++        DejankUtils.setImmediate(true)
++
++        controller.startAnimation()
++        verify(interactionJankMonitor).begin(rootView, CUJ_SCREEN_OFF)
++
++        lightRevealAnimator().end()
++        verify(interactionJankMonitor).end(CUJ_SCREEN_OFF)
++    }
++
++    @Test
++    fun existingShowAodCuj_stillBeginsAndEnds() {
++        `when`(notifShadeWindowController.windowRootView).thenReturn(mock(ViewGroup::class.java))
++        // Alpha already at its end value makes PropertyAnimator run the end action immediately.
++        val keyguardView = mock(View::class.java)
++        `when`(keyguardView.alpha).thenReturn(1f)
++        var afterRan = false
++
++        controller.animateInKeyguard(keyguardView) { afterRan = true }
++
++        verify(interactionJankMonitor).cancel(CUJ_SCREEN_OFF_SHOW_AOD)
++        verify(interactionJankMonitor)
++            .begin(any(InteractionJankMonitor.Configuration.Builder::class.java))
++        verify(interactionJankMonitor).end(CUJ_SCREEN_OFF_SHOW_AOD)
++        assertThat(afterRan).isTrue()
++    }
++
++    @DisableFlags(SharedFlags.FLAG_AMBIENT_AOD)
++    @Test
++    fun circleBaseEffect_doesNotSuppressCrtOverrideUpdates() {
++        `when`(lightRevealScrim.revealEffect).thenReturn(CircleReveal(0, 0, 0, 1))
++        `when`(lightRevealScrim.activeRevealEffect).thenReturn(CrtCollapseReveal)
++        givenAcceptedState()
++        DejankUtils.setImmediate(true)
++        controller.startAnimation()
++
++        lightRevealAnimator().setCurrentFraction(0.5f)
++
++        verify(lightRevealScrim).revealAmount = 0.5f
++    }
++
++    /** Stubs every stock gate open, with a real 1x animator duration scale. */
++    private fun givenAcceptedState(minMode: Boolean = false) {
++        `when`(dozeParameters.canControlUnlockedScreenOff()).thenReturn(true)
++        `when`(dozeParameters.isMinModeActive()).thenReturn(minMode)
++        `when`(globalSettings.getFloat(eq(Settings.Global.ANIMATOR_DURATION_SCALE), anyFloat()))
++            .thenReturn(1f)
++        `when`(displayStateInteractor.isDefaultDisplayOff).thenReturn(MutableStateFlow(false))
++        controller.updateAnimatorDurationScale()
++    }
++
++    private fun lightRevealAnimator(): ValueAnimator {
++        val field = controller.javaClass.getDeclaredField("lightRevealAnimator")
++        field.isAccessible = true
++        return field.get(controller) as ValueAnimator
++    }
+ }
+diff --git a/packages/SystemUI/src/com/android/systemui/log/dagger/CrtScreenOffAnimationLog.kt b/packages/SystemUI/src/com/android/systemui/log/dagger/CrtScreenOffAnimationLog.kt
+new file mode 100644
+index 000000000000..53661097e72a
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/log/dagger/CrtScreenOffAnimationLog.kt
+@@ -0,0 +1,25 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.log.dagger
++
++import javax.inject.Qualifier
++
++/** A [com.android.systemui.log.LogBuffer] for CRT screen-off selection and lifecycle. */
++@Qualifier
++@MustBeDocumented
++@Retention(AnnotationRetention.RUNTIME)
++annotation class CrtScreenOffAnimationLog
+diff --git a/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java b/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java
+index 527ccbac4394..6db37bff9921 100644
+--- a/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java
++++ b/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java
+@@ -678,6 +678,14 @@ public abstract class LogModule {
+         return factory.create("PulseLog", 100);
+     }
+ 
++    /** Provides a {@link LogBuffer} for CRT screen-off selection and lifecycle transitions. */
++    @Provides
++    @SysUISingleton
++    @CrtScreenOffAnimationLog
++    public static LogBuffer provideCrtScreenOffAnimationLogBuffer(LogBufferFactory factory) {
++        return factory.create("CrtScreenOffAnimationLog", 100);
++    }
++
+     /**
+      * Registers the clear log buffers ADB command.
+      */
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/CrtCollapseReveal.kt b/packages/SystemUI/src/com/android/systemui/statusbar/CrtCollapseReveal.kt
+new file mode 100644
+index 000000000000..9339768d1828
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/CrtCollapseReveal.kt
+@@ -0,0 +1,72 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.statusbar
++
++/**
++ * CRT-style screen-off effect: black masks close vertically toward the center, then the remaining
++ * thin aperture becomes a white beam with a phosphor trail and red/blue fringe that contracts
++ * horizontally to the center.
++ *
++ * Stateless: every value is derived from the reveal amount and the scrim's current dimensions. It
++ * draws only masks and beam rects over live content and never reads display pixels.
++ */
++object CrtCollapseReveal : LightRevealEffect {
++    /** Share of the transition spent closing the aperture vertically. */
++    private const val VERTICAL_PHASE_END = 0.5f
++
++    /** Horizontal aperture overscan per side, so rounded corners and cutouts never show. */
++    private const val HORIZONTAL_OVERSCAN_FRACTION = 0.03f
++
++    private const val MAX_FRINGE_ALPHA = 0.22f
++    private const val MAX_TRAIL_ALPHA = 0.30f
++
++    override fun setRevealAmountOnScrim(amount: Float, scrim: LightRevealScrim) {
++        val clampedAmount = amount.coerceIn(0f, 1f)
++        val progress = 1f - clampedAmount
++        val verticalProgress = (progress / VERTICAL_PHASE_END).coerceIn(0f, 1f)
++        val beamProgress =
++            ((progress - VERTICAL_PHASE_END) / (1f - VERTICAL_PHASE_END)).coerceIn(0f, 1f)
++        val easedVertical = verticalProgress * verticalProgress
++        val easedBeam = beamProgress * beamProgress
++
++        val centerX = scrim.width / 2f
++        val centerY = scrim.height / 2f
++        val overscan = scrim.width * HORIZONTAL_OVERSCAN_FRACTION
++        val beamHalfHeight = maxOf(1f, scrim.crtDensity)
++        // Never closes below the beam, so the closure stays monotonic into the beam phase.
++        val halfApertureHeight = maxOf(beamHalfHeight, centerY * (1f - easedVertical))
++        val halfApertureWidth = (centerX + overscan) * (1f - easedBeam)
++        val emissionEnvelope =
++            if (beamProgress == 0f || beamProgress == 1f) 0f
++            else 4f * beamProgress * (1f - beamProgress)
++
++        scrim.interpolatedRevealAmount = clampedAmount
++        scrim.setCrtRevealState(
++            left = centerX - halfApertureWidth,
++            top = centerY - halfApertureHeight,
++            right = centerX + halfApertureWidth,
++            bottom = centerY + halfApertureHeight,
++            beamHalfHeight = beamHalfHeight,
++            glowHalfHeight = maxOf(4f, 5f * scrim.crtDensity),
++            fringeOffset = maxOf(1f, 2f * scrim.crtDensity),
++            coreAlpha = emissionEnvelope,
++            trailAlpha = emissionEnvelope * MAX_TRAIL_ALPHA,
++            redFringeAlpha = emissionEnvelope * MAX_FRINGE_ALPHA,
++            blueFringeAlpha = emissionEnvelope * MAX_FRINGE_ALPHA,
++        )
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/LightRevealScrim.kt b/packages/SystemUI/src/com/android/systemui/statusbar/LightRevealScrim.kt
+index a56624ca6fbf..f4c42a49d941 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/LightRevealScrim.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/LightRevealScrim.kt
+@@ -319,7 +319,7 @@ constructor(
+                 if (value <= 0.0f || value >= 1.0f) {
+                     scrimLogger?.d(TAG, "revealAmount", "$value on $logString")
+                 }
+-                revealEffect.setRevealAmountOnScrim(value, this)
++                activeRevealEffect.setRevealAmountOnScrim(value, this)
+                 updateScrimOpaque()
+                 TrackTracer.instantForGroup(
+                     "scrim",
+@@ -330,21 +330,87 @@ constructor(
+             }
+         }
+ 
++    private var baseRevealEffect: LightRevealEffect = LiftReveal
++
+     /**
+-     * The [LightRevealEffect] used to manipulate the radial gradient whenever [revealAmount]
+-     * changes.
++     * The base [LightRevealEffect] used to manipulate the scrim whenever [revealAmount] changes.
++     *
++     * While [screenOffRevealEffectOverride] is set, updates are retained here without being drawn
++     * so that clearing the override exposes the latest base effect.
+      */
+-    var revealEffect: LightRevealEffect = LiftReveal
++    var revealEffect: LightRevealEffect
++        get() = baseRevealEffect
+         set(value) {
+-            if (field != value) {
+-                field = value
+-
+-                revealEffect.setRevealAmountOnScrim(revealAmount, this)
++            if (baseRevealEffect != value) {
++                baseRevealEffect = value
++                if (screenOffRevealEffectOverride == null) {
++                    applyActiveRevealEffect()
++                }
+                 scrimLogger?.d(TAG, "revealEffect", "$value on $logString")
+-                invalidate()
+             }
+         }
+ 
++    /** [interpolatedRevealAmount] owned by the base effect while an override is installed. */
++    private var baseInterpolatedRevealAmount = 1f
++
++    /**
++     * Temporary effect owned by the unlocked screen-off animation. While set, it is drawn instead
++     * of [revealEffect]; clearing it reapplies the latest base effect at the current amount.
++     */
++    var screenOffRevealEffectOverride: LightRevealEffect? = null
++        set(value) {
++            if (field == value) return
++            if (field == null) {
++                baseInterpolatedRevealAmount = interpolatedRevealAmount
++            } else if (value == null) {
++                interpolatedRevealAmount = baseInterpolatedRevealAmount
++            }
++            field = value
++            applyActiveRevealEffect()
++            scrimLogger?.d(TAG, "screenOffRevealEffectOverride", "$value on $logString")
++        }
++
++    /** The effect currently driving the scrim: the screen-off override, else the base effect. */
++    val activeRevealEffect: LightRevealEffect
++        get() = screenOffRevealEffectOverride ?: baseRevealEffect
++
++    /** Display density, cached once so [CrtCollapseReveal] reads a primitive per frame. */
++    internal val crtDensity: Float = context?.resources?.displayMetrics?.density ?: 1f
++
++    /** CRT aperture and beam state written by [CrtCollapseReveal]; zero for every other effect. */
++    var crtApertureLeft = 0f
++        private set
++
++    var crtApertureTop = 0f
++        private set
++
++    var crtApertureRight = 0f
++        private set
++
++    var crtApertureBottom = 0f
++        private set
++
++    var crtBeamHalfHeight = 0f
++        private set
++
++    var crtGlowHalfHeight = 0f
++        private set
++
++    var crtFringeOffset = 0f
++        private set
++
++    var crtCoreAlpha = 0f
++        private set
++
++    var crtTrailAlpha = 0f
++        private set
++
++    var crtRedFringeAlpha = 0f
++        private set
++
++    var crtBlueFringeAlpha = 0f
++        private set
++
+     var revealGradientCenter = PointF()
+     var revealGradientWidth: Float = 0f
+     var revealGradientHeight: Float = 0f
+@@ -383,6 +449,8 @@ constructor(
+             if (field != value) {
+                 field = value
+                 setPaintColorFilter()
++                // CRT masks use the same end color, so the last CRT frame matches revealAmount 0.
++                crtMaskPaint.color = value
+             }
+         }
+ 
+@@ -456,6 +524,13 @@ constructor(
+      */
+     private val shaderGradientMatrix = Matrix()
+ 
++    /** Paints for the CRT screen-off effect, preallocated so [onDraw] never allocates. */
++    private val crtMaskPaint = Paint().apply { color = revealGradientEndColor }
++    private val crtCorePaint = Paint().apply { color = Color.WHITE }
++    private val crtTrailPaint = Paint().apply { color = Color.WHITE }
++    private val crtRedFringePaint = Paint().apply { color = Color.RED }
++    private val crtBlueFringePaint = Paint().apply { color = Color.BLUE }
++
+     init {
+         revealEffect.setRevealAmountOnScrim(revealAmount, this)
+         setPaintColorFilter()
+@@ -484,8 +559,64 @@ constructor(
+         revealGradientCenter.y = top + (revealGradientHeight / 2f)
+     }
+ 
++    /**
++     * Sets the CRT aperture and beam state. Only [CrtCollapseReveal] calls this. Like
++     * [setRevealGradientBounds], this does not call [invalidate].
++     *
++     * The 11 primitive parameters are a deliberate exception to the 7-parameter limit: this runs on
++     * every animation frame, and passing primitives instead of a state object (or a reused mutable
++     * holder) keeps the frame path allocation-free and the scrim the single owner of CRT state.
++     */
++    internal fun setCrtRevealState(
++        left: Float,
++        top: Float,
++        right: Float,
++        bottom: Float,
++        beamHalfHeight: Float,
++        glowHalfHeight: Float,
++        fringeOffset: Float,
++        coreAlpha: Float,
++        trailAlpha: Float,
++        redFringeAlpha: Float,
++        blueFringeAlpha: Float,
++    ) {
++        crtApertureLeft = left
++        crtApertureTop = top
++        crtApertureRight = right
++        crtApertureBottom = bottom
++        crtBeamHalfHeight = beamHalfHeight
++        crtGlowHalfHeight = glowHalfHeight
++        crtFringeOffset = fringeOffset
++        crtCoreAlpha = coreAlpha
++        crtTrailAlpha = trailAlpha
++        crtRedFringeAlpha = redFringeAlpha
++        crtBlueFringeAlpha = blueFringeAlpha
++    }
++
++    private fun resetCrtRevealState() {
++        setCrtRevealState(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
++    }
++
++    /** Resets effect-specific CRT state, then applies [activeRevealEffect] at [revealAmount]. */
++    private fun applyActiveRevealEffect() {
++        resetCrtRevealState()
++        activeRevealEffect.setRevealAmountOnScrim(revealAmount, this)
++        invalidate()
++    }
++
+     override fun onDraw(canvas: Canvas) {
+-        if (revealGradientWidth <= 0 || revealGradientHeight <= 0 || revealAmount == 0f) {
++        if (revealAmount == 0f) {
++            // Exact opaque end color, regardless of the active effect.
++            canvas.drawColor(revealGradientEndColor)
++            return
++        }
++
++        if (activeRevealEffect === CrtCollapseReveal) {
++            drawCrtReveal(canvas)
++            return
++        }
++
++        if (revealGradientWidth <= 0 || revealGradientHeight <= 0) {
+             if (revealAmount < 1f) {
+                 canvas.drawColor(revealGradientEndColor)
+             }
+@@ -507,6 +638,68 @@ constructor(
+         canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), gradientPaint)
+     }
+ 
++    /**
++     * Draws [revealGradientEndColor] masks outside the CRT aperture, then the beam. Uses primitive
++     * rects and preallocated paints only: no allocation or logging per frame.
++     */
++    private fun drawCrtReveal(canvas: Canvas) {
++        if (revealAmount >= 1f) return
++
++        val right = width.toFloat()
++        val bottom = height.toFloat()
++        canvas.drawRect(0f, 0f, right, crtApertureTop, crtMaskPaint)
++        canvas.drawRect(0f, crtApertureBottom, right, bottom, crtMaskPaint)
++        if (crtApertureLeft > 0f) {
++            canvas.drawRect(0f, crtApertureTop, crtApertureLeft, crtApertureBottom, crtMaskPaint)
++        }
++        if (crtApertureRight < right) {
++            canvas.drawRect(
++                crtApertureRight,
++                crtApertureTop,
++                right,
++                crtApertureBottom,
++                crtMaskPaint,
++            )
++        }
++        if (crtCoreAlpha > 0f) {
++            drawCrtBeam(canvas)
++        }
++    }
++
++    /** Phosphor trail, red fringe above, blue fringe below, then the white core on top. */
++    private fun drawCrtBeam(canvas: Canvas) {
++        val centerY = (crtApertureTop + crtApertureBottom) / 2f
++        val coreTop = centerY - crtBeamHalfHeight
++        val coreBottom = centerY + crtBeamHalfHeight
++        crtTrailPaint.color = getColorWithAlpha(Color.WHITE, crtTrailAlpha)
++        crtRedFringePaint.color = getColorWithAlpha(Color.RED, crtRedFringeAlpha)
++        crtBlueFringePaint.color = getColorWithAlpha(Color.BLUE, crtBlueFringeAlpha)
++        crtCorePaint.color = getColorWithAlpha(Color.WHITE, crtCoreAlpha)
++
++        canvas.drawRect(
++            crtApertureLeft,
++            centerY - crtGlowHalfHeight,
++            crtApertureRight,
++            centerY + crtGlowHalfHeight,
++            crtTrailPaint,
++        )
++        canvas.drawRect(
++            crtApertureLeft,
++            coreTop - crtFringeOffset,
++            crtApertureRight,
++            coreTop,
++            crtRedFringePaint,
++        )
++        canvas.drawRect(
++            crtApertureLeft,
++            coreBottom,
++            crtApertureRight,
++            coreBottom + crtFringeOffset,
++            crtBlueFringePaint,
++        )
++        canvas.drawRect(crtApertureLeft, coreTop, crtApertureRight, coreBottom, crtCorePaint)
++    }
++
+     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+         return TouchLogger.logDispatchTouch(TAG, event, super.dispatchTouchEvent(event))
+     }
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinator.kt b/packages/SystemUI/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinator.kt
+new file mode 100644
+index 000000000000..cf4626b90928
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/phone/CrtScreenOffAnimationCoordinator.kt
+@@ -0,0 +1,286 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.statusbar.phone
++
++import android.util.Log
++import com.android.systemui.Dumpable
++import com.android.systemui.dagger.SysUISingleton
++import com.android.systemui.dump.DumpManager
++import com.android.systemui.log.LogBuffer
++import com.android.systemui.log.core.LogLevel
++import com.android.systemui.log.dagger.CrtScreenOffAnimationLog
++import com.android.systemui.statusbar.CrtCollapseReveal
++import com.android.systemui.statusbar.LightRevealScrim
++import java.io.PrintWriter
++import javax.inject.Inject
++
++/** First stock gate that rejected the unlocked screen-off animation, in evaluation order. */
++enum class ScreenOffAnimationBlockedReason {
++    NOT_INITIALIZED,
++    CANNOT_CONTROL_UNLOCKED_SCREEN_OFF,
++    PREVIOUSLY_REJECTED,
++    ANIMATIONS_DISABLED,
++    SHADE_EXPANDED,
++    NOT_SHADE,
++    CENTRAL_SURFACES_UNAVAILABLE,
++    DEFAULT_DISPLAY_OFF,
++}
++
++/**
++ * Stock unlocked screen-off eligibility, with the first failing gate when ineligible. [blockedBy]
++ * is set exactly when [eligible] is false.
++ */
++data class ScreenOffAnimationDecision(
++    val eligible: Boolean,
++    val blockedBy: ScreenOffAnimationBlockedReason? = null,
++) {
++    init {
++        require(eligible == (blockedBy == null)) { "blockedBy must be set exactly when ineligible" }
++    }
++
++    companion object {
++        val ELIGIBLE = ScreenOffAnimationDecision(eligible = true)
++
++        private val BLOCKED =
++            ScreenOffAnimationBlockedReason.entries.map {
++                ScreenOffAnimationDecision(eligible = false, blockedBy = it)
++            }
++
++        /** Returns a shared instance, so per-frame eligibility checks never allocate. */
++        fun blocked(reason: ScreenOffAnimationBlockedReason): ScreenOffAnimationDecision =
++            BLOCKED[reason.ordinal]
++    }
++}
++
++/** Why an accepted screen-off transition stopped before completing. */
++enum class CrtCancellationReason {
++    WAKE,
++    ANIMATOR_CANCELLED,
++}
++
++/**
++ * Owns the CRT screen-off selection and the temporary [LightRevealScrim] override. The stock
++ * [UnlockedScreenOffAnimationController] keeps eligibility, timing, AOD, and wake handling, and
++ * calls [start], [complete], and [cancel] at its accepted lifecycle boundaries.
++ *
++ * The setting is sampled once per accepted transition. Every completion, cancellation, and failure
++ * clears the override; repeated calls are no-ops. Unexpected [RuntimeException]s fall back to Stock
++ * and never escape onto the animation or wake path. Dump and logs hold only booleans, enums, stage
++ * names, exception class names, and counters. All calls except [dump] happen on the main thread.
++ */
++@SysUISingleton
++class CrtScreenOffAnimationCoordinator
++@Inject
++constructor(
++    private val settingsRepository: ScreenOffAnimationSettingsRepository,
++    private val dumpManager: DumpManager,
++    @param:CrtScreenOffAnimationLog private val logBuffer: LogBuffer,
++) : Dumpable {
++    private enum class SelectedEffect {
++        STOCK,
++        CRT,
++    }
++
++    private enum class AnimationState {
++        IDLE,
++        RUNNING,
++    }
++
++    private enum class EndReason {
++        NONE,
++        COMPLETED,
++        WAKE,
++        ANIMATOR_CANCELLED,
++    }
++
++    private var scrim: LightRevealScrim? = null
++    private var dumpableRegistered = false
++    private var lastDecision =
++        ScreenOffAnimationDecision.blocked(ScreenOffAnimationBlockedReason.NOT_INITIALIZED)
++    private var selectedEffect = SelectedEffect.STOCK
++    private var minMode = false
++    private var overrideActive = false
++    private var animationState = AnimationState.IDLE
++    private var lastEndReason = EndReason.NONE
++    private var starts = 0
++    private var completions = 0
++    private var cancellations = 0
++
++    /** Stores the runtime scrim and registers the dumpable once. */
++    fun initialize(scrim: LightRevealScrim) {
++        if (this.scrim !== scrim && overrideActive) {
++            runGuarded(STAGE_CLEAR) { clearOverride() }
++        }
++        this.scrim = scrim
++        if (dumpableRegistered) return
++        try {
++            dumpManager.registerNormalDumpable(TAG, this)
++            dumpableRegistered = true
++        } catch (_: IllegalArgumentException) {
++            Log.w(TAG, "Dumpable already registered")
++        }
++    }
++
++    /** Records the latest stock eligibility decision; logs only when it changes. */
++    fun onStockDecision(decision: ScreenOffAnimationDecision) {
++        if (decision == lastDecision) return
++        lastDecision = decision
++        logBuffer.log(
++            TAG,
++            LogLevel.DEBUG,
++            {
++                bool1 = decision.eligible
++                str1 = decision.blockedBy?.name ?: NONE
++            },
++            { "stock eligible=$bool1 blockedBy=$str1" },
++        )
++    }
++
++    /**
++     * Starts an accepted screen-off transition: samples the setting once and installs the CRT
++     * override synchronously when selected. [normalMode] is false in min mode, which forces Stock.
++     */
++    fun start(normalMode: Boolean) {
++        if (animationState == AnimationState.RUNNING) return
++        animationState = AnimationState.RUNNING
++        starts++
++        minMode = !normalMode
++        selectedEffect = SelectedEffect.STOCK
++        val effect = runGuarded(STAGE_SAMPLE) { sampleSelection(normalMode) } ?: return
++        if (effect == SelectedEffect.CRT) {
++            runGuarded(STAGE_INSTALL) { installOverride() }
++        }
++    }
++
++    /** Completes the running transition at black and clears the override. */
++    fun complete() = endTransition(EndReason.COMPLETED)
++
++    /** Cancels the running transition and clears the override immediately. */
++    fun cancel(reason: CrtCancellationReason) =
++        endTransition(
++            when (reason) {
++                CrtCancellationReason.WAKE -> EndReason.WAKE
++                CrtCancellationReason.ANIMATOR_CANCELLED -> EndReason.ANIMATOR_CANCELLED
++            }
++        )
++
++    override fun dump(pw: PrintWriter, args: Array<out String>) {
++        pw.println("settingValue=${settingsRepository.setting.value.rawValue}")
++        pw.println("selectedEffect=$selectedEffect")
++        pw.println("stockEligible=${lastDecision.eligible}")
++        pw.println("blockedBy=${lastDecision.blockedBy?.name ?: NONE}")
++        pw.println("minMode=$minMode")
++        pw.println("overrideActive=$overrideActive")
++        pw.println("animationState=$animationState")
++        pw.println("lastEndReason=$lastEndReason")
++        pw.println("starts=$starts")
++        pw.println("completions=$completions")
++        pw.println("cancellations=$cancellations")
++    }
++
++    private fun sampleSelection(normalMode: Boolean): SelectedEffect {
++        val sampled = settingsRepository.setting.value
++        val effect =
++            if (normalMode && sampled.selection == ScreenOffAnimationSelection.CRT) {
++                SelectedEffect.CRT
++            } else {
++                SelectedEffect.STOCK
++            }
++        selectedEffect = effect
++        logBuffer.log(
++            TAG,
++            LogLevel.DEBUG,
++            {
++                int1 = sampled.rawValue
++                bool1 = normalMode
++                str1 = effect.name
++            },
++            { "transition started setting=$int1 normalMode=$bool1 selected=$str1" },
++        )
++        return effect
++    }
++
++    private fun installOverride() {
++        val target = scrim
++        if (target == null) {
++            selectedEffect = SelectedEffect.STOCK
++            logBuffer.log(TAG, LogLevel.DEBUG, {}, { "override skipped, not initialized" })
++            return
++        }
++        overrideActive = true
++        target.screenOffRevealEffectOverride = CrtCollapseReveal
++        logBuffer.log(TAG, LogLevel.DEBUG, {}, { "override installed" })
++    }
++
++    private fun endTransition(reason: EndReason) {
++        if (animationState != AnimationState.RUNNING) return
++        animationState = AnimationState.IDLE
++        lastEndReason = reason
++        if (reason == EndReason.COMPLETED) completions++ else cancellations++
++        if (overrideActive) {
++            runGuarded(STAGE_CLEAR) { clearOverride() }
++        }
++        logBuffer.log(TAG, LogLevel.DEBUG, { str1 = reason.name }, { "transition ended=$str1" })
++    }
++
++    private fun clearOverride() {
++        overrideActive = false
++        scrim?.screenOffRevealEffectOverride = null
++    }
++
++    /** Runs [block]; on failure clears the override, falls back to Stock, and reports. */
++    private inline fun <T> runGuarded(stage: String, block: () -> T): T? =
++        try {
++            block()
++        } catch (e: RuntimeException) {
++            onFailure(stage, e)
++            null
++        }
++
++    private fun onFailure(stage: String, throwable: RuntimeException) {
++        selectedEffect = SelectedEffect.STOCK
++        clearOverrideAfterFailure()
++        val exception = throwable.javaClass.simpleName
++        logBuffer.log(
++            TAG,
++            LogLevel.WARNING,
++            {
++                str1 = stage
++                str2 = exception
++            },
++            { "failed stage=$str1 exception=$str2" },
++        )
++        Log.w(TAG, "CRT failure stage=$stage exception=$exception")
++    }
++
++    private fun clearOverrideAfterFailure() {
++        overrideActive = false
++        try {
++            scrim?.screenOffRevealEffectOverride = null
++        } catch (e: RuntimeException) {
++            Log.w(TAG, "CRT cleanup failed exception=${e.javaClass.simpleName}")
++        }
++    }
++
++    companion object {
++        const val TAG = "CrtScreenOffAnimation"
++        private const val NONE = "none"
++        private const val STAGE_SAMPLE = "sample"
++        private const val STAGE_INSTALL = "install"
++        private const val STAGE_CLEAR = "clear"
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepository.kt b/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepository.kt
+new file mode 100644
+index 000000000000..8a6726bfe46b
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/phone/ScreenOffAnimationSettingsRepository.kt
+@@ -0,0 +1,93 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.statusbar.phone
++
++import android.util.Log
++import com.android.systemui.dagger.SysUISingleton
++import com.android.systemui.dagger.qualifiers.Background
++import com.android.systemui.shared.settings.data.repository.SecureSettingsRepository
++import javax.inject.Inject
++import kotlinx.coroutines.CoroutineDispatcher
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.flow.SharingStarted
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.catch
++import kotlinx.coroutines.flow.distinctUntilChanged
++import kotlinx.coroutines.flow.flowOn
++import kotlinx.coroutines.flow.map
++import kotlinx.coroutines.flow.retryWhen
++import kotlinx.coroutines.flow.stateIn
++
++/** Unlocked screen-off animation chosen by the user. */
++enum class ScreenOffAnimationSelection {
++    STOCK,
++    CRT,
++}
++
++/** Raw per-user setting value and the typed selection it resolves to. */
++data class ScreenOffAnimationSetting(val rawValue: Int, val selection: ScreenOffAnimationSelection)
++
++/**
++ * Observes the private per-user [SETTING_KEY] secure setting. Missing, unknown, and unreadable
++ * values resolve to [ScreenOffAnimationSelection.STOCK]. A failed read publishes Stock and is
++ * retried a bounded number of times; if every retry fails, Stock stays until SystemUI restarts.
++ */
++@SysUISingleton
++class ScreenOffAnimationSettingsRepository
++@Inject
++constructor(
++    secureSettingsRepository: SecureSettingsRepository,
++    @Background backgroundScope: CoroutineScope,
++    @Background backgroundDispatcher: CoroutineDispatcher,
++) {
++    val setting: StateFlow<ScreenOffAnimationSetting> =
++        secureSettingsRepository
++            .intSetting(SETTING_KEY, defaultValue = STOCK_VALUE)
++            .map(::settingFromValue)
++            .retryWhen { cause, attempt ->
++                Log.w(TAG, "setting read failed exception=${cause.javaClass.simpleName}")
++                emit(STOCK_SETTING)
++                val retry = attempt < MAX_READ_RETRIES
++                if (retry) delay(READ_RETRY_DELAY_MS)
++                retry
++            }
++            // Retries exhausted: keep Stock rather than failing the background scope.
++            .catch { Log.w(TAG, "setting read retries exhausted, using stock") }
++            .distinctUntilChanged()
++            .flowOn(backgroundDispatcher)
++            .stateIn(backgroundScope, SharingStarted.Eagerly, STOCK_SETTING)
++
++    companion object {
++        const val SETTING_KEY = "lineage_screen_off_animation"
++        private const val TAG = "ScreenOffAnimationSettings"
++        private const val MAX_READ_RETRIES = 3L
++        private const val READ_RETRY_DELAY_MS = 1_000L
++        private const val STOCK_VALUE = 0
++        private const val CRT_VALUE = 1
++        private val STOCK_SETTING =
++            ScreenOffAnimationSetting(STOCK_VALUE, ScreenOffAnimationSelection.STOCK)
++
++        private fun settingFromValue(value: Int): ScreenOffAnimationSetting =
++            ScreenOffAnimationSetting(
++                rawValue = value,
++                selection =
++                    if (value == CRT_VALUE) ScreenOffAnimationSelection.CRT
++                    else ScreenOffAnimationSelection.STOCK,
++            )
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationController.kt b/packages/SystemUI/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationController.kt
+index 75dc42ba4b4e..43d5d0995296 100644
+--- a/packages/SystemUI/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationController.kt
++++ b/packages/SystemUI/src/com/android/systemui/statusbar/phone/UnlockedScreenOffAnimationController.kt
+@@ -76,6 +76,7 @@ constructor(
+     private val panelExpansionInteractorLazy: Lazy<PanelExpansionInteractor>,
+     private val displayStateInteractorLazy: Lazy<DisplayStateInteractor>,
+     @Main private val handler: Handler,
++    private val crtScreenOffAnimationCoordinator: CrtScreenOffAnimationCoordinator,
+ ) : WakefulnessLifecycle.Observer, ScreenOffAnimation {
+     private lateinit var centralSurfaces: CentralSurfaces
+     /**
+@@ -105,7 +106,7 @@ constructor(
+             interpolator = Interpolators.LINEAR
+             addUpdateListener {
+                 if (ambientAod()) return@addUpdateListener
+-                if (lightRevealScrim.revealEffect !is CircleReveal) {
++                if (lightRevealScrim.activeRevealEffect !is CircleReveal) {
+                     lightRevealScrim.revealAmount = it.animatedValue as Float
+                 }
+                 if (
+@@ -120,8 +121,11 @@ constructor(
+             addListener(
+                 object : AnimatorListenerAdapter() {
+                     override fun onAnimationCancel(animation: Animator) {
++                        crtScreenOffAnimationCoordinator.cancel(
++                            CrtCancellationReason.ANIMATOR_CANCELLED
++                        )
+                         if (ambientAod()) return
+-                        if (lightRevealScrim.revealEffect !is CircleReveal) {
++                        if (lightRevealScrim.activeRevealEffect !is CircleReveal) {
+                             lightRevealScrim.revealAmount = 1f
+                         }
+                     }
+@@ -129,6 +133,8 @@ constructor(
+                     override fun onAnimationEnd(animation: Animator) {
+                         lightRevealAnimationPlaying = false
+                         interactionJankMonitor.end(CUJ_SCREEN_OFF)
++                        // No-op after a cancellation, which already ended the transition.
++                        crtScreenOffAnimationCoordinator.complete()
+                     }
+ 
+                     override fun onAnimationStart(animation: Animator) {
+@@ -167,6 +173,7 @@ constructor(
+     ) {
+         this.initialized = true
+         this.lightRevealScrim = lightRevealScrim
++        crtScreenOffAnimationCoordinator.initialize(lightRevealScrim)
+         this.revealEffect = lightRevealScrim.revealEffect
+         this.centralSurfaces = centralSurfaces
+ 
+@@ -268,6 +275,8 @@ constructor(
+ 
+         shouldAnimateInKeyguard = false
+         DejankUtils.removeCallbacks(startLightRevealCallback)
++        // Expose the latest base wake/biometric effect before the reveal is restored.
++        crtScreenOffAnimationCoordinator.cancel(CrtCancellationReason.WAKE)
+         lightRevealAnimator.cancel()
+         handler.removeCallbacksAndMessages(null)
+     }
+@@ -297,6 +306,8 @@ constructor(
+             } else {
+                 lightRevealAnimator.setDuration(LIGHT_REVEAL_ANIMATION_DURATION_MINMODE)
+             }
++            // Install any CRT override before the reveal's first frame. Min mode stays Stock.
++            crtScreenOffAnimationCoordinator.start(normalMode = shouldAnimateInKeyguard)
+ 
+             // Start the animation on the next frame. startAnimation() is called after
+             // PhoneWindowManager makes a binder call to System UI on
+@@ -336,61 +347,50 @@ constructor(
+      * on the current state of the device.
+      */
+     fun shouldPlayUnlockedScreenOffAnimation(): Boolean {
+-        // If we haven't been initialized yet, we don't have a StatusBar/LightRevealScrim yet, so we
+-        // can't perform the animation.
+-        if (!initialized) {
+-            return false
+-        }
+-
+-        // If the device isn't in a state where we can control unlocked screen off (no AOD enabled,
+-        // power save, etc.) then we shouldn't try to do so.
+-        if (!dozeParameters.get().canControlUnlockedScreenOff()) {
+-            return false
+-        }
+-
+-        // If we explicitly already decided not to play the screen off animation, then never change
+-        // our mind.
+-        if (decidedToAnimateGoingToSleep == false) {
+-            return false
+-        }
+-
+-        // If animations are disabled system-wide, don't play this one either.
+-        if (globalSettings.getFloat(Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f) {
+-            return false
+-        }
++        val decision = screenOffAnimationDecision()
++        crtScreenOffAnimationCoordinator.onStockDecision(decision)
++        return decision.eligible
++    }
+ 
+-        // We currently draw both the light reveal scrim, and the AOD UI, in the shade. If it's
+-        // already expanded and showing notifications/QS, the animation looks really messy. For now,
+-        // disable it if the notification panel is expanded.
+-        if (
++    /** The stock eligibility gates, in order, typed by the first gate that rejects. */
++    private fun screenOffAnimationDecision(): ScreenOffAnimationDecision =
++        when {
++            // If we haven't been initialized yet, we don't have a StatusBar/LightRevealScrim yet,
++            // so we can't perform the animation.
++            !initialized -> blocked(ScreenOffAnimationBlockedReason.NOT_INITIALIZED)
++            // If the device isn't in a state where we can control unlocked screen off (no AOD
++            // enabled, power save, etc.) then we shouldn't try to do so.
++            !dozeParameters.get().canControlUnlockedScreenOff() ->
++                blocked(ScreenOffAnimationBlockedReason.CANNOT_CONTROL_UNLOCKED_SCREEN_OFF)
++            // If we explicitly already decided not to play the screen off animation, then never
++            // change our mind.
++            decidedToAnimateGoingToSleep == false ->
++                blocked(ScreenOffAnimationBlockedReason.PREVIOUSLY_REJECTED)
++            // If animations are disabled system-wide, don't play this one either.
++            globalSettings.getFloat(Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f ->
++                blocked(ScreenOffAnimationBlockedReason.ANIMATIONS_DISABLED)
++            // We currently draw both the light reveal scrim, and the AOD UI, in the shade. If it's
++            // already expanded and showing notifications/QS, the animation looks really messy. For
++            // now, disable it if the notification panel is expanded.
+             (!this::centralSurfaces.isInitialized || statusBarStateControllerImpl.isExpanded) &&
+                 // Status bar might be expanded because we have started
+                 // playing the animation already
+-                !isAnimationPlaying()
+-        ) {
+-            return false
+-        }
+-
+-        // We only play the unlocked screen off animation if we are... unlocked.
+-        if (statusBarStateControllerImpl.state != StatusBarState.SHADE) {
+-            return false
+-        }
+-
+-        if (!this::centralSurfaces.isInitialized) {
+-            return false
+-        }
+-
+-        // If this display is off, skip animation to reduce flickers.
+-        if (
++                !isAnimationPlaying() -> blocked(ScreenOffAnimationBlockedReason.SHADE_EXPANDED)
++            // We only play the unlocked screen off animation if we are... unlocked.
++            statusBarStateControllerImpl.state != StatusBarState.SHADE ->
++                blocked(ScreenOffAnimationBlockedReason.NOT_SHADE)
++            !this::centralSurfaces.isInitialized ->
++                blocked(ScreenOffAnimationBlockedReason.CENTRAL_SURFACES_UNAVAILABLE)
++            // If this display is off, skip animation to reduce flickers.
+             powerManagerFlags.separateTimeoutsFlicker() &&
+-                displayStateInteractorLazy.get().isDefaultDisplayOff.value
+-        ) {
+-            return false
++                displayStateInteractorLazy.get().isDefaultDisplayOff.value ->
++                blocked(ScreenOffAnimationBlockedReason.DEFAULT_DISPLAY_OFF)
++            // Otherwise, good to go.
++            else -> ScreenOffAnimationDecision.ELIGIBLE
+         }
+ 
+-        // Otherwise, good to go.
+-        return true
+-    }
++    private fun blocked(reason: ScreenOffAnimationBlockedReason) =
++        ScreenOffAnimationDecision.blocked(reason)
+ 
+     override fun shouldDelayDisplayDozeTransition(): Boolean =
+         shouldPlayUnlockedScreenOffAnimation()
+-- 
+2.47.3
+
