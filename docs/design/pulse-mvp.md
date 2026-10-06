@@ -154,3 +154,60 @@ SHA-256: 0f66af474c6ac68ad21372dd473313e9e7b8468973f4a42efd8211e1cf0aeb62
 - SystemUI/audioserver restart behavior
 
 Do not start fading renderer until capture, lifecycle, overlay, and solid rendering pass salami hardware validation.
+
+## Hardware-ready core follow-up (2026-10-06)
+
+The MVP's NavigationBar-owned lifecycle and output-mix-only capture are superseded. On salami, Launcher3 Taskbar hosts navigation in gesture and three-button modes, so `NavigationBar` never attached the MVP controller and Pulse never ran on device.
+
+Design: `docs/superpowers/specs/2026-10-05-pulse-hardware-ready-core-design.md` (local, ignored).
+
+Branch `pulse-hardware-ready-core` on the builder (`/opt/android/frameworks/base`), based on `36269fa52cee`, not pushed:
+
+```text
+94a8a02e8388  SystemUI: add Pulse host state repository
+1d9ab3f1b9df  SystemUI: select Pulse playback sessions
+e1efd21a88a2  SystemUI: add Pulse capture session fallback
+c59f1a3b4fe7  SystemUI: harden Pulse playback target privacy
+7a7487e178c4  SystemUI: harden Pulse capture fallback failures
+a0f077a3b6ad  SystemUI: gate Pulse on valid FFT frames
+0fa97d4cb742  SystemUI: move Pulse runtime to display lifecycle
+819d3909071a  SystemUI: bind Pulse in display component
+7023e21a0b25  SystemUI: publish Pulse navigation host state
+ba7922a6a20f  SystemUI: implement Pulse host repository in display fixtures
+c5de4d6b90d6  SystemUI: harden Pulse runtime teardown
+50caaafe4118  SystemUI: harden Pulse host activation
+```
+
+Changes:
+
+- `PulseController` is a default-display `SystemUIDisplaySubcomponent` lifecycle listener.
+- NavigationBar and Taskbar publish source-tagged host state into a per-display repository; `NavigationBarControllerImpl` keeps the host `NONE` during replacement init, then activates and republishes.
+- Playback selection keeps a stable player and prefers a positive session; capture tries that session, then falls back once to session 0.
+- The overlay appears only after three valid FFT frames; 1 s startup and 2 s silence timeouts fail closed and latch until an input changes.
+
+### Verified (automated and build)
+
+- Plain-JVM Pulse suites ran green (controller, host repository, store, playback, capture, frame gate, spectrum): 98 tests.
+- Android-runner tests (`PulseWindowControllerTest`, `NavigationBarTest`, `TaskbarDelegateTest`, `NavigationBarControllerImplTest`) compile but did not run: `SystemUI-tests` fails on unrelated pre-existing fixtures (screen capture/record, status bar events, battery, Wi-Fi, UDFPS, shade header).
+- `m SystemUI` and `brunch salami` pass. Packaged `SystemUI.apk` contains `PulseController`, `PulseFrameGate`, `PulseHostStateRepositoryStore`, and `PulsePlaybackTarget`.
+
+### Signed release `20261006-015450`
+
+```text
+OTA:          lineage-23.2-salami-20261006-015450-signed-ota.zip
+Size:         2,180,308,324 bytes
+SHA-256:      7fb1b607128a968b7a4d554d51b0f0d10e38a3813d6e3245c37acf10be0725c9
+Target-files: lineage-23.2-salami-20261006-015450-signed-target_files.zip
+SHA-256:      4e489341a57931b263c836aa49d32b5988278462514aafa15280f55b23b7dab5
+Framework:    50caaafe41186f89d0a6e57d04d623383b770f09
+URL:          https://ota.yimura.dev/install/salami/20261006-015450/
+```
+
+OTA certificate matches `releasekey`; SystemUI signer matches `platform`.
+
+### Hardware acceptance pending
+
+Not yet observed on device: speaker and Bluetooth playback, gesture/three-button transitions, every teardown gate, offloaded/protected playback, SystemUI and audioserver restart recovery, frame rate, and allocations. Watch items:
+
+- Visualizer setup runs on the SystemUI main thread; check for jank or ANR during audioserver restart.
+- A session-specific capture that delivers only silent frames latches Pulse off after the 1 s startup timeout (no session-0 retry). Look for `Pulse stopped: startup timeout` while audio plays.
