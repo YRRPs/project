@@ -39,7 +39,7 @@ The signing script defaults `YRRP_CERT_DIR`, `OTA_PUBLIC_BASE_URL`, `OTA_BASE_IM
 
 ## 3. Watch
 
-`/home/android/signed-build.status` moves through `building-target-files`, `signing-target-files`, `generating-signed-ota`, `verifying-signed-artifacts`, `preparing-ota-release`, deployer phases, then `complete`. Failure is `signing-failed:<exit>` or `deployment-failed:<exit>`; read the log tail before diagnosing. A full build takes hours; poll sparingly.
+`/home/android/signed-build.status` moves through `building-target-files`, `signing-target-files`, `generating-signed-ota`, `verifying-signed-artifacts`, `generating-incremental-ota`, `preparing-ota-release`, deployer phases, then `complete`. Failure is `signing-failed:<exit>`, `incremental-failed:<exit>`, or `deployment-failed:<exit>`; read the log tail before diagnosing. A full build takes hours; poll sparingly.
 
 ## 4. Verify
 
@@ -51,12 +51,21 @@ Report each of these with its output:
 
 Signature checks the script already performs, for manual diagnosis: OTA cert in `META-INF/com/android/otacert` must match `releasekey.x509.pem`; SystemUI APK `apksigner verify --print-certs` must match `platform`. `keytool -printcert -jarfile` reports modern OTAs as unsigned; that is not a failure.
 
-## Redeploy without rebuilding
+## Redeploy or recover without rebuilding
 
 If only `ota_server` changed (Nginx config, base image), do not rebuild or re-sign. Wait for the `ota_server` GitHub workflow to publish `ghcr.io/yrrps/ota-server:main`, then run `deploy-ota-release.sh` against the existing signed OTA and target-files in `/opt/android/out/signed/`. It builds a local `yrrp-ota-release:<id>` image (never pushed), swaps `yrrp-ota-server` on `proxy-net`, and rolls back on any failure or signal.
+
+The gate blocks raw builder commands, so authorize each rerun once from the `yrrp-build-campaign` session:
+
+```bash
+printf '%s' '{"command": "<exact ssh AndroidBuilder command>"}' \
+  | python3 scripts/yrrp-build-campaign.py authorize-recovery --campaign-id <id>
+```
+
+Only two shapes are accepted: `generate-incremental-ota.sh --source-build <id> --target-build <id>`, and `deploy-ota-release.sh --ota … --target-files … --build-id <id> [--incremental …]` with paths under `/opt/android/out/signed/`. Run the authorized command as a background Bash command, and record its exit code and output as evidence. Both scripts refuse to run while a campaign build holds `/home/android/.yrrp-build-launch.lock`. `deploy-ota-release.sh` without `--incremental` publishes full-only.
 
 ## Known gaps
 
 - Builds before manifest `0c819fd` lack `lineage.updater.uri`; on those, set it per boot as root (`adb root; adb shell setprop lineage.updater.uri https://ota.yimura.dev/updates/salami.json`). Later builds get it from `vendor/extra/product.mk`.
-- Only full OTAs exist; incremental OTAs are not built.
+- Incremental sources live in `out/signed/`; wiping `out/` makes the next release full-only.
 - The release image build prints `InvalidDefaultArgInFrom`; harmless, the digest is passed explicitly.

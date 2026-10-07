@@ -141,3 +141,7 @@ EVIDENCE:
 ```
 
 A progress note is not a final result. Attach state with CLI output, SHAs, status strings, and evidence paths.
+
+## Recovery reruns
+
+After `incremental-failed:<code>`, or when only `ota_server` changed, rerun generation or deployment without a rebuild. Authorize the exact command once with `authorize-recovery` (see `yrrp-signed-ota-release`, "Redeploy or recover without rebuilding"). Never authorize a recovery while the campaign is `FROZEN`.
