@@ -7,6 +7,16 @@ from .model import Campaign, CampaignState, FeaturePhase, FeatureRecord
 from .store import CampaignStore
 
 
+def _require_fields(
+    payload: dict[str, Any],
+    required: set[str],
+    label: str,
+) -> None:
+    missing = sorted(required - payload.keys())
+    if missing:
+        raise ValueError(f"{label} missing: {', '.join(missing)}")
+
+
 class CampaignService:
     def __init__(self, store: CampaignStore) -> None:
         self.store = store
@@ -125,9 +135,7 @@ class CampaignService:
 
     @staticmethod
     def _build_status(payload: dict[str, Any]) -> str:
-        missing = sorted({"status", "evidence"} - payload.keys())
-        if missing:
-            raise ValueError(f"build result missing: {', '.join(missing)}")
+        _require_fields(payload, {"status", "evidence"}, "build result")
         status = str(payload["status"])
         if status not in {"complete", "failed", "blocked"}:
             raise ValueError(f"unknown build status: {status}")
@@ -190,9 +198,7 @@ class CampaignService:
             "evidence",
             "next_phase",
         }
-        missing = sorted(required - payload.keys())
-        if missing:
-            raise ValueError(f"device result missing: {', '.join(missing)}")
+        _require_fields(payload, required, "device result")
 
     @staticmethod
     def _apply_device_result(
@@ -233,9 +239,7 @@ class CampaignService:
         campaign_id: str,
         payload: dict[str, Any],
     ) -> Campaign:
-        missing = sorted({"kind", "feature_id", "reason"} - payload.keys())
-        if missing:
-            raise ValueError(f"failure missing: {', '.join(missing)}")
+        _require_fields(payload, {"kind", "feature_id", "reason"}, "failure")
 
         def apply(campaign: Campaign) -> None:
             campaign.failures.append(dict(payload))

@@ -67,10 +67,7 @@ class CampaignStore:
             os.replace(temporary, path)
             os.chmod(path, 0o600)
         except BaseException:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
+            Path(temporary).unlink(missing_ok=True)
             raise
 
     def _save_unlocked(self, campaign: Campaign) -> None:

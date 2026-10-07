@@ -99,7 +99,6 @@ def main() -> int:
         TypeError,
         ValueError,
         FileNotFoundError,
-        json.JSONDecodeError,
     ) as error:
         output = decision("deny", f"Build campaign gate failed closed: {error}")
     if output is not None:

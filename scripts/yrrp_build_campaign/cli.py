@@ -276,7 +276,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         TypeError,
         ValueError,
         FileNotFoundError,
-        json.JSONDecodeError,
     ) as error:
         print(f"campaign error: {error}", file=sys.stderr)
         return 2
