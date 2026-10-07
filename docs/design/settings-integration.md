@@ -30,6 +30,8 @@ adb shell settings delete secure lineage_pulse_height_dp
 
 ## Phase 2: durable settings UI
 
+Shipped as a YRRPs page in a forked LineageOS Settings, with `lineage_pulse_alpha` (default 217, clamp 26–255) added. See `yrrp-settings-ui.md` for the final layout, contract and release record. The options below are the original analysis.
+
 Options:
 
 1. Dedicated customization app from `vendor/<rom>`

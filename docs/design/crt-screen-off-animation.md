@@ -45,9 +45,11 @@ On OTA `20261006-114614`, with the setting unset, the dump showed `settingValue=
 
 The dumpable is registered as `CrtScreenOffAnimation`, not `CrtScreenOffAnimationCoordinator` as the plan says.
 
+CRT requires Always-on display because it overrides Android's unlocked screen-off path. `DozeParameters.canControlUnlockedScreenOff()` requires `getAlwaysOn()` and no display blanking. With `doze_always_on=0`, the dump reports `blockedBy=CANNOT_CONTROL_UNLOCKED_SCREEN_OFF` and Stock behavior remains. On 2026-10-07, temporarily setting `doze_always_on=1` produced `started`, `override installed`, and `COMPLETED`; restoring `0` restored the expected block.
+
 ## Untested on device
 
-These Task 9 items have no recorded result yet: timeout sleep, AOD off, Battery Saver, landscape, biometric and tap wake, keyguard occlusion, `FLAG_SECURE`, protected video, 60/90/120 Hz, and the Stock-versus-CRT Perfetto comparison. Inspect state with:
+These Task 9 items have no recorded result yet: timeout sleep, Battery Saver, landscape, biometric and tap wake, keyguard occlusion, `FLAG_SECURE`, protected video, 60/90/120 Hz, and the Stock-versus-CRT Perfetto comparison. Inspect state with:
 
 ```bash
 adb shell dumpsys activity service com.android.systemui/.SystemUIService \
