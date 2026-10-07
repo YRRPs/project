@@ -10,6 +10,8 @@ import unittest
 import zipfile
 from pathlib import Path
 
+from tests.fixtures.release_commands import write_executable, write_release_command_stubs
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/sign-lineage-build.sh"
 BUILD_ID = "20990101-000000"
@@ -73,25 +75,10 @@ class SignLineageBuildTest(unittest.TestCase):
 
     def _create_commands(self) -> None:
         self.bin.mkdir()
-        openssl = self.bin / "openssl"
-        openssl.write_text("#!/bin/sh\nprintf synthetic-der\n")
-        openssl.chmod(0o755)
+        write_release_command_stubs(self.bin)
         docker = self.bin / "docker"
         docker.write_text("#!/bin/sh\nexit 0\n")
         docker.chmod(0o755)
-        unzip = self.bin / "unzip"
-        unzip.write_text(
-            "#!/usr/bin/env python3\n"
-            "import sys, zipfile\n"
-            "args = sys.argv[1:]\n"
-            "if args[0] == '-tq': sys.exit(0)\n"
-            "if args[0] == '-Z1':\n"
-            "    print('\\n'.join(zipfile.ZipFile(args[1]).namelist()))\n"
-            "elif args[0] == '-p':\n"
-            "    sys.stdout.buffer.write(zipfile.ZipFile(args[1]).read(args[2]))\n"
-            "else: sys.exit(2)\n"
-        )
-        unzip.chmod(0o755)
 
     def run_script(
         self,

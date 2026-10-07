@@ -4,9 +4,9 @@ set -Eeo pipefail
 umask 077
 
 readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "${script_dir}/yrrp-release-lib.sh"
 readonly build_root=${YRRP_BUILD_ROOT:-/opt/android}
 readonly cert_dir=${YRRP_CERT_DIR:-/opt/yrrp/signing}
-readonly stored_password_file=${cert_dir}/passwords
 readonly password_file=${YRRP_RUNTIME_PASSWORD_FILE:-/home/android/.android-signing-passwords}
 readonly status_file=${YRRP_STATUS_FILE:-/home/android/signed-build.status}
 readonly campaign_claim_file=${YRRP_CAMPAIGN_CLAIM_FILE:-}
@@ -120,11 +120,7 @@ breakfast salami
 printf 'building-target-files\n' > "${status_file}"
 mka target-files-package otatools
 
-require_file "${stored_password_file}"
-sed "s|/home/android/.android-certs|${cert_dir}|g" \
-    "${stored_password_file}" > "${password_file}"
-chmod 0600 "${password_file}"
-export ANDROID_PW_FILE="${password_file}"
+yrrp_load_signing_passwords "${cert_dir}" "${password_file}"
 require_file "${cert_dir}/releasekey.pk8"
 require_file "${cert_dir}/releasekey.x509.pem"
 
@@ -188,18 +184,8 @@ unzip -tq "${signed_ota}" >/dev/null
 verify_dir=$(mktemp -d)
 unzip -p "${signed_ota}" META-INF/com/android/otacert \
     > "${verify_dir}/otacert.x509.pem"
-release_fingerprint=$(
-    openssl x509 -in "${cert_dir}/releasekey.x509.pem" \
-        -outform DER \
-        | sha256sum \
-        | awk '{print $1}'
-)
-ota_fingerprint=$(
-    openssl x509 -in "${verify_dir}/otacert.x509.pem" \
-        -outform DER \
-        | sha256sum \
-        | awk '{print $1}'
-)
+release_fingerprint=$(yrrp_cert_sha256 "${cert_dir}/releasekey.x509.pem")
+ota_fingerprint=$(yrrp_cert_sha256 "${verify_dir}/otacert.x509.pem")
 if [[ "${release_fingerprint}" != "${ota_fingerprint}" ]]; then
     printf 'OTA certificate does not match release key\n' >&2
     exit 1
@@ -212,12 +198,7 @@ if [[ -z "${systemui_path}" ]]; then
 fi
 unzip -p "${signed_target_files}" "${systemui_path}" \
     > "${verify_dir}/SystemUI.apk"
-platform_fingerprint=$(
-    openssl x509 -in "${cert_dir}/platform.x509.pem" \
-        -outform DER \
-        | sha256sum \
-        | awk '{print $1}'
-)
+platform_fingerprint=$(yrrp_cert_sha256 "${cert_dir}/platform.x509.pem")
 export PATH="${build_root}/prebuilts/jdk/jdk21/linux-x86/bin:${PATH}"
 systemui_fingerprint=$(
     "${build_root}/out/host/linux-x86/bin/apksigner" \
