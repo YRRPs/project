@@ -1,5 +1,9 @@
 # Pulse settings integration
 
+> **Historical prototype record.** YRRPs now integrates controls through its
+> Settings fork. Current architecture and extension rules live in
+> [`yrrp-settings-ui.md`](yrrp-settings-ui.md).
+
 ## Phase 1: prototype controls
 
 Keep SystemUI prototype independent from settings applications. `PulseSettingsRepository` owns three private, per-user `Settings.Secure` keys:
@@ -30,9 +34,9 @@ adb shell settings delete secure lineage_pulse_height_dp
 
 ## Phase 2: durable settings UI
 
-Shipped as a YRRPs page in a forked LineageOS Settings, with `lineage_pulse_alpha` (default 217, clamp 26–255) added. See `yrrp-settings-ui.md` for the final layout, contract and release record. The options below are the original analysis.
+Shipped as a YRRPs page in a forked LineageOS Settings, with `lineage_pulse_alpha` (default 217, clamp 26–255) added. See `yrrp-settings-ui.md` for the final layout, contract and release record. The superseded options below are retained as the original analysis.
 
-Options:
+Superseded options:
 
 1. Dedicated customization app from `vendor/<rom>`
    - Avoids modifying upstream Settings.
@@ -47,7 +51,7 @@ Options:
    - Provides deepest platform integration.
    - Creates largest maintenance burden; avoid for first feature.
 
-Recommendation: use dedicated customization app if YRRP adds more ROM features. Use LineageParts only if Pulse remains sole customization and native placement outweighs fork cost.
+Superseded recommendation: use a dedicated customization app if YRRP adds more ROM features. Use LineageParts only if Pulse remains the sole customization and native placement outweighs fork cost.
 
 ## Settings behavior
 

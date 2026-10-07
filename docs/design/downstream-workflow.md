@@ -20,6 +20,7 @@ Current repositories:
 project/                 # planning, research, release documentation
 android/                 # repo-init-capable manifest fork
 android_frameworks_base/ # Pulse and future framework changes
+android_packages_apps_Settings/ # YRRPs Settings hub, feature pages, search, and secure-setting controllers; builder /opt/android/packages/apps/Settings; branch lineage-23.2
 android_build_server/    # reusable build environment
 ```
 

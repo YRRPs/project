@@ -30,6 +30,65 @@ Settings never rewrites a stored value on read. The height slider thumb sits on 
 
 The default alpha of 217 matches the fixed alpha SystemUI used before the setting existed. CRT requires Always-on display; see `crt-screen-off-animation.md`.
 
+## Ownership
+
+- `YRRPs/android_packages_apps_Settings` owns YRRPs navigation, pages, controllers,
+  search integration, and `YrrpSettingsStore`.
+- Runtime feature owners consume private per-user `Settings.Secure` values.
+- Settings never restarts SystemUI or drives feature lifecycle directly.
+
+## Navigation model
+
+```text
+Settings home
+└── YRRPs tile in its own top group
+    └── YRRPs hub
+        ├── Audio
+        │   └── Pulse → Pulse page
+        └── Animations
+            └── Screen-off animation → radio page
+```
+
+Use one category per domain, one row per feature, and one focused feature page.
+Add another nesting level only when a category becomes crowded and after user approval.
+
+## Page and controller ownership
+
+- Dashboard fragments declare XML, metrics, search provider, and controllers.
+- Controllers own UI state, validation, observation, and writes.
+- `YrrpSecureSettingObserver` owns lifecycle-scoped refresh.
+- `YrrpSettingsStore` owns private keys, defaults, normalization, and current-user I/O.
+
+## Search architecture
+
+- Every page has a non-empty root key, `@SearchIndexable`, a provider, and a
+  `SettingsGateway.ENTRY_FRAGMENTS` entry.
+- Hub-row title and target-page title use the same string resource.
+- Categories, top intros, and footers are non-searchable.
+- Keywords live on hub entries and main controls when synonyms matter.
+- Homepage highlight keys are unique within each homepage XML.
+- Duplicate hub-row and page-header results are acceptable when both route correctly.
+
+## Extension rules
+
+1. Show current and proposed ASCII hierarchy before restructuring.
+2. Add a private per-user secure-setting contract before UI code.
+3. Normalize reads without rewriting; constrain writes.
+4. Keep Settings and runtime-owner defaults and clamps identical.
+5. Add a new key for a new dimension instead of packing bits.
+6. Preserve old visual behavior as the default when exposing a fixed value.
+7. Add runtime dump state before device acceptance when behavior changes.
+
+## Decision log
+
+- **2026-10-07 — Top-level ownership:** YRRPs uses its own homepage group.
+- **2026-10-07 — Hub taxonomy:** feature rows sit under domain categories.
+- **2026-10-07 — Feature pages:** each feature gets one page; no third level yet.
+- **2026-10-07 — Choice widgets:** finite choices use radio pages, not `ListPreference`.
+- **2026-10-07 — Pulse opacity:** separate key, default 217, preserves old appearance.
+- **2026-10-07 — Height display:** exact stored text with an on-grid slider thumb.
+- **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
+
 ## Release
 
 | Item | Value |

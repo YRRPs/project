@@ -16,6 +16,7 @@ GitHub org `YRRPs`, all public, Apache-2.0 for original work:
 | `project` | `~/Documents/Projects/lineageos-salami-custom` | docs, scripts, tests; cloned read-only into the builder |
 | `android` | — | repo manifest; `default.xml` overrides Lineage projects |
 | `android_frameworks_base` | builder `/opt/android/frameworks/base` | Pulse fork, branch `lineage-23.2` |
+| `android_packages_apps_Settings` | builder `/opt/android/packages/apps/Settings` | YRRPs Settings hub, pages, search and setting controllers; branch `lineage-23.2` |
 | `android_vendor_extra` | `~/Documents/Projects/android_vendor_extra`, builder `vendor/extra` | product overrides inherited first by `vendor/lineage/config/common.mk` (Updater URL); put new properties here instead of forking `vendor/lineage` |
 | `android_build_server` | `~/Documents/Projects/android_build_server` | builder image → `ghcr.io/yrrps/android-build-server:main` |
 | `ota_server` | `~/Documents/Projects/ota_server` | Nginx OTA base → `ghcr.io/yrrps/ota-server:main` |

@@ -7,6 +7,7 @@ Central planning and operational documentation for YRRP, a LineageOS 23.2 deriva
 - [`project`](https://github.com/YRRPs/project): research, architecture, build/signing helpers, install guides, and release planning
 - [`android`](https://github.com/YRRPs/android): canonical `repo init` manifest
 - [`android_frameworks_base`](https://github.com/YRRPs/android_frameworks_base): framework changes, including Pulse
+- [`android_packages_apps_Settings`](https://github.com/YRRPs/android_packages_apps_Settings): YRRPs Settings hub, feature pages, search, and secure-setting controllers; builder path `/opt/android/packages/apps/Settings`, branch `lineage-23.2`
 - [`android_build_server`](https://github.com/YRRPs/android_build_server): reusable Docker-based Android builder
 - [`ota_server`](https://github.com/YRRPs/ota_server): hardened latest-only OTA server base
 
