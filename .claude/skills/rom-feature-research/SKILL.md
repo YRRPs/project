@@ -32,7 +32,12 @@ Older features nearly always depend on APIs or hooks that no longer exist. Find 
 ## Lessons already paid for
 
 - **Navigation host.** The OnePlus 11 (`salami`) runs Launcher3 `Taskbar` as its navigation host, in both gesture and three-button mode. A feature hooked only into SystemUI `NavigationBar` never attaches on this device. The Pulse MVP hit exactly this. Any bottom-of-screen feature must support both `NavigationBar` and `TaskbarDelegate`.
-- **Settings.** Settings keys use the per-user secure prefix `lineage_<feature>_*`, and the feature is off by default. Until a settings UI exists, the only way to toggle a feature is `adb shell settings put secure …`.
+## Settings integration
+
+If a researched feature adds, moves or changes a YRRPs Settings control, invoke
+`yrrp-settings-ui` and follow `docs/design/yrrp-settings-ui.md`. Keep runtime
+semantics and observability in the feature design; keep navigation, search and
+controller procedure in the Settings skill.
 
 ## Implementation and verification
 
