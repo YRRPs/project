@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shlex
 import subprocess
 import sys
@@ -284,6 +285,108 @@ class CampaignLauncherTest(unittest.TestCase):
             self.assertEqual(
                 "it's \"quoted\" $HOME `true` ; exit 3", output["marker"]
             )
+
+
+BUILD_PROCESS_FUNCTION = re.compile(
+    r"^def build_process_active\(.*?(?=^\S)", re.MULTILINE | re.DOTALL
+)
+
+ACTIVE_BUILD_LINES = [
+    "/opt/android/prebuilts/build-tools/linux-x86/bin/ninja -f out/combined.ninja",
+    "/bin/bash build/soong/soong_ui.bash --make-mode",
+    "python3 /opt/android/out/host/linux-x86/bin/ota_from_target_files -k key a b",
+    "/opt/android/out/host/linux-x86/bin/sign_target_files_apks -o in out",
+]
+
+INACTIVE_LINES = [
+    "python3 -c 'import x  # soong_ui ninja ota_from_target_files "
+    "sign_target_files_apks'",
+    "bash -c \"python3 -c '...soong_ui ninja ota_from_target_files "
+    "sign_target_files_apks...'\"",
+    "grep ninja",
+    "vim ninja.txt",
+]
+
+
+def build_process_function_source(script: str) -> str:
+    match = BUILD_PROCESS_FUNCTION.search(script)
+    if match is None:
+        raise AssertionError("script has no build_process_active function")
+    return match.group(0)
+
+
+def load_build_process_active(script: str):
+    namespace: dict = {}
+    exec(build_process_function_source(script), namespace)
+    return namespace["build_process_active"]
+
+
+SELF_MATCH_CHILD = r"""
+import json
+from pathlib import Path
+
+own = Path("/proc/self/cmdline").read_bytes().rstrip(b"\0").replace(b"\0", b" ")
+own_line = own.decode()
+parent_line = "bash -c " + chr(34) + own_line + chr(34)
+fixture = "COMMAND\n" + own_line + "\n" + parent_line + "\n"
+names = ("soong_ui", "ninja", "ota_from_target_files", "sign_target_files_apks")
+print(json.dumps({
+    "own_line_has_all_names": all(name in own_line for name in names),
+    "active": build_process_active(fixture),
+}))
+"""
+
+
+class BuildProcessDetectionTest(unittest.TestCase):
+    SCRIPTS = {
+        "snapshot": REMOTE_SNAPSHOT_SCRIPT,
+        "launch": REMOTE_LAUNCH_SCRIPT,
+    }
+
+    def test_both_scripts_share_identical_build_process_function(self) -> None:
+        self.assertEqual(
+            build_process_function_source(REMOTE_SNAPSHOT_SCRIPT),
+            build_process_function_source(REMOTE_LAUNCH_SCRIPT),
+        )
+
+    def test_both_scripts_check_ps_args_with_build_process_function(self) -> None:
+        for label, script in self.SCRIPTS.items():
+            with self.subTest(script=label):
+                self.assertIn(
+                    'build_process_active(run("ps", "-eo", "args", cwd=ANDROID))',
+                    script,
+                )
+                self.assertNotIn("in processes for name in", script)
+
+    def test_build_programs_count_as_active(self) -> None:
+        for label, script in self.SCRIPTS.items():
+            active = load_build_process_active(script)
+            for line in ACTIVE_BUILD_LINES:
+                with self.subTest(script=label, line=line):
+                    self.assertTrue(active("COMMAND\n" + line + "\n"))
+
+    def test_command_lines_merely_mentioning_names_are_inactive(self) -> None:
+        for label, script in self.SCRIPTS.items():
+            active = load_build_process_active(script)
+            for line in INACTIVE_LINES:
+                with self.subTest(script=label, line=line):
+                    self.assertFalse(active("COMMAND\n" + line + "\n"))
+
+    def test_check_does_not_match_its_own_python_c_process(self) -> None:
+        for label, script in self.SCRIPTS.items():
+            with self.subTest(script=label):
+                child = (
+                    build_process_function_source(script) + SELF_MATCH_CHILD
+                )
+                result = REAL_SUBPROCESS_RUN(
+                    ["python3", "-c", child],
+                    capture_output=True,
+                    check=True,
+                    text=True,
+                )
+                output = json.loads(result.stdout)
+                self.assertTrue(output["own_line_has_all_names"])
+                self.assertFalse(output["active"])
 
 
 if __name__ == "__main__":

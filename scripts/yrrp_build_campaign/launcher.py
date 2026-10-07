@@ -28,6 +28,34 @@ def run(*args, cwd):
     ).stdout.strip()
 
 
+def build_process_active(processes):
+    import shlex
+
+    builds = {"soong_ui", "ninja", "ota_from_target_files", "sign_target_files_apks"}
+
+    def program(token):
+        name = token.rsplit("/", 1)[-1]
+        for suffix in (".bash", ".sh", ".py"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        return name
+
+    for line in processes.splitlines():
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            tokens = line.split()
+        names = [program(token) for token in tokens[:2]]
+        if names and names[0] in builds:
+            return True
+        interpreter = names[:1] and (
+            names[0] in ("bash", "sh") or names[0].startswith("python")
+        )
+        if interpreter and len(names) == 2 and names[1] in builds:
+            return True
+    return False
+
+
 def validate_preflight():
     subprocess.run(
         ["sha256sum", "--check", "--quiet", "MANIFEST.sha256"],
@@ -38,8 +66,7 @@ def validate_preflight():
         raise SystemExit("testkey.pk8 does not point to releasekey.pk8")
     if (SIGNING / "testkey.x509.pem").readlink().name != "releasekey.x509.pem":
         raise SystemExit("testkey.x509.pem does not point to releasekey.x509.pem")
-    processes = run("ps", "-eo", "cmd", cwd=ANDROID)
-    if any(name in processes for name in ("soong_ui", "ninja", "ota_from_target_files", "sign_target_files_apks")):
+    if build_process_active(run("ps", "-eo", "args", cwd=ANDROID)):
         raise SystemExit("build or signing process is already active")
     screens = subprocess.run(
         ["screen", "-list"], capture_output=True, text=True
@@ -95,6 +122,34 @@ def run(*args, cwd):
     ).stdout.strip()
 
 
+def build_process_active(processes):
+    import shlex
+
+    builds = {"soong_ui", "ninja", "ota_from_target_files", "sign_target_files_apks"}
+
+    def program(token):
+        name = token.rsplit("/", 1)[-1]
+        for suffix in (".bash", ".sh", ".py"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        return name
+
+    for line in processes.splitlines():
+        try:
+            tokens = shlex.split(line)
+        except ValueError:
+            tokens = line.split()
+        names = [program(token) for token in tokens[:2]]
+        if names and names[0] in builds:
+            return True
+        interpreter = names[:1] and (
+            names[0] in ("bash", "sh") or names[0].startswith("python")
+        )
+        if interpreter and len(names) == 2 and names[1] in builds:
+            return True
+    return False
+
+
 def validate_preflight():
     subprocess.run(
         ["sha256sum", "--check", "--quiet", "MANIFEST.sha256"],
@@ -105,8 +160,7 @@ def validate_preflight():
         raise SystemExit("testkey.pk8 does not point to releasekey.pk8")
     if (SIGNING / "testkey.x509.pem").readlink().name != "releasekey.x509.pem":
         raise SystemExit("testkey.x509.pem does not point to releasekey.x509.pem")
-    processes = run("ps", "-eo", "cmd", cwd=ANDROID)
-    if any(name in processes for name in ("soong_ui", "ninja", "ota_from_target_files", "sign_target_files_apks")):
+    if build_process_active(run("ps", "-eo", "args", cwd=ANDROID)):
         raise SystemExit("build or signing process is already active")
     subprocess.run(["docker", "network", "inspect", "proxy-net"], check=True)
 
