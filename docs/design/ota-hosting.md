@@ -67,7 +67,7 @@ Nginx autoindex defaults off. YRRP enables it only under `/install/salami/`; roo
 
 1. Generate release-key-signed target-files and full OTA.
 2. Verify ZIP integrity, OTA certificate, and SystemUI platform certificate.
-3. Generate the signed incremental from the live release's signed target-files in `out/signed/`. If no live release or no target-files exist, publish full-only and log `incremental-skipped: <reason>`.
+3. Generate the signed incremental from the live release's signed target-files in `out/signed/`. If no live release exists, the live container's `io.yrrp.ota.device` label names another device, or the live release's target-files do not exist, publish full-only and log `incremental-skipped: <reason>`. A failed label read, or a source file that exists but is empty or corrupt, is a hard failure and never a skip.
 4. Parse signed OTA metadata and target-files build properties.
 5. Require A/B, `release-keys`, `salami`, `UNOFFICIAL`, and LineageOS 23.2.
 6. Extract exact six `IMAGES/*.img` members.
