@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
@@ -16,26 +17,49 @@ if str(SCRIPTS) not in sys.path:
 from yrrp_build_campaign.service import CampaignService
 from yrrp_build_campaign.store import CampaignStore
 
-EXPENSIVE = (
-    re.compile(r"(?:^|[\s'\"/])sign-lineage-build\.sh(?:[\s'\"]|$)"),
-    re.compile(r"\bbrunch\s+salami\b"),
-    re.compile(
-        r"\bmka\b[^\n]*(?:target-files-package|otatools|otapackage|bacon)\b"
-    ),
+SIGNING_SCRIPT = re.compile(r"(?:^|[\s'\"/])sign-lineage-build\.sh(?:[\s;'\"]|$)")
+READ_ONLY_BUILDER = re.compile(
+    r"\b(?:cat|tail|head|ps|pgrep|sha256sum|git\s+(?:status|rev-parse)|"
+    r"screen\s+-list|docker\s+inspect)\b"
 )
-PREFLIGHT = (
-    re.compile(r"\batest\b"),
-    re.compile(r"\bm\s+(?:SystemUI(?:-core)?|Settings|SettingsRoboTests)\b"),
-)
+LAUNCHER = "scripts/yrrp-launch-campaign-build.py"
+
+
+def _tokens(command: str) -> list[str]:
+    try:
+        return shlex.split(command, posix=True)
+    except ValueError:
+        return []
+
+
+def _is_builder_ssh(command: str) -> bool:
+    tokens = _tokens(command)
+    return "ssh" in tokens and "AndroidBuilder" in tokens
+
+
+def launcher_campaign_id(command: str) -> str | None:
+    tokens = _tokens(command)
+    if len(tokens) != 4:
+        return None
+    executable, script, option, campaign_id = tokens
+    if Path(executable).name not in {"python", "python3"}:
+        return None
+    if script not in {LAUNCHER, str(PROJECT_ROOT / LAUNCHER)}:
+        return None
+    if option != "--campaign-id":
+        return None
+    return campaign_id
 
 
 def classify(command: str) -> str:
-    if any(pattern.search(command) for pattern in EXPENSIVE):
-        return "expensive"
-    if "ssh AndroidBuilder" in command and any(
-        pattern.search(command) for pattern in PREFLIGHT
-    ):
-        return "preflight"
+    if launcher_campaign_id(command) is not None:
+        return "launcher"
+    if SIGNING_SCRIPT.search(command):
+        return "builder"
+    if _is_builder_ssh(command):
+        if READ_ONLY_BUILDER.search(command):
+            return "readonly"
+        return "builder"
     return "other"
 
 
@@ -62,48 +86,70 @@ def evaluate(event: dict[str, Any]) -> dict[str, Any] | None:
         return None
     command = str(event["tool_input"]["command"])
     kind = classify(command)
-    if kind == "other":
+    if kind in {"other", "readonly"}:
         return None
     service = CampaignService(CampaignStore(campaign_root()))
     try:
         campaign_id = service.active_campaign_id()
-        reason = _authorize(service, campaign_id, kind, command)
-        return decision("allow", reason)
-    except (KeyError, TypeError, ValueError, FileNotFoundError) as error:
-        recovery = (
-            "Use scripts/yrrp-build-campaign.py status, then authorize the "
-            "preflight command or freeze the active campaign."
-        )
-        return decision("deny", f"Build campaign gate: {error}. {recovery}")
+        if kind == "launcher":
+            return _authorize_launcher(event, service, campaign_id, command)
+        return _authorize_builder_preflight(service, campaign_id, command)
+    except Exception as error:
+        return decision("deny", _denial_reason(error))
 
 
-def _authorize(
+def _authorize_launcher(
+    event: dict[str, Any],
     service: CampaignService,
     campaign_id: str,
-    kind: str,
     command: str,
-) -> str:
-    if kind == "preflight":
+) -> dict[str, Any]:
+    requested = launcher_campaign_id(command)
+    if requested != campaign_id:
+        raise ValueError("launcher campaign does not match active campaign")
+    actor = str(event["session_id"])
+    agent_type = str(event.get("agent_type", ""))
+    service.authorize_launcher(campaign_id, actor, agent_type)
+    return decision("allow", f"Authorized fixed launcher for campaign {campaign_id}")
+
+
+def _authorize_builder_preflight(
+    service: CampaignService,
+    campaign_id: str,
+    command: str,
+) -> dict[str, Any]:
+    try:
         service.consume_preflight(campaign_id, command)
-        return f"Authorized preflight command for campaign {campaign_id}"
-    service.claim_build(campaign_id, command)
-    return f"Claimed frozen build for campaign {campaign_id}"
+    except ValueError as error:
+        raise ValueError(
+            "raw builder command is not an authorized one-time preflight; "
+            "product builds must use scripts/yrrp-launch-campaign-build.py"
+        ) from error
+    return decision("allow", f"Authorized preflight command for campaign {campaign_id}")
+
+
+def _denial_reason(error: Exception) -> str:
+    recovery = (
+        "Use scripts/yrrp-build-campaign.py status, authorize an exact preflight, "
+        "or use scripts/yrrp-launch-campaign-build.py from yrrp-build-campaign."
+    )
+    return f"Build campaign gate: {error}. {recovery}"
 
 
 def main() -> int:
     try:
         event = json.load(sys.stdin)
         output = evaluate(event)
-    except (
-        KeyError,
-        TypeError,
-        ValueError,
-        FileNotFoundError,
-    ) as error:
+    except Exception as error:
         output = decision("deny", f"Build campaign gate failed closed: {error}")
-    if output is not None:
-        json.dump(output, sys.stdout, sort_keys=True)
-        sys.stdout.write("\n")
+    if output is None:
+        return 0
+    try:
+        payload = json.dumps(output, sort_keys=True).encode()
+        os.write(1, payload + b"\n")
+    except Exception as error:
+        print(f"Build campaign gate could not emit denial: {error}", file=sys.stderr)
+        return 2
     return 0
 
 

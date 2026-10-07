@@ -74,7 +74,13 @@ class CampaignGateTest(unittest.TestCase):
                 "spec": "docs/spec.md",
                 "plan": "docs/plan.md",
                 "repositories": ["frameworks/base"],
-                "cheap_checks": ["m SystemUI"],
+                "cheap_checks": [
+                    {
+                        "check_id": "systemui-module",
+                        "command_sha256": service.command_digest("m SystemUI"),
+                        "location": "AndroidBuilder",
+                    }
+                ],
                 "device_cases": [{"case_id": "pulse-nav"}],
             },
             sender="feature-session",
@@ -95,24 +101,46 @@ class CampaignGateTest(unittest.TestCase):
             CampaignState.READY_TO_FREEZE,
         ):
             service.transition("october-batch", state)
+        prepared = service.prepare_snapshot(
+            "october-batch",
+            {
+                "manifest_sha256": "b" * 64,
+                "repositories": {"frameworks/base": "a" * 40},
+                "branches": {"frameworks/base": "lineage-23.2"},
+                "clean_repositories": ["frameworks/base"],
+                "project_sha": "e" * 40,
+            },
+        )
         service.freeze(
             "october-batch",
-            {"manifest_sha256": "b" * 64},
+            prepared,
             "Freeze and build",
+            actor="yrrp-build-campaign",
         )
 
-    def test_classifies_every_expensive_form(self) -> None:
+    def test_classifies_exact_launcher_and_raw_builder_commands(self) -> None:
         hook = load_hook()
-        commands = (
-            "ssh AndroidBuilder '/opt/yrrp/project/scripts/sign-lineage-build.sh'",
-            "ssh AndroidBuilder 'brunch salami'",
-            "ssh AndroidBuilder 'mka target-files-package otatools'",
-            "ssh AndroidBuilder \"screen -dmS build bash -lc 'brunch salami'\"",
+        launcher = (
+            "python3 scripts/yrrp-launch-campaign-build.py "
+            "--campaign-id october-batch"
         )
-
-        for command in commands:
+        self.assertEqual("launcher", hook.classify(launcher))
+        raw_commands = (
+            "ssh AndroidBuilder '/opt/yrrp/project/scripts/sign-lineage-build.sh'",
+            "ssh AndroidBuilder 'brunch sala'\"'\"'mi'",
+            "ssh AndroidBuilder 'mka dist'",
+            "ssh -p 4242 AndroidBuilder 'mka target-files-package otatools'",
+            "ssh Android\"\"Builder 'mka dist'",
+            "sign-lineage-build.sh; echo done",
+        )
+        for command in raw_commands:
             with self.subTest(command=command):
-                self.assertEqual("expensive", hook.classify(command))
+                self.assertEqual("builder", hook.classify(command))
+
+    def test_read_only_text_search_is_not_a_build(self) -> None:
+        hook = load_hook()
+
+        self.assertEqual("other", hook.classify("grep -R 'brunch salami' ."))
 
     def test_read_only_builder_command_has_no_opinion(self) -> None:
         hook = load_hook()
@@ -144,26 +172,34 @@ class CampaignGateTest(unittest.TestCase):
 
         self.assertFalse(marker.exists())
 
-    def test_frozen_campaign_claims_exactly_one_build(self) -> None:
+    def test_frozen_campaign_allows_only_orchestrator_launcher(self) -> None:
         self.prepare_frozen()
         hook = load_hook()
-        command = "ssh AndroidBuilder 'brunch salami'"
+        launcher = (
+            "python3 scripts/yrrp-launch-campaign-build.py "
+            "--campaign-id october-batch"
+        )
 
-        first = hook.evaluate(event(command))
-        second = hook.evaluate(event(command))
+        allowed = hook.evaluate(event(launcher))
+        wrong_actor = hook.evaluate(event(launcher, agent_type="yrrp-feature-owner"))
+        raw_build = hook.evaluate(event("ssh AndroidBuilder 'brunch salami'"))
 
         self.assertEqual(
             "allow",
-            first["hookSpecificOutput"]["permissionDecision"],
+            allowed["hookSpecificOutput"]["permissionDecision"],
         )
         self.assertEqual(
             "deny",
-            second["hookSpecificOutput"]["permissionDecision"],
+            wrong_actor["hookSpecificOutput"]["permissionDecision"],
+        )
+        self.assertEqual(
+            "deny",
+            raw_build["hookSpecificOutput"]["permissionDecision"],
         )
         campaign = CampaignStore(self.root).load("october-batch")
-        self.assertEqual(CampaignState.BUILDING, campaign.state)
-        self.assertEqual(1, len(campaign.build_attempts))
-        self.assertNotIn(command, str(campaign.to_dict()))
+        self.assertEqual(CampaignState.FROZEN, campaign.state)
+        self.assertEqual([], campaign.build_attempts)
+        self.assertEqual(1, len(campaign.launcher_authorizations))
 
     def test_preflight_requires_one_time_authorization(self) -> None:
         service = self.service()
@@ -194,6 +230,34 @@ class CampaignGateTest(unittest.TestCase):
             text=True,
             env=os.environ | {"YRRP_CAMPAIGN_ROOT": str(self.root)},
         )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(
+            "deny",
+            output["hookSpecificOutput"]["permissionDecision"],
+        )
+
+    def test_process_denies_unreadable_campaign_state(self) -> None:
+        self.root.mkdir(parents=True)
+        active = self.root / "active"
+        active.write_text("october-batch\n")
+        active.chmod(0)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(HOOK)],
+                input=json.dumps(
+                    event(
+                        "python3 scripts/yrrp-launch-campaign-build.py "
+                        "--campaign-id october-batch"
+                    )
+                ),
+                capture_output=True,
+                text=True,
+                env=os.environ | {"YRRP_CAMPAIGN_ROOT": str(self.root)},
+            )
+        finally:
+            active.chmod(0o600)
 
         self.assertEqual(0, result.returncode, result.stderr)
         output = json.loads(result.stdout)

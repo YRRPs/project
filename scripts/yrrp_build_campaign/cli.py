@@ -53,15 +53,17 @@ def parser() -> argparse.ArgumentParser:
     _campaign_command(commands, "authorize-preflight")
     freeze = _campaign_command(commands, "freeze")
     freeze.add_argument("--approval", required=True)
+    freeze.add_argument("--actor", required=True)
     _campaign_command(commands, "record-build")
+    _campaign_command(commands, "record-installation")
     _campaign_command(commands, "record-case")
     _campaign_command(commands, "record-failure")
     lease = _campaign_command(commands, "grant-device-lease")
     lease.add_argument("--feature-id", required=True)
     device = _campaign_command(commands, "record-device-result")
     device.add_argument("--feature-id", required=True)
-    follow_up = _campaign_command(commands, "prepare-follow-up")
-    follow_up.add_argument("--approval", required=True)
+    _campaign_command(commands, "prepare-follow-up")
+    _campaign_command(commands, "finalize-testing")
     invalidate = _campaign_command(commands, "invalidate-freeze")
     invalidate.add_argument("--reason", required=True)
     evidence = _campaign_command(commands, "attach-evidence")
@@ -88,6 +90,9 @@ def status(campaign: Campaign) -> dict[str, Any]:
         "build_attempts": len(campaign.build_attempts),
         "device_matrix": counts,
         "failures": len(campaign.failures),
+        "installed_build_id": (
+            campaign.installation["build_id"] if campaign.installation else None
+        ),
         "active_device_lease": campaign.active_device_lease,
     }
 
@@ -157,7 +162,14 @@ def _freeze(
     service: CampaignService,
     _: CampaignStore,
 ) -> dict[str, Any]:
-    return status(service.freeze(args.campaign_id, payload(), args.approval))
+    return status(
+        service.freeze(
+            args.campaign_id,
+            payload(),
+            args.approval,
+            actor=args.actor,
+        )
+    )
 
 
 def _record_build(
@@ -166,6 +178,14 @@ def _record_build(
     _: CampaignStore,
 ) -> dict[str, Any]:
     return status(service.record_build_result(args.campaign_id, payload()))
+
+
+def _record_installation(
+    args: argparse.Namespace,
+    service: CampaignService,
+    _: CampaignStore,
+) -> dict[str, Any]:
+    return status(service.record_installation(args.campaign_id, payload()))
 
 
 def _record_case(
@@ -207,7 +227,15 @@ def _prepare_follow_up(
     service: CampaignService,
     _: CampaignStore,
 ) -> dict[str, Any]:
-    return status(service.prepare_follow_up(args.campaign_id, args.approval))
+    return status(service.prepare_follow_up(args.campaign_id))
+
+
+def _finalize_testing(
+    args: argparse.Namespace,
+    service: CampaignService,
+    _: CampaignStore,
+) -> dict[str, Any]:
+    return status(service.finalize_testing(args.campaign_id))
 
 
 def _invalidate_freeze(
@@ -248,11 +276,13 @@ HANDLERS: dict[str, Handler] = {
     "authorize-preflight": _authorize,
     "freeze": _freeze,
     "record-build": _record_build,
+    "record-installation": _record_installation,
     "record-case": _record_case,
     "record-failure": _record_failure,
     "grant-device-lease": _grant_lease,
     "record-device-result": _record_device_result,
     "prepare-follow-up": _prepare_follow_up,
+    "finalize-testing": _finalize_testing,
     "invalidate-freeze": _invalidate_freeze,
     "attach-evidence": _attach_evidence,
     "status": _status,

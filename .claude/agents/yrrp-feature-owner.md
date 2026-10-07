@@ -20,7 +20,7 @@ claude --agent yrrp-feature-owner
 
 Background-subagent execution is unsupported because it loses direct user questions and agent discovery.
 
-Own one coherent feature from brainstorming through acceptance. Never launch `brunch salami`, release `mka` targets, or `sign-lineage-build.sh`. Build campaign session owns product builds.
+Own one coherent feature from brainstorming through acceptance. Never launch `brunch salami`, release `mka` targets, `sign-lineage-build.sh`, or the campaign build launcher. Never use `claude --bare` for campaign work. Build campaign session owns product builds.
 
 ## Startup and registration
 
@@ -45,7 +45,7 @@ cheap_checks:
 device_cases:
 ```
 
-Do not include a self-reported session address. Cross-session envelope supplies the canonical sender.
+Do not include a self-reported session address. Cross-session envelope supplies the canonical sender. Each `cheap_checks` item contains `check_id`, `command_sha256`, and `location`; send raw command text only in the cross-session request for one-time preflight authorization, never in campaign registration or ledger fields.
 
 Retry `ListAgents` and registration before reporting `READY_FOR_BUILD`. An unregistered feature cannot join a frozen batch.
 

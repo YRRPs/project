@@ -72,6 +72,18 @@ class CampaignStoreTest(unittest.TestCase):
                 b"Authorization: Bearer secret-token\n",
             )
 
+    def test_evidence_rejects_api_keys_and_environment_dumps(self) -> None:
+        self.store.save(Campaign.new("october-batch"))
+
+        for content in (b"API_KEY=secret\n", b"TOKEN=secret\n", b"-----BEGIN PRIVATE KEY-----\n"):
+            with self.subTest(content=content):
+                with self.assertRaises(ValueError):
+                    self.store.write_evidence(
+                        "october-batch",
+                        "preflight.txt",
+                        content,
+                    )
+
     def test_evidence_name_rejects_nested_path(self) -> None:
         self.store.save(Campaign.new("october-batch"))
 

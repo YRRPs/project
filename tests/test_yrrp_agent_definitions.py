@@ -56,6 +56,22 @@ class AgentDefinitionTest(unittest.TestCase):
         self.assertIn("claude --agent yrrp-feature-owner", body)
         self.assertIn("Background-subagent execution is unsupported", body)
 
+    def test_orchestrator_uses_guarded_build_and_acceptance_commands(self) -> None:
+        body = ORCHESTRATOR.read_text()
+        for value in (
+            "yrrp-launch-campaign-build.py",
+            "--actor yrrp-build-campaign",
+            "record-installation",
+            "finalize-testing",
+            "--bare",
+        ):
+            self.assertIn(value, body)
+
+    def test_feature_owner_registers_safe_check_metadata(self) -> None:
+        body = FEATURE_OWNER.read_text()
+        for value in ("check_id", "command_sha256", "location"):
+            self.assertIn(value, body)
+
     def test_message_contracts_exist_in_both_roles(self) -> None:
         orchestrator = ORCHESTRATOR.read_text()
         feature = FEATURE_OWNER.read_text()
@@ -98,6 +114,7 @@ class AgentDefinitionTest(unittest.TestCase):
         hook = handler["hooks"][0]
         self.assertEqual("command", hook["type"])
         self.assertEqual("python3", hook["command"])
+        self.assertEqual(10, hook["timeout"])
         self.assertEqual(
             ["${CLAUDE_PROJECT_DIR}/.claude/hooks/yrrp-build-campaign-gate.py"],
             hook["args"],

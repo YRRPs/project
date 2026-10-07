@@ -33,6 +33,8 @@ Do not run it as a background subagent. Main-session `ListAgents`, `AskUserQuest
 
 Never modify feature source and never launch implementation agents. Feature-owner sessions own implementation. Change campaign state only through `python3 scripts/yrrp-build-campaign.py`.
 
+Campaign builds do not support `claude --bare`, disabled project hooks, direct `ssh AndroidBuilder` build commands, or direct `sign-lineage-build.sh` calls. Use only `python3 scripts/yrrp-launch-campaign-build.py --campaign-id <id>` from this agent type.
+
 ## Startup
 
 1. Invoke `c7-verification-discipline:verifying-claims` before reporting prior campaign state.
@@ -59,7 +61,7 @@ cheap_checks:
 device_cases:
 ```
 
-Reject missing fields through a reply to the same sender. Register valid payload through the campaign CLI and acknowledge campaign ID plus feature ID.
+Reject missing fields through a reply to the same sender. Every `cheap_checks` item contains only `check_id`, `command_sha256`, and `location`; never persist raw command text. Register valid payload through the campaign CLI and acknowledge campaign ID plus feature ID.
 
 Track each feature through `READY_FOR_BUILD`. Reject readiness without revisions, clean repositories, check evidence, observability status, device cases, and restoration steps.
 
@@ -71,13 +73,13 @@ Ask through `AskUserQuestion` with one **Freeze batch** entry and these options:
 - **Keep collecting**
 - **Revise campaign**
 
-Only **Freeze and build** permits CLI `freeze`. Any later source, concern, or matrix change invalidates freeze.
+Only **Freeze and build** permits CLI `freeze`. Capture a complete canonical snapshot with `python3 scripts/yrrp-launch-campaign-build.py --campaign-id <id> --capture-snapshot`; the command derives build mode, matrix hash, and concern hash from campaign state. Pipe that output into `python3 scripts/yrrp-build-campaign.py freeze --campaign-id <id> --approval "Freeze and build" --actor yrrp-build-campaign`. Any later source, concern, or matrix change invalidates freeze.
 
-Never copy builder commands into this agent. Follow `yrrp-builder-access` and `yrrp-signed-ota-release`. Build gate claims one approved build atomically.
+Never copy builder commands into this agent. Follow `yrrp-builder-access` and `yrrp-signed-ota-release`. Launch only with `python3 scripts/yrrp-launch-campaign-build.py --campaign-id <id>`. Hook creates one short-lived authorization; launcher rechecks source and claims build atomically before fixed SSH launch.
 
 ## Device leases
 
-After installation, record build identity and shared baseline. Call `ListAgents` before every wake. If a registered sender is absent, record a disconnected failure and ask the user to resume that session.
+When detached build completes, record full build result through `record-build`. After installing it, record build ID, frozen snapshot digest, and shared baseline through `record-installation`; only then may testing start. Call `ListAgents` before every wake. If a registered sender is absent, record a disconnected failure and ask the user to resume that session.
 
 Grant one lease at a time. Send:
 
@@ -106,7 +108,7 @@ evidence:
 next_phase:
 ```
 
-Record result and restored state before releasing lease. Never wake a second owner while a lease remains active.
+Record result and restored state before releasing lease. Never wake a second owner while a lease remains active. After all leases finish, run `finalize-testing`; never transition directly to `ACCEPTED` or `FIX_BATCH_READY`.
 
 Continue unaffected feature tests after one feature fails. Stop only for unsafe behavior, boot failure, repeated SystemUI crash, data-loss risk, or global result invalidation.
 
@@ -120,7 +122,7 @@ Ask through `AskUserQuestion` with one **Follow-up build** entry and these optio
 - **Keep fixing**
 - **End campaign blocked**
 
-Only **Freeze fixes and rebuild** permits another freeze and build claim.
+Only **Freeze fixes and rebuild** permits another freeze. Run `prepare-follow-up`, collect changed feature readiness, capture fresh source, then freeze with `--approval "Freeze fixes and rebuild" --actor yrrp-build-campaign`. Accepted unaffected features keep their prior validated revisions.
 
 ## Final return
 

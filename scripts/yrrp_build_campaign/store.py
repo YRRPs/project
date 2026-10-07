@@ -14,8 +14,10 @@ from .model import Campaign, CampaignState, FeaturePhase, FeatureRecord, validat
 
 EVIDENCE_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]{0,127}$")
 SENSITIVE = re.compile(
-    rb"(?i)(authorization:\s*bearer|password\s*[=:]|private key|"
-    rb"access[_ -]?token|client[_ -]?secret|connection[_ -]?string)"
+    rb"(?i)(authorization:\s*bearer|password\s*[=:]|"
+    rb"-{5}begin [a-z ]*private key-{5}|api[_ -]?key\s*[=:]|"
+    rb"(?:access[_ -]?)?token\s*[=:]|client[_ -]?secret\s*[=:]|"
+    rb"connection[_ -]?string\s*[=:])"
 )
 
 
@@ -78,12 +80,20 @@ class CampaignStore:
             self.render(campaign).encode(),
         )
 
+    def create(self, campaign: Campaign) -> None:
+        with self.lock():
+            if self.json_path(campaign.campaign_id).exists():
+                raise FileExistsError(f"campaign already exists: {campaign.campaign_id}")
+            self._save_unlocked(campaign)
+
     def save(self, campaign: Campaign) -> None:
         with self.lock():
             self._save_unlocked(campaign)
 
     def _load_unlocked(self, campaign_id: str) -> Campaign:
         value = json.loads(self.json_path(campaign_id).read_text(encoding="utf-8"))
+        if value.get("schema_version") != 2:
+            raise ValueError(f"unsupported campaign schema: {value.get('schema_version')}")
         value["features"] = {
             key: self._feature_from_dict(item)
             for key, item in value.get("features", {}).items()
@@ -121,6 +131,33 @@ class CampaignStore:
             self._save_unlocked(campaign)
             return campaign
 
+    def mutate_unique_frozen(
+        self,
+        campaign_id: str,
+        operation: Callable[[Campaign], None],
+    ) -> Campaign:
+        with self.lock():
+            other_frozen = [
+                path.stem
+                for path in self.root.glob("*.json")
+                if path.stem != campaign_id
+                and self._load_unlocked(path.stem).state
+                in {
+                    CampaignState.FROZEN,
+                    CampaignState.BUILDING,
+                    CampaignState.BUILT,
+                    CampaignState.TESTING,
+                }
+            ]
+            if other_frozen:
+                raise ValueError(
+                    "another campaign is already frozen: " + ", ".join(other_frozen)
+                )
+            campaign = self._load_unlocked(campaign_id)
+            operation(campaign)
+            self._save_unlocked(campaign)
+            return campaign
+
     def set_active(self, campaign_id: str) -> None:
         validate_slug(campaign_id)
         with self.lock():
@@ -153,6 +190,7 @@ class CampaignStore:
 
     def render(self, campaign: Campaign) -> str:
         lines = self._render_header(campaign)
+        lines.extend(self._render_records("Approvals", campaign.approvals))
         lines.extend(self._render_features(campaign))
         lines.extend(self._render_records("Build attempts", campaign.build_attempts))
         lines.extend(
@@ -162,6 +200,7 @@ class CampaignStore:
             )
         )
         lines.extend(self._render_records("Failures", campaign.failures))
+        lines.extend(self._render_records("Events", campaign.events))
         return "\n".join(lines)
 
     def _render_header(self, campaign: Campaign) -> list[str]:
@@ -176,6 +215,8 @@ class CampaignStore:
             "",
         ]
         lines.extend(self._json_block(campaign.source_snapshot))
+        lines.extend(["## Installation", ""])
+        lines.extend(self._json_block(campaign.installation))
         return lines
 
     def _render_features(self, campaign: Campaign) -> list[str]:
@@ -187,7 +228,6 @@ class CampaignStore:
 
     def _render_feature(self, feature: FeatureRecord) -> list[str]:
         repositories = ", ".join(f"`{item}`" for item in feature.repositories)
-        cheap_checks = ", ".join(f"`{item}`" for item in feature.cheap_checks)
         lines = [
             f"### {feature.feature_id}",
             "",
@@ -196,11 +236,12 @@ class CampaignStore:
             f"- Spec: `{feature.spec}`",
             f"- Plan: `{feature.plan}`",
             f"- Repositories: {repositories}",
-            f"- Cheap checks: {cheap_checks}",
             "",
-            "Readiness:",
+            "Cheap checks:",
             "",
         ]
+        lines.extend(self._json_block(feature.cheap_checks))
+        lines.extend(["Readiness:", ""])
         lines.extend(self._json_block(feature.readiness))
         lines.extend(["Device result:", ""])
         lines.extend(self._json_block(feature.device_result))

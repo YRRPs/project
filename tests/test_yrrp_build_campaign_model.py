@@ -25,6 +25,50 @@ class CampaignModelTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.model.validate_slug(value)
 
+    def test_registration_rejects_raw_device_commands(self) -> None:
+        with self.assertRaises(ValueError):
+            self.model.FeatureRecord.from_registration(
+                {
+                    "feature_id": "pulse",
+                    "phase": "IMPLEMENTING",
+                    "spec": "docs/spec.md",
+                    "plan": "docs/plan.md",
+                    "repositories": ["frameworks/base"],
+                    "cheap_checks": [
+                        {
+                            "check_id": "systemui-module",
+                            "command_sha256": "c" * 64,
+                            "location": "AndroidBuilder",
+                        }
+                    ],
+                    "device_cases": [
+                        {"case_id": "pulse-nav", "adb_command": "adb shell id"}
+                    ],
+                },
+                sender="feature-session",
+            )
+
+    def test_registration_rejects_repository_traversal(self) -> None:
+        with self.assertRaises(ValueError):
+            self.model.FeatureRecord.from_registration(
+                {
+                    "feature_id": "pulse",
+                    "phase": "IMPLEMENTING",
+                    "spec": "docs/spec.md",
+                    "plan": "docs/plan.md",
+                    "repositories": ["../outside"],
+                    "cheap_checks": [
+                        {
+                            "check_id": "systemui-module",
+                            "command_sha256": "c" * 64,
+                            "location": "AndroidBuilder",
+                        }
+                    ],
+                    "device_cases": [{"case_id": "pulse-nav"}],
+                },
+                sender="feature-session",
+            )
+
     def test_campaign_transition_graph_rejects_skips(self) -> None:
         campaign = self.model.Campaign.new("october-batch")
 
@@ -39,7 +83,13 @@ class CampaignModelTest(unittest.TestCase):
                 "spec": "docs/spec.md",
                 "plan": "docs/plan.md",
                 "repositories": ["frameworks/base"],
-                "cheap_checks": ["m SystemUI"],
+                "cheap_checks": [
+                    {
+                        "check_id": "systemui-module",
+                        "command_sha256": "c" * 64,
+                        "location": "AndroidBuilder",
+                    }
+                ],
                 "device_cases": [{"case_id": "pulse-nav"}],
             },
             sender="",
@@ -65,14 +115,24 @@ class CampaignModelTest(unittest.TestCase):
                 "spec": "docs/spec.md",
                 "plan": "docs/plan.md",
                 "repositories": ["frameworks/base"],
-                "cheap_checks": ["m SystemUI"],
+                "cheap_checks": [
+                    {
+                        "check_id": "systemui-module",
+                        "command_sha256": "c" * 64,
+                        "location": "AndroidBuilder",
+                    }
+                ],
                 "device_cases": [{"case_id": "pulse-nav"}],
             },
             sender="feature-session",
         )
 
         with self.assertRaises(ValueError):
-            campaign.freeze({"manifest_sha256": "b" * 64}, "Freeze and build")
+            campaign.freeze(
+                {"manifest_sha256": "b" * 64},
+                "Freeze and build",
+                "orchestrator-session",
+            )
 
 
 if __name__ == "__main__":

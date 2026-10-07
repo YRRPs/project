@@ -54,7 +54,13 @@ class CampaignCliTest(unittest.TestCase):
             "spec": "docs/spec.md",
             "plan": "docs/plan.md",
             "repositories": ["frameworks/base"],
-            "cheap_checks": ["m SystemUI"],
+            "cheap_checks": [
+                {
+                    "check_id": "systemui-module",
+                    "command_sha256": "f" * 64,
+                    "location": "AndroidBuilder",
+                }
+            ],
             "device_cases": [{"case_id": "pulse-nav"}],
         }
 
@@ -83,7 +89,7 @@ class CampaignCliTest(unittest.TestCase):
         )
 
         self.assertEqual(2, result.returncode)
-        self.assertIn("campaign error: invalid transition", result.stderr)
+        self.assertIn("guarded state requires dedicated operation", result.stderr)
         self.assertNotIn("Traceback", result.stderr)
 
     def test_raw_command_is_not_written_to_state(self) -> None:

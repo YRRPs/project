@@ -9,7 +9,8 @@
             "command": "python3",
             "args": [
               "${CLAUDE_PROJECT_DIR}/.claude/hooks/yrrp-build-campaign-gate.py"
-            ]
+            ],
+            "timeout": 10
           }
         ]
       }
