@@ -1,0 +1,138 @@
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "yrrp-build-campaign.py"
+
+
+class CampaignCliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name) / "campaigns"
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def run_cli(self, *args: str, payload: dict | None = None):
+        return subprocess.run(
+            [sys.executable, str(SCRIPT), *args],
+            input=None if payload is None else json.dumps(payload),
+            capture_output=True,
+            text=True,
+            env=os.environ | {"YRRP_CAMPAIGN_ROOT": str(self.root)},
+        )
+
+    def create(self) -> None:
+        result = self.run_cli("create", "--campaign-id", "october-batch")
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_create_prints_machine_readable_status(self) -> None:
+        self.create()
+
+        result = self.run_cli("status", "--campaign-id", "october-batch")
+        value = json.loads(result.stdout)
+
+        self.assertEqual("october-batch", value["campaign_id"])
+        self.assertEqual("COLLECTING", value["state"])
+        self.assertEqual(
+            {"PASS": 0, "FAIL": 0, "BLOCKED": 0, "NOT_RUN": 0},
+            value["device_matrix"],
+        )
+
+    def test_register_reads_payload_from_stdin(self) -> None:
+        self.create()
+        payload = {
+            "feature_id": "pulse",
+            "phase": "IMPLEMENTING",
+            "spec": "docs/spec.md",
+            "plan": "docs/plan.md",
+            "repositories": ["frameworks/base"],
+            "cheap_checks": ["m SystemUI"],
+            "device_cases": [{"case_id": "pulse-nav"}],
+        }
+
+        result = self.run_cli(
+            "register-feature",
+            "--campaign-id",
+            "october-batch",
+            "--sender",
+            "feature-session",
+            payload=payload,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        state = json.loads((self.root / "october-batch.json").read_text())
+        self.assertEqual("feature-session", state["features"]["pulse"]["sender"])
+
+    def test_invalid_transition_returns_nonzero_without_traceback(self) -> None:
+        self.create()
+
+        result = self.run_cli(
+            "transition",
+            "--campaign-id",
+            "october-batch",
+            "--to",
+            "FROZEN",
+        )
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("campaign error: invalid transition", result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+
+    def test_raw_command_is_not_written_to_state(self) -> None:
+        self.create()
+        for state in ("IMPLEMENTING", "PREFLIGHT"):
+            result = self.run_cli(
+                "transition",
+                "--campaign-id",
+                "october-batch",
+                "--to",
+                state,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+        command = "ssh AndroidBuilder 'm SystemUI'"
+
+        result = self.run_cli(
+            "authorize-preflight",
+            "--campaign-id",
+            "october-batch",
+            payload={"command": command},
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        state = (self.root / "october-batch.json").read_text()
+        self.assertNotIn(command, state)
+        self.assertIn(json.loads(result.stdout)["command_sha256"], state)
+
+    def test_attach_evidence_rejects_sensitive_content(self) -> None:
+        self.create()
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "attach-evidence",
+                "--campaign-id",
+                "october-batch",
+                "--name",
+                "preflight.txt",
+            ],
+            input="password=secret\n",
+            capture_output=True,
+            text=True,
+            env=os.environ | {"YRRP_CAMPAIGN_ROOT": str(self.root)},
+        )
+
+        self.assertEqual(2, result.returncode)
+        self.assertIn("sensitive material", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
