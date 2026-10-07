@@ -180,6 +180,20 @@ class CampaignCliTest(unittest.TestCase):
         self.assertEqual(2, result.returncode)
         self.assertIn("sensitive material", result.stderr)
 
+    def test_authorize_recovery_stores_only_digest(self) -> None:
+        self.create()
+        command = (
+            "ssh AndroidBuilder /opt/yrrp/project/scripts/generate-incremental-ota.sh "
+            "--source-build 20261007-083337 --target-build 20261008-090000"
+        )
+        result = self.run_cli(
+            "authorize-recovery", "--campaign-id", "october-batch", payload={"command": command}
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        state = (self.root / "october-batch.json").read_text()
+        self.assertNotIn(command, state)
+        self.assertIn(json.loads(result.stdout)["command_sha256"], state)
+
 
 if __name__ == "__main__":
     unittest.main()

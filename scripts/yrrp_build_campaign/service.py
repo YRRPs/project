@@ -4,7 +4,7 @@ import hashlib
 import time
 from typing import Any
 
-from .command_policy import is_supported_preflight_command
+from .command_policy import is_supported_preflight_command, is_supported_recovery_command
 from .model import (
     Campaign,
     CampaignState,
@@ -219,6 +219,25 @@ class CampaignService:
             campaign.preflight_authorizations.append(digest)
             campaign.record_event(
                 "preflight-authorized",
+                "campaign-cli",
+                {"command_sha256": digest},
+            )
+
+        self.store.mutate(campaign_id, apply)
+        return digest
+
+    def authorize_recovery(self, campaign_id: str, command: str) -> str:
+        """Allow one exact builder rerun; the gate hook consumes it like a preflight."""
+        if not is_supported_recovery_command(command):
+            raise ValueError("unsupported recovery command structure")
+        digest = self.command_digest(command)
+
+        def apply(campaign: Campaign) -> None:
+            if campaign.state == CampaignState.FROZEN:
+                raise ValueError("campaign is FROZEN; launch or invalidate the freeze first")
+            campaign.preflight_authorizations.append(digest)
+            campaign.record_event(
+                "recovery-authorized",
                 "campaign-cli",
                 {"command_sha256": digest},
             )

@@ -73,6 +73,20 @@ def event(command: str, agent_type: str = "yrrp-build-campaign") -> dict:
     }
 
 
+GENERATE_RECOVERY = (
+    "ssh AndroidBuilder /opt/yrrp/project/scripts/generate-incremental-ota.sh "
+    "--source-build 20261007-083337 --target-build 20261008-090000"
+)
+DEPLOY_RECOVERY = (
+    "ssh AndroidBuilder /opt/yrrp/project/scripts/deploy-ota-release.sh "
+    "--ota /opt/android/out/signed/lineage-23.2-salami-20261008-090000-signed-ota.zip "
+    "--target-files /opt/android/out/signed/lineage-23.2-salami-20261008-090000-signed-target_files.zip "
+    "--build-id 20261008-090000 "
+    "--incremental /opt/android/out/signed/"
+    "lineage-23.2-salami-20261007-083337-to-20261008-090000-signed-incremental-ota.zip"
+)
+
+
 class CampaignGateTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -333,6 +347,45 @@ class CampaignGateTest(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("", result.stdout)
+
+    def test_recovery_command_shapes(self) -> None:
+        from yrrp_build_campaign.command_policy import is_supported_recovery_command
+
+        full_only = DEPLOY_RECOVERY.split(" --incremental ")[0]
+        for accepted in (GENERATE_RECOVERY, DEPLOY_RECOVERY, full_only):
+            self.assertTrue(is_supported_recovery_command(accepted), accepted)
+        for rejected in (
+            GENERATE_RECOVERY + " --extra x",
+            GENERATE_RECOVERY.replace("20261007-083337", "latest"),
+            DEPLOY_RECOVERY.replace("/opt/android/out/signed/lineage-23.2-salami-20261008-090000-signed-ota", "/tmp/x"),
+            DEPLOY_RECOVERY.replace("-to-20261008-090000", "-to-20261009-090000"),
+            full_only.replace("--build-id 20261008-090000", "--build-id 20261009-090000"),
+            "ssh AndroidBuilder /opt/yrrp/project/scripts/sign-lineage-build.sh",
+            GENERATE_RECOVERY + "; rm -rf /",
+            "ssh AndroidBuilder m SystemUI",
+        ):
+            self.assertFalse(is_supported_recovery_command(rejected), rejected)
+
+    def test_recovery_authorization_is_one_time(self) -> None:
+        service = self.service()
+        service.create("october-batch")
+        service.authorize_recovery("october-batch", GENERATE_RECOVERY)
+        hook = load_hook()
+        first = hook.evaluate(event(GENERATE_RECOVERY))
+        second = hook.evaluate(event(GENERATE_RECOVERY))
+        self.assertEqual("allow", first["hookSpecificOutput"]["permissionDecision"])
+        self.assertEqual("deny", second["hookSpecificOutput"]["permissionDecision"])
+
+    def test_recovery_authorization_rejects_other_commands(self) -> None:
+        service = self.service()
+        service.create("october-batch")
+        with self.assertRaisesRegex(ValueError, "unsupported recovery command"):
+            service.authorize_recovery("october-batch", "ssh AndroidBuilder m SystemUI")
+
+    def test_recovery_authorization_refused_while_frozen(self) -> None:
+        self.prepare_frozen()
+        with self.assertRaisesRegex(ValueError, "FROZEN"):
+            self.service().authorize_recovery("october-batch", GENERATE_RECOVERY)
 
 
 if __name__ == "__main__":

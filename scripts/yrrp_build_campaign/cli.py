@@ -51,6 +51,7 @@ def parser() -> argparse.ArgumentParser:
         choices=[item.value for item in CampaignState],
     )
     _campaign_command(commands, "authorize-preflight")
+    _campaign_command(commands, "authorize-recovery")
     freeze = _campaign_command(commands, "freeze")
     freeze.add_argument("--approval", required=True)
     freeze.add_argument("--actor", required=True)
@@ -154,6 +155,15 @@ def _authorize(
         args.campaign_id,
         str(payload()["command"]),
     )
+    return {"command_sha256": digest}
+
+
+def _authorize_recovery(
+    args: argparse.Namespace,
+    service: CampaignService,
+    _: CampaignStore,
+) -> dict[str, Any]:
+    digest = service.authorize_recovery(args.campaign_id, str(payload()["command"]))
     return {"command_sha256": digest}
 
 
@@ -274,6 +284,7 @@ HANDLERS: dict[str, Handler] = {
     "set-feature-phase": _set_phase,
     "transition": _transition,
     "authorize-preflight": _authorize,
+    "authorize-recovery": _authorize_recovery,
     "freeze": _freeze,
     "record-build": _record_build,
     "record-installation": _record_installation,
