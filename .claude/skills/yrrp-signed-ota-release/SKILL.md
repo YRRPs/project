@@ -62,7 +62,7 @@ printf '%s' '{"command": "<exact ssh AndroidBuilder command>"}' \
   | python3 scripts/yrrp-build-campaign.py authorize-recovery --campaign-id <id>
 ```
 
-Only the `yrrp-build-campaign` session may run `authorize-recovery` and then run the authorized command. The gate hook enforces this through the session's agent type and denies both to any other session, including `yrrp-feature-owner`. Run `authorize-recovery` on its own, not in the same Bash call as a builder command.
+Only the `yrrp-build-campaign` session may authorize or run a recovery. The hook enforces the agent type when it consumes an authorization. The authorize-step check parses command text and is best-effort. The gate does not inspect commands wrapped in another shell (`bash -c '…'`), so never wrap builder commands. Run `authorize-recovery` on its own, not in the same Bash call as a builder command. Freezing clears pending authorizations, and none can be consumed while the campaign is FROZEN.
 
 Only two shapes are accepted, and the command must be exactly `ssh AndroidBuilder <script> <options>`, with no `ssh` options or wrapper: `generate-incremental-ota.sh --source-build <id> --target-build <id>`, and `deploy-ota-release.sh --ota … --target-files … --build-id <id> [--incremental …]` with paths under `/opt/android/out/signed/`. Run the authorized command as a background Bash command, and record its exit code and output as evidence. Both scripts refuse to run while a campaign build holds `/home/android/.yrrp-build-launch.lock`. `deploy-ota-release.sh` without `--incremental` publishes full-only. If the live release has an incremental, a redeploy must pass the same `--incremental /opt/android/out/signed/<name>` again, or the redeploy drops it.
 
