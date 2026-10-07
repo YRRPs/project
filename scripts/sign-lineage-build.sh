@@ -67,17 +67,19 @@ resolve_incremental_source() {
         printf 'incremental-skipped: no live OTA container\n' >&2
         return 0
     fi
-    device=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.device" }}' "${ota_container}")
+    # Command substitution does not inherit errexit; a failed inspect must not look like a skip.
+    device=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.device" }}' "${ota_container}") || return 1
     if [[ ${device} != salami ]]; then
         printf 'incremental-skipped: live container serves device %s\n' "${device:-unknown}" >&2
         return 0
     fi
-    build_id=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.build-id" }}' "${ota_container}")
+    build_id=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.build-id" }}' "${ota_container}") || return 1
     if [[ ! ${build_id} =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
         printf 'Live OTA container has invalid build-id label: %s\n' "${build_id}" >&2
         return 1
     fi
-    if [[ ! -s "${output_dir}/lineage-23.2-salami-${build_id}-signed-target_files.zip" ]]; then
+    # Skip only when the source is absent; generate-incremental-ota.sh rejects an empty or corrupt one.
+    if [[ ! -e "${output_dir}/lineage-23.2-salami-${build_id}-signed-target_files.zip" ]]; then
         printf 'incremental-skipped: no signed target-files for live build %s\n' "${build_id}" >&2
         return 0
     fi
@@ -256,12 +258,16 @@ failure_domain=signing
 readonly target_files_sha256=$(sha256sum "${signed_target_files}" | awk '{print $1}')
 readonly ota_sha256=$(sha256sum "${signed_ota}" | awk '{print $1}')
 readonly summary="${output_dir}/lineage-23.2-salami-${build_date}-SHA256SUMS.txt"
+incremental_sha256=
+if [[ -n ${incremental_ota} ]]; then
+    incremental_sha256=$(sha256sum "${incremental_ota}" | awk '{print $1}')
+fi
 
 {
     printf '%s  %s\n' "${target_files_sha256}" "$(basename "${signed_target_files}")"
     printf '%s  %s\n' "${ota_sha256}" "$(basename "${signed_ota}")"
     if [[ -n ${incremental_ota} ]]; then
-        printf '%s  %s\n' "$(sha256sum "${incremental_ota}" | awk '{print $1}')" "$(basename "${incremental_ota}")"
+        printf '%s  %s\n' "${incremental_sha256}" "$(basename "${incremental_ota}")"
     fi
 } > "${summary}"
 

@@ -84,19 +84,21 @@ class SignLineageBuildTest(unittest.TestCase):
         shutil.copy2(FAKE_LIVE_DOCKER, self.bin / "docker")
         (self.bin / "docker").chmod(0o755)
 
-    def _create_live_source(self) -> None:
+    def _create_live_source(self, content: bytes = b"source") -> None:
         signed = self.build / "out/signed"
         signed.mkdir(parents=True, exist_ok=True)
-        (signed / f"lineage-23.2-salami-{SOURCE_BUILD_ID}-signed-target_files.zip").write_bytes(b"source")
+        (signed / f"lineage-23.2-salami-{SOURCE_BUILD_ID}-signed-target_files.zip").write_bytes(content)
 
-    def _incremental_stub(self, exit_code: int) -> Path:
+    def _incremental_stub(self, exit_code: int, unreadable_output: bool = False) -> Path:
         signed = self.build / "out/signed"
+        lock_output = f"chmod 000 {signed}/{INCREMENTAL}\n" if unreadable_output else ""
         return write_executable(
             self.root / "generate-incremental.sh",
             "#!/bin/sh\n"
             f"printf '%s %s\\n' \"$YRRP_BUILD_LOCK_HELD\" \"$*\" > {self.incremental_log}\n"
             f"[ {exit_code} -eq 0 ] || exit {exit_code}\n"
-            f"printf incremental > {signed}/{INCREMENTAL}\n",
+            f"printf incremental > {signed}/{INCREMENTAL}\n"
+            + lock_output,
         )
 
     def run_script(
@@ -108,6 +110,8 @@ class SignLineageBuildTest(unittest.TestCase):
         live_build: str | None = None,
         live_device: str = "salami",
         incremental_exit: int = 0,
+        unreadable_incremental: bool = False,
+        inspect_fail: str = "",
     ) -> subprocess.CompletedProcess[str]:
         deploy = self.root / "deploy.sh"
         deploy.write_text(
@@ -143,9 +147,12 @@ class SignLineageBuildTest(unittest.TestCase):
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
             "OTA_BASE_IMAGE_REF": "ghcr.io/yrrp/ota:main",
             "YRRP_CAMPAIGN_CLAIM_FILE": str(claim),
-            "YRRP_INCREMENTAL_SCRIPT": str(self._incremental_stub(incremental_exit)),
+            "YRRP_INCREMENTAL_SCRIPT": str(
+                self._incremental_stub(incremental_exit, unreadable_incremental)
+            ),
             "FAKE_LIVE_BUILD": live_build or "",
             "FAKE_LIVE_DEVICE": live_device,
+            "FAKE_INSPECT_FAIL": inspect_fail,
         }
         if not include_ota_environment:
             env.pop("OTA_PUBLIC_BASE_URL")
@@ -223,6 +230,40 @@ class SignLineageBuildTest(unittest.TestCase):
         self.assertFalse(self.deploy_log.exists())
         signed = self.build / "out/signed"
         self.assertTrue((signed / f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip").is_file())
+
+    def test_empty_live_source_still_runs_incremental_generation(self) -> None:
+        self._create_live_source(content=b"")
+        result = self.run_script(live_build=SOURCE_BUILD_ID, incremental_exit=41)
+        self.assertNotIn("incremental-skipped", result.stderr)
+        self.assertEqual(
+            f"1 --source-build {SOURCE_BUILD_ID} --target-build {BUILD_ID}",
+            self.incremental_log.read_text().strip(),
+        )
+        self.assertEqual("incremental-failed:41", self.status.read_text().strip())
+        self.assertFalse(self.deploy_log.exists())
+
+    def test_failing_label_inspect_fails_incremental_without_deploy(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, inspect_fail="io.yrrp.ota.device")
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("incremental-skipped", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("incremental-failed:"))
+        self.assertFalse(self.deploy_log.exists())
+        self.assertFalse(self.incremental_log.exists())
+
+    def test_failing_build_id_inspect_fails_incremental_without_deploy(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, inspect_fail="io.yrrp.ota.build-id")
+        self.assertNotEqual(0, result.returncode)
+        self.assertTrue(self.status.read_text().startswith("incremental-failed:"))
+        self.assertFalse(self.deploy_log.exists())
+
+    def test_unreadable_incremental_checksum_stops_before_deploy(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, unreadable_incremental=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse(self.deploy_log.exists())
+        self.assertNotEqual("complete", self.status.read_text().strip())
 
 
 if __name__ == "__main__":

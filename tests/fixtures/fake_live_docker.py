@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Docker stub reporting one live OTA release container from FAKE_LIVE_* variables."""
+"""Docker stub reporting one live OTA release container from FAKE_LIVE_* variables.
+
+FAKE_INSPECT_FAIL makes any inspect whose arguments contain that text exit 1.
+"""
 import os
 import sys
 from pathlib import Path
@@ -12,6 +15,9 @@ if args[:1] == ["inspect"]:
     if not live_build:
         sys.exit(1)
     joined = " ".join(args)
+    failing = os.environ.get("FAKE_INSPECT_FAIL", "")
+    if failing and failing in joined:
+        sys.exit(1)
     if "io.yrrp.ota.device" in joined:
         print(os.environ.get("FAKE_LIVE_DEVICE", "salami"))
     elif "io.yrrp.ota.build-id" in joined:
