@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shlex
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -12,8 +15,10 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from yrrp_build_campaign import launcher
 from yrrp_build_campaign.launcher import (
     REMOTE_LAUNCH_SCRIPT,
+    REMOTE_SNAPSHOT_SCRIPT,
     collect_remote_snapshot,
     collect_remote_source,
     launch_campaign,
@@ -25,6 +30,22 @@ from yrrp_build_campaign.store import CampaignStore
 
 
 MANIFEST = b"<manifest/>\n"
+
+REAL_SUBPROCESS_RUN = subprocess.run
+
+STAND_IN_SCRIPT = r'''
+import json
+import sys
+
+payload = sys.stdin.read()
+marker = "it's \"quoted\" $HOME `true` ; exit 3"
+print(json.dumps({
+    "argv": sys.argv,
+    "stdin": payload,
+    "marker": marker,
+    "manifest_xml": "<manifest/>",
+}))
+'''
 
 
 def command_ref(step_id: str) -> dict:
@@ -215,6 +236,54 @@ class CampaignLauncherTest(unittest.TestCase):
             args, kwargs = call
             self.assertIsInstance(args[0], list)
             self.assertFalse(kwargs.get("shell", False))
+
+
+    def capture_remote_argvs(self) -> list[tuple[list[str], str]]:
+        captured: list[tuple[list[str], str]] = []
+
+        def fake_run(argv, **kwargs):
+            captured.append((argv, kwargs["input"]))
+            result = subprocess.CompletedProcess(argv, 0)
+            result.stdout = '{"manifest_xml": "<manifest/>"}'
+            return result
+
+        campaign = self.store.load("october-batch")
+        with patch("yrrp_build_campaign.launcher.subprocess.run", fake_run):
+            collect_remote_source(campaign)
+            launch_remote_build("october-batch", frozen_snapshot())
+        return captured
+
+    def test_remote_python_survives_ssh_argument_join(self) -> None:
+        captured = self.capture_remote_argvs()
+
+        expected_scripts = [REMOTE_SNAPSHOT_SCRIPT, REMOTE_LAUNCH_SCRIPT]
+        self.assertEqual(2, len(captured))
+        for (argv, _), script in zip(captured, expected_scripts):
+            # ssh joins the remote argv with spaces; the remote shell re-parses it.
+            remote_command = " ".join(argv[2:])
+            self.assertEqual(["python3", "-c", script], shlex.split(remote_command))
+
+    def test_remote_python_runs_unchanged_through_shell(self) -> None:
+        with patch.object(launcher, "REMOTE_SNAPSHOT_SCRIPT", STAND_IN_SCRIPT), \
+                patch.object(launcher, "REMOTE_LAUNCH_SCRIPT", STAND_IN_SCRIPT):
+            captured = self.capture_remote_argvs()
+
+        self.assertEqual(2, len(captured))
+        for argv, payload in captured:
+            remote_command = " ".join(argv[2:])
+            result = REAL_SUBPROCESS_RUN(
+                ["bash", "-c", remote_command],
+                input=payload,
+                capture_output=True,
+                check=True,
+                text=True,
+            )
+            output = json.loads(result.stdout)
+            self.assertEqual(["-c"], output["argv"])
+            self.assertEqual(payload, output["stdin"])
+            self.assertEqual(
+                "it's \"quoted\" $HOME `true` ; exit 3", output["marker"]
+            )
 
 
 if __name__ == "__main__":

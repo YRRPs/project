@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 from collections.abc import Callable
 from typing import Any
@@ -178,13 +179,22 @@ SnapshotProvider = Callable[[Campaign], dict[str, Any]]
 BuildRunner = Callable[[str, dict[str, Any]], None]
 
 
+def remote_python_argv(script: str) -> list[str]:
+    """Build an ssh argv that runs ``script`` with python3 on the builder.
+
+    ssh joins the remote argv with spaces and the remote login shell parses
+    the result, so the script must be shell-quoted to arrive as one argument.
+    """
+    return ["ssh", "AndroidBuilder", "python3", "-c", shlex.quote(script)]
+
+
 def collect_remote_source(campaign: Campaign) -> tuple[dict[str, Any], str]:
     base_snapshot = campaign.source_snapshot or {
         "repositories": campaign.expected_revisions()
     }
     repositories = sorted(base_snapshot["repositories"])
     result = subprocess.run(
-        ["ssh", "AndroidBuilder", "python3", "-c", REMOTE_SNAPSHOT_SCRIPT],
+        remote_python_argv(REMOTE_SNAPSHOT_SCRIPT),
         input=json.dumps(repositories),
         capture_output=True,
         check=True,
@@ -206,7 +216,7 @@ def launch_remote_build(
     expected_snapshot: dict[str, Any],
 ) -> None:
     subprocess.run(
-        ["ssh", "AndroidBuilder", "python3", "-c", REMOTE_LAUNCH_SCRIPT],
+        remote_python_argv(REMOTE_LAUNCH_SCRIPT),
         input=json.dumps(
             {"campaign_id": campaign_id, "snapshot": expected_snapshot},
             sort_keys=True,
