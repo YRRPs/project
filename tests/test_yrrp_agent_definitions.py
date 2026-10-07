@@ -1,0 +1,95 @@
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+ORCHESTRATOR = ROOT / ".claude/agents/yrrp-build-campaign.md"
+FEATURE_OWNER = ROOT / ".claude/agents/yrrp-feature-owner.md"
+
+
+def split_agent(text: str) -> tuple[str, str]:
+    first, frontmatter, body = text.split("---", 2)
+    if first.strip():
+        raise ValueError("agent file must start with frontmatter")
+    return frontmatter, body
+
+
+def description(frontmatter: str) -> str:
+    for line in frontmatter.splitlines():
+        if line.startswith("description: "):
+            return line.removeprefix("description: ")
+    raise ValueError("description is missing")
+
+
+class AgentDefinitionTest(unittest.TestCase):
+    def test_orchestrator_has_required_identity_and_tools(self) -> None:
+        text = ORCHESTRATOR.read_text()
+        frontmatter, body = split_agent(text)
+
+        self.assertIn("name: yrrp-build-campaign", frontmatter)
+        for tool in (
+            "ListAgents",
+            "SendMessage",
+            "AskUserQuestion",
+            "Bash",
+            "Skill",
+        ):
+            self.assertIn(f"  - {tool}", frontmatter)
+        for forbidden in (
+            "  - Edit",
+            "  - Write",
+            "  - NotebookEdit",
+            "  - Agent",
+        ):
+            self.assertNotIn(forbidden, frontmatter)
+        self.assertIn("claude --agent yrrp-build-campaign", body)
+
+    def test_feature_owner_is_broad_main_session_agent(self) -> None:
+        text = FEATURE_OWNER.read_text()
+        frontmatter, body = split_agent(text)
+
+        self.assertIn("name: yrrp-feature-owner", frontmatter)
+        self.assertIn("model: inherit", frontmatter)
+        self.assertNotIn("tools:", frontmatter)
+        self.assertIn("claude --agent yrrp-feature-owner", body)
+        self.assertIn("Background-subagent execution is unsupported", body)
+
+    def test_message_contracts_exist_in_both_roles(self) -> None:
+        orchestrator = ORCHESTRATOR.read_text()
+        feature = FEATURE_OWNER.read_text()
+
+        for contract in (
+            "REGISTER_FEATURE",
+            "READY_FOR_BUILD",
+            "DEVICE_LEASE_GRANTED",
+            "FEATURE_VERIFICATION_RESULT",
+        ):
+            self.assertIn(contract, orchestrator)
+            self.assertIn(contract, feature)
+
+    def test_descriptions_are_trigger_lists_with_non_cases(self) -> None:
+        for path, phrase in (
+            (ORCHESTRATOR, "avoiding another expensive build"),
+            (FEATURE_OWNER, "active user brainstorming"),
+        ):
+            with self.subTest(path=path):
+                frontmatter, _ = split_agent(path.read_text())
+                value = description(frontmatter)
+                self.assertGreaterEqual(len(value), 120)
+                self.assertIn(phrase, value)
+                self.assertIn("NOT for", value)
+
+    def test_agents_open_with_visible_announce_line(self) -> None:
+        expected = {
+            ORCHESTRATOR: "Announce first: **Using yrrp-build-campaign",
+            FEATURE_OWNER: "Announce first: **Using yrrp-feature-owner",
+        }
+        for path, prefix in expected.items():
+            with self.subTest(path=path):
+                _, body = split_agent(path.read_text())
+                self.assertTrue(body.lstrip().startswith(prefix))
+
+
+if __name__ == "__main__":
+    unittest.main()
