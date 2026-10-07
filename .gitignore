@@ -16,6 +16,9 @@ out/
 # Local Superpowers working documents
 /docs/superpowers/
 
+# Local YRRP build campaign state
+/.claude/build-campaigns/
+
 # Python state
 __pycache__/
 *.py[cod]

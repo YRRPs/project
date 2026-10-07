@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -89,6 +90,22 @@ class AgentDefinitionTest(unittest.TestCase):
             with self.subTest(path=path):
                 _, body = split_agent(path.read_text())
                 self.assertTrue(body.lstrip().startswith(prefix))
+
+    def test_project_settings_register_exec_form_hook(self) -> None:
+        value = json.loads((ROOT / ".claude/settings.json").read_text())
+        handler = value["hooks"]["PreToolUse"][0]
+        self.assertEqual("Bash", handler["matcher"])
+        hook = handler["hooks"][0]
+        self.assertEqual("command", hook["type"])
+        self.assertEqual("python3", hook["command"])
+        self.assertEqual(
+            ["${CLAUDE_PROJECT_DIR}/.claude/hooks/yrrp-build-campaign-gate.py"],
+            hook["args"],
+        )
+
+    def test_runtime_campaigns_are_ignored(self) -> None:
+        lines = (ROOT / ".gitignore").read_text().splitlines()
+        self.assertIn("/.claude/build-campaigns/", lines)
 
 
 if __name__ == "__main__":
