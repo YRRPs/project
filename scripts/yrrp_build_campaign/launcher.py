@@ -60,6 +60,7 @@ def validate_preflight():
     subprocess.run(
         ["sha256sum", "--check", "--quiet", "MANIFEST.sha256"],
         cwd=SIGNING,
+        stdout=sys.stderr,
         check=True,
     )
     if (SIGNING / "testkey.pk8").readlink().name != "releasekey.pk8":
@@ -73,7 +74,11 @@ def validate_preflight():
     ).stdout
     if ".yrrp-ota-build" in screens:
         raise SystemExit("yrrp-ota-build screen already exists")
-    subprocess.run(["docker", "network", "inspect", "proxy-net"], check=True)
+    subprocess.run(
+        ["docker", "network", "inspect", "proxy-net"],
+        stdout=sys.stderr,
+        check=True,
+    )
 
 
 validate_preflight()
@@ -154,6 +159,7 @@ def validate_preflight():
     subprocess.run(
         ["sha256sum", "--check", "--quiet", "MANIFEST.sha256"],
         cwd=SIGNING,
+        stdout=sys.stderr,
         check=True,
     )
     if (SIGNING / "testkey.pk8").readlink().name != "releasekey.pk8":
@@ -162,7 +168,11 @@ def validate_preflight():
         raise SystemExit("testkey.x509.pem does not point to releasekey.x509.pem")
     if build_process_active(run("ps", "-eo", "args", cwd=ANDROID)):
         raise SystemExit("build or signing process is already active")
-    subprocess.run(["docker", "network", "inspect", "proxy-net"], check=True)
+    subprocess.run(
+        ["docker", "network", "inspect", "proxy-net"],
+        stdout=sys.stderr,
+        check=True,
+    )
 
 
 def current_source():
@@ -196,6 +206,7 @@ with lock_path.open("r+") as lock:
         raise SystemExit("remote source changed after local verification")
     subprocess.run(
         ["sudo", "install", "-d", "-m", "0777", "-o", "root", "-g", "utmp", "/run/screen"],
+        stdout=sys.stderr,
         check=True,
     )
     screens = subprocess.run(
@@ -224,6 +235,7 @@ with lock_path.open("r+") as lock:
             "env", f"YRRP_CAMPAIGN_CLAIM_FILE={claim_path}",
             "/opt/yrrp/project/scripts/sign-lineage-build.sh",
         ],
+        stdout=sys.stderr,
         check=True,
     )
     print(json.dumps({"log": str(log), "project": current["project_sha"]}))

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import json
 import re
@@ -387,6 +388,61 @@ class BuildProcessDetectionTest(unittest.TestCase):
                 output = json.loads(result.stdout)
                 self.assertTrue(output["own_line_has_all_names"])
                 self.assertFalse(output["active"])
+
+
+class RemoteScriptStdoutTests(unittest.TestCase):
+    SCRIPTS = {
+        "snapshot": REMOTE_SNAPSHOT_SCRIPT,
+        "launch": REMOTE_LAUNCH_SCRIPT,
+    }
+
+    @staticmethod
+    def _is_subprocess_run(node: ast.AST) -> bool:
+        return (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "subprocess"
+        )
+
+    def test_every_subprocess_run_keeps_stdout_off_the_json_channel(self) -> None:
+        for label, script in self.SCRIPTS.items():
+            calls = [
+                node
+                for node in ast.walk(ast.parse(script))
+                if self._is_subprocess_run(node)
+            ]
+            self.assertTrue(calls, label)
+            for call in calls:
+                with self.subTest(script=label, line=call.lineno):
+                    keywords = {kw.arg: kw.value for kw in call.keywords}
+                    captured = (
+                        isinstance(keywords.get("capture_output"), ast.Constant)
+                        and keywords["capture_output"].value is True
+                    )
+                    self.assertTrue(
+                        captured or "stdout" in keywords,
+                        "subprocess.run leaks child stdout into the JSON stream",
+                    )
+
+    def test_each_script_prints_exactly_one_json_document_to_stdout(self) -> None:
+        for label, script in self.SCRIPTS.items():
+            prints = [
+                node
+                for node in ast.walk(ast.parse(script))
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "print"
+            ]
+            with self.subTest(script=label):
+                self.assertEqual(len(prints), 1)
+                call = prints[0]
+                self.assertFalse(call.keywords)
+                self.assertEqual(len(call.args), 1)
+                dumps = call.args[0]
+                self.assertIsInstance(dumps, ast.Call)
+                self.assertEqual(ast.unparse(dumps.func), "json.dumps")
 
 
 if __name__ == "__main__":
