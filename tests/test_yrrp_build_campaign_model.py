@@ -25,6 +25,27 @@ class CampaignModelTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.model.validate_slug(value)
 
+    def test_registration_rejects_empty_acceptance_matrix(self) -> None:
+        with self.assertRaises(ValueError):
+            self.model.FeatureRecord.from_registration(
+                {
+                    "feature_id": "pulse",
+                    "phase": "IMPLEMENTING",
+                    "spec": "docs/spec.md",
+                    "plan": "docs/plan.md",
+                    "repositories": ["frameworks/base"],
+                    "cheap_checks": [
+                        {
+                            "check_id": "systemui-module",
+                            "command_sha256": "c" * 64,
+                            "location": "AndroidBuilder",
+                        }
+                    ],
+                    "device_cases": [],
+                },
+                sender="feature-session",
+            )
+
     def test_registration_rejects_raw_device_commands(self) -> None:
         with self.assertRaises(ValueError):
             self.model.FeatureRecord.from_registration(
@@ -102,8 +123,40 @@ class CampaignModelTest(unittest.TestCase):
                     "clean_repositories": ["frameworks/base"],
                     "check_evidence": ["evidence/preflight.txt"],
                     "observability": "ready",
+                    "restoration_steps": ["restore Pulse settings"],
                 }
             )
+
+    def test_readiness_rejects_raw_command_fields(self) -> None:
+        feature = self.model.FeatureRecord.from_registration(
+            {
+                "feature_id": "pulse",
+                "phase": "IMPLEMENTING",
+                "spec": "docs/spec.md",
+                "plan": "docs/plan.md",
+                "repositories": ["frameworks/base"],
+                "cheap_checks": [
+                    {
+                        "check_id": "systemui-module",
+                        "command_sha256": "c" * 64,
+                        "location": "AndroidBuilder",
+                    }
+                ],
+                "device_cases": [{"case_id": "pulse-nav"}],
+            },
+            sender="feature-session",
+        )
+        readiness = {
+            "revisions": {"frameworks/base": "a" * 40},
+            "clean_repositories": ["frameworks/base"],
+            "check_evidence": ["preflight.txt"],
+            "observability": "ready",
+            "restoration_steps": ["restore Pulse settings"],
+            "command": "raw command text",
+        }
+
+        with self.assertRaises(ValueError):
+            feature.mark_ready(readiness)
 
     def test_frozen_campaign_requires_every_feature_ready(self) -> None:
         campaign = self.model.Campaign.new("october-batch")

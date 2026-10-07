@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -96,6 +98,7 @@ class SignLineageBuildTest(unittest.TestCase):
         deploy_exit: int = 0,
         *,
         include_ota_environment: bool = True,
+        include_campaign_claim: bool = True,
     ) -> subprocess.CompletedProcess[str]:
         deploy = self.root / "deploy.sh"
         deploy.write_text(
@@ -104,6 +107,19 @@ class SignLineageBuildTest(unittest.TestCase):
             f"exit {deploy_exit}\n"
         )
         deploy.chmod(0o755)
+        claim = self.root / "campaign-claim.json"
+        if include_campaign_claim:
+            claim.write_text(
+                json.dumps(
+                    {
+                        "campaign_id": "test-campaign",
+                        "source_snapshot_sha256": "a" * 64,
+                        "expires_at": int(time.time()) + 300,
+                    }
+                )
+                + "\n"
+            )
+            claim.chmod(0o600)
         env = os.environ | {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "YRRP_BUILD_ROOT": str(self.build),
@@ -117,11 +133,18 @@ class SignLineageBuildTest(unittest.TestCase):
             "YRRP_RUNTIME_PASSWORD_FILE": str(self.root / "runtime-passwords"),
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
             "OTA_BASE_IMAGE_REF": "ghcr.io/yrrp/ota:main",
+            "YRRP_CAMPAIGN_CLAIM_FILE": str(claim),
         }
         if not include_ota_environment:
             env.pop("OTA_PUBLIC_BASE_URL")
             env.pop("OTA_BASE_IMAGE_REF")
         return subprocess.run([str(SCRIPT)], capture_output=True, text=True, env=env)
+
+    def test_requires_valid_campaign_claim(self) -> None:
+        result = self.run_script(include_campaign_claim=False)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Campaign claim file is required", result.stderr)
 
     def test_uses_yrrp_ota_defaults(self) -> None:
         result = self.run_script(include_ota_environment=False)

@@ -8,7 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from yrrp_build_campaign.launcher import collect_remote_snapshot, launch_campaign
+from yrrp_build_campaign.launcher import collect_remote_source, launch_campaign
 from yrrp_build_campaign.service import CampaignService
 from yrrp_build_campaign.store import CampaignStore
 
@@ -30,7 +30,13 @@ def main() -> int:
     try:
         if arguments.capture_snapshot:
             campaign = service.store.load(arguments.campaign_id)
-            live_source = collect_remote_snapshot(campaign)
+            live_source, manifest = collect_remote_source(campaign)
+            manifest_name = f"manifest-{live_source['manifest_sha256'][:12]}.xml"
+            live_source["manifest_evidence"] = service.store.write_evidence(
+                arguments.campaign_id,
+                manifest_name,
+                manifest.encode(),
+            )
             prepared = service.prepare_snapshot(arguments.campaign_id, live_source)
             print(json.dumps(prepared, sort_keys=True))
         else:

@@ -93,6 +93,7 @@ class CampaignGateTest(unittest.TestCase):
                 "clean_repositories": ["frameworks/base"],
                 "check_evidence": ["evidence/preflight.txt"],
                 "observability": "ready",
+                "restoration_steps": ["restore Pulse settings"],
             },
         )
         for state in (
@@ -105,6 +106,7 @@ class CampaignGateTest(unittest.TestCase):
             "october-batch",
             {
                 "manifest_sha256": "b" * 64,
+                "manifest_evidence": "evidence/manifest.xml",
                 "repositories": {"frameworks/base": "a" * 40},
                 "branches": {"frameworks/base": "lineage-23.2"},
                 "clean_repositories": ["frameworks/base"],
@@ -132,6 +134,8 @@ class CampaignGateTest(unittest.TestCase):
             "ssh -p 4242 AndroidBuilder 'mka target-files-package otatools'",
             "ssh Android\"\"Builder 'mka dist'",
             "sign-lineage-build.sh; echo done",
+            "ssh AndroidBuilder 'cat status; brunch salami'",
+            "ssh AndroidBuilder 'git status; mka bacon'",
         )
         for command in raw_commands:
             with self.subTest(command=command):
@@ -141,6 +145,10 @@ class CampaignGateTest(unittest.TestCase):
         hook = load_hook()
 
         self.assertEqual("other", hook.classify("grep -R 'brunch salami' ."))
+        self.assertEqual(
+            "other",
+            hook.classify("git add scripts/sign-lineage-build.sh"),
+        )
 
     def test_read_only_builder_command_has_no_opinion(self) -> None:
         hook = load_hook()
@@ -204,9 +212,28 @@ class CampaignGateTest(unittest.TestCase):
     def test_preflight_requires_one_time_authorization(self) -> None:
         service = self.service()
         service.create("october-batch")
+        command = "ssh AndroidBuilder 'm SystemUI'"
+        service.register_feature(
+            "october-batch",
+            {
+                "feature_id": "pulse",
+                "phase": "IMPLEMENTING",
+                "spec": "docs/spec.md",
+                "plan": "docs/plan.md",
+                "repositories": ["frameworks/base"],
+                "cheap_checks": [
+                    {
+                        "check_id": "systemui-module",
+                        "command_sha256": service.command_digest(command),
+                        "location": "AndroidBuilder",
+                    }
+                ],
+                "device_cases": [{"case_id": "pulse-nav"}],
+            },
+            sender="feature-session",
+        )
         service.transition("october-batch", CampaignState.IMPLEMENTING)
         service.transition("october-batch", CampaignState.PREFLIGHT)
-        command = "ssh AndroidBuilder 'm SystemUI'"
         service.authorize_preflight("october-batch", command)
         hook = load_hook()
 

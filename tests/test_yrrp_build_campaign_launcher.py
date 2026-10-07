@@ -13,6 +13,7 @@ if str(SCRIPTS) not in sys.path:
 
 from yrrp_build_campaign.launcher import (
     collect_remote_snapshot,
+    collect_remote_source,
     launch_campaign,
     launch_remote_build,
 )
@@ -24,6 +25,7 @@ from yrrp_build_campaign.store import CampaignStore
 def frozen_snapshot() -> dict:
     return {
         "manifest_sha256": "b" * 64,
+        "manifest_evidence": "evidence/manifest.xml",
         "repositories": {"frameworks/base": "a" * 40},
         "branches": {"frameworks/base": "lineage-23.2"},
         "clean_repositories": ["frameworks/base"],
@@ -76,6 +78,7 @@ class CampaignLauncherTest(unittest.TestCase):
                 "clean_repositories": ["frameworks/base"],
                 "check_evidence": ["preflight.txt"],
                 "observability": "ready",
+                "restoration_steps": ["restore Pulse settings"],
             },
         )
         for state in (
@@ -107,7 +110,7 @@ class CampaignLauncherTest(unittest.TestCase):
                 self.service,
                 "october-batch",
                 snapshot_provider=lambda _: frozen_snapshot(),
-                build_runner=lambda: None,
+                build_runner=lambda *_: None,
             )
         self.assertEqual(
             CampaignState.FROZEN,
@@ -122,7 +125,7 @@ class CampaignLauncherTest(unittest.TestCase):
             self.service,
             "october-batch",
             snapshot_provider=lambda _: frozen_snapshot(),
-            build_runner=lambda: runs.append("launched"),
+            build_runner=lambda *_: runs.append("launched"),
         )
 
         campaign = self.store.load("october-batch")
@@ -142,7 +145,7 @@ class CampaignLauncherTest(unittest.TestCase):
                 self.service,
                 "october-batch",
                 snapshot_provider=lambda _: stale,
-                build_runner=lambda: runs.append("launched"),
+                build_runner=lambda *_: runs.append("launched"),
             )
 
         self.assertEqual([], runs)
@@ -154,7 +157,7 @@ class CampaignLauncherTest(unittest.TestCase):
     def test_launch_failure_enters_fix_batch(self) -> None:
         self.authorize()
 
-        def fail() -> None:
+        def fail(*_) -> None:
             raise RuntimeError("ssh launch failed")
 
         with self.assertRaisesRegex(RuntimeError, "ssh launch failed"):
@@ -171,12 +174,15 @@ class CampaignLauncherTest(unittest.TestCase):
 
     @patch("yrrp_build_campaign.launcher.subprocess.run")
     def test_remote_commands_use_fixed_argument_vectors(self, run) -> None:
-        run.return_value.stdout = '{"manifest_sha256":"b", "repositories":{}, "branches":{}, "clean_repositories":[], "project_sha":"e"}'
+        run.return_value.stdout = '{"manifest_sha256":"b", "manifest_xml":"<manifest/>", "repositories":{}, "branches":{}, "clean_repositories":[], "project_sha":"e"}'
         campaign = self.store.load("october-batch")
 
+        source, manifest = collect_remote_source(campaign)
         collect_remote_snapshot(campaign)
-        launch_remote_build()
+        launch_remote_build("october-batch", frozen_snapshot())
 
+        self.assertEqual("<manifest/>", manifest)
+        self.assertEqual("b", source["manifest_sha256"])
         for call in run.call_args_list:
             args, kwargs = call
             self.assertIsInstance(args[0], list)

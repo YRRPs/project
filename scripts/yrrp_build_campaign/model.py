@@ -26,8 +26,26 @@ FORBIDDEN_PERSISTED_FIELDS = {
     "secret",
     "token",
 }
+REGISTRATION_FIELDS = {
+    "feature_id",
+    "phase",
+    "spec",
+    "plan",
+    "repositories",
+    "cheap_checks",
+    "device_cases",
+}
+READINESS_FIELDS = {
+    "revisions",
+    "clean_repositories",
+    "check_evidence",
+    "observability",
+    "restoration_steps",
+}
+DEVICE_CASE_FIELDS = {"case_id", "expected", "setup", "action", "cleanup"}
 SNAPSHOT_FIELDS = {
     "manifest_sha256",
+    "manifest_evidence",
     "repositories",
     "branches",
     "clean_repositories",
@@ -162,6 +180,26 @@ def _validate_check(value: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _validate_device_cases(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not values:
+        raise ValueError("at least one device case is required")
+    seen: set[str] = set()
+    result = []
+    for value in values:
+        unknown = set(value) - DEVICE_CASE_FIELDS
+        if unknown:
+            raise ValueError(
+                "device case contains unknown fields: " + ", ".join(sorted(unknown))
+            )
+        case_id = validate_slug(str(value["case_id"]))
+        if case_id in seen:
+            raise ValueError(f"duplicate assigned device case: {case_id}")
+        seen.add(case_id)
+        result.append({**value, "case_id": case_id})
+    validate_safe_payload(result, "device cases")
+    return result
+
+
 @dataclass
 class FeatureRecord:
     feature_id: str
@@ -181,25 +219,37 @@ class FeatureRecord:
         value: dict[str, Any],
         sender: str,
     ) -> FeatureRecord:
-        device_cases = [dict(item) for item in value["device_cases"]]
-        validate_safe_payload(device_cases, "device cases")
+        if set(value) != REGISTRATION_FIELDS:
+            raise ValueError("registration fields do not match required schema")
+        repositories = [
+            validate_repository(str(item)) for item in value["repositories"]
+        ]
+        cheap_checks = [_validate_check(dict(item)) for item in value["cheap_checks"]]
+        if not repositories:
+            raise ValueError("at least one repository is required")
+        if not cheap_checks:
+            raise ValueError("at least one cheap check is required")
+        device_cases = _validate_device_cases(
+            [dict(item) for item in value["device_cases"]]
+        )
         return cls(
             feature_id=validate_slug(str(value["feature_id"])),
             sender=sender,
             phase=FeaturePhase(str(value["phase"])),
             spec=str(value["spec"]),
             plan=str(value["plan"]),
-            repositories=[
-                validate_repository(str(item)) for item in value["repositories"]
-            ],
-            cheap_checks=[_validate_check(dict(item)) for item in value["cheap_checks"]],
+            repositories=repositories,
+            cheap_checks=cheap_checks,
             device_cases=device_cases,
         )
 
     def mark_ready(self, readiness: dict[str, Any]) -> None:
         if self.phase == FeaturePhase.UNREGISTERED or not self.sender:
             raise ValueError(f"feature {self.feature_id} is not registered")
-        revisions = readiness.get("revisions", {})
+        if set(readiness) != READINESS_FIELDS:
+            raise ValueError("readiness fields do not match required schema")
+        validate_safe_payload(readiness, "readiness")
+        revisions = readiness["revisions"]
         if set(revisions) != set(self.repositories):
             raise ValueError("readiness revisions do not match registered repositories")
         if not all(SHA1.fullmatch(str(value)) for value in revisions.values()):
@@ -210,6 +260,8 @@ class FeatureRecord:
             raise ValueError("check evidence is required")
         if readiness.get("observability") not in {"ready", "not-applicable"}:
             raise ValueError("observability must be ready or not-applicable")
+        if not readiness["restoration_steps"]:
+            raise ValueError("restoration steps are required")
         self.readiness = dict(readiness)
         self.device_result = None
         self.phase = FeaturePhase.READY_FOR_BUILD
@@ -301,6 +353,9 @@ class Campaign:
         missing = sorted(SNAPSHOT_FIELDS - snapshot.keys())
         if missing:
             raise ValueError(f"snapshot missing: {', '.join(missing)}")
+        unknown = sorted(set(snapshot) - SNAPSHOT_FIELDS)
+        if unknown:
+            raise ValueError(f"snapshot has unknown fields: {', '.join(unknown)}")
         for field_name in (
             "manifest_sha256",
             "matrix_sha256",
@@ -310,6 +365,8 @@ class Campaign:
                 raise ValueError(f"snapshot {field_name} must be lowercase SHA-256")
         if not SHA1.fullmatch(str(snapshot["project_sha"])):
             raise ValueError("snapshot project_sha must be lowercase SHA")
+        if not str(snapshot["manifest_evidence"]).startswith("evidence/"):
+            raise ValueError("snapshot manifest_evidence must reference private evidence")
         if snapshot["build_mode"] != "signed-ota":
             raise ValueError("snapshot build_mode must be signed-ota")
         expected = self.expected_revisions()

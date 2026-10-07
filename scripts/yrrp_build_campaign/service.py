@@ -4,7 +4,7 @@ import hashlib
 import time
 from typing import Any
 
-from .command_policy import is_product_build_command
+from .command_policy import is_supported_preflight_command
 from .model import (
     Campaign,
     CampaignState,
@@ -62,10 +62,14 @@ def _require_fields(
     payload: dict[str, Any],
     required: set[str],
     label: str,
+    optional: set[str] | None = None,
 ) -> None:
     missing = sorted(required - payload.keys())
     if missing:
         raise ValueError(f"{label} missing: {', '.join(missing)}")
+    unknown = sorted(set(payload) - required - (optional or set()))
+    if unknown:
+        raise ValueError(f"{label} has unknown fields: {', '.join(unknown)}")
 
 
 class CampaignService:
@@ -191,13 +195,20 @@ class CampaignService:
         )
 
     def authorize_preflight(self, campaign_id: str, command: str) -> str:
-        if is_product_build_command(command):
-            raise ValueError("product build commands cannot be authorized as preflight")
+        if not is_supported_preflight_command(command):
+            raise ValueError("unsupported preflight command structure")
         digest = self.command_digest(command)
 
         def apply(campaign: Campaign) -> None:
             if campaign.state != CampaignState.PREFLIGHT:
                 raise ValueError("campaign is not in PREFLIGHT")
+            registered = {
+                check["command_sha256"]
+                for feature in campaign.features.values()
+                for check in feature.cheap_checks
+            }
+            if digest not in registered:
+                raise ValueError("preflight command is not registered")
             campaign.preflight_authorizations.append(digest)
             campaign.record_event(
                 "preflight-authorized",
@@ -411,7 +422,12 @@ class CampaignService:
         campaign_id: str,
         payload: dict[str, Any],
     ) -> Campaign:
-        _require_fields(payload, {"case_id", "feature_id", "result"}, "device case")
+        _require_fields(
+            payload,
+            {"case_id", "feature_id", "result"},
+            "device case",
+            {"expected", "observed", "evidence"},
+        )
         validate_safe_payload(payload, "device case")
         case_id = str(payload["case_id"])
         result = str(payload["result"])
@@ -422,6 +438,12 @@ class CampaignService:
             feature_id = str(payload["feature_id"])
             if campaign.active_device_lease != feature_id:
                 raise ValueError("feature does not hold device lease")
+            assigned = {
+                str(item["case_id"])
+                for item in campaign.features[feature_id].device_cases
+            }
+            if case_id not in assigned:
+                raise ValueError(f"device case is not assigned: {case_id}")
             if case_id in campaign.device_cases:
                 raise ValueError(f"duplicate device case: {case_id}")
             campaign.device_cases[case_id] = dict(payload)
@@ -477,15 +499,28 @@ class CampaignService:
             raise ValueError("installed build identity is missing")
         if payload["build_id"] != campaign.installation["build_id"]:
             raise ValueError("device result build ID does not match installation")
-        feature_cases = [
-            item
-            for item in campaign.device_cases.values()
+        assigned = {
+            str(item["case_id"])
+            for item in campaign.features[feature_id].device_cases
+        }
+        feature_cases = {
+            case_id: item
+            for case_id, item in campaign.device_cases.items()
             if item["feature_id"] == feature_id
-        ]
-        expected_count = sum(
-            int(payload[name]) for name in ("passed", "failed", "blocked", "not_run")
-        )
-        if expected_count != len(feature_cases):
+        }
+        if set(feature_cases) != assigned:
+            raise ValueError("recorded cases do not match assigned device cases")
+        derived = {
+            result: sum(item["result"] == result for item in feature_cases.values())
+            for result in ("PASS", "FAIL", "BLOCKED", "NOT_RUN")
+        }
+        supplied = {
+            "PASS": payload["passed"],
+            "FAIL": payload["failed"],
+            "BLOCKED": payload["blocked"],
+            "NOT_RUN": payload["not_run"],
+        }
+        if supplied != derived:
             raise ValueError("device result counts do not match recorded cases")
         CampaignService._validate_result_phase(payload)
         feature = campaign.features[feature_id]
@@ -507,6 +542,13 @@ class CampaignService:
         failures = payload["failures"]
         if len(failures) != failed:
             raise ValueError("failure details must match failed case count")
+        for failure in failures:
+            _require_fields(
+                failure,
+                {"feature_id", "case_id", "observed"},
+                "feature failure",
+                {"expected", "evidence"},
+            )
         if failed and payload["next_phase"] != FeaturePhase.FIXING:
             raise ValueError("failed result must enter FIXING")
         if not failed and (blocked or not_run) and payload["next_phase"] != FeaturePhase.BLOCKED:
@@ -540,7 +582,12 @@ class CampaignService:
         campaign_id: str,
         payload: dict[str, Any],
     ) -> Campaign:
-        _require_fields(payload, {"kind", "feature_id", "reason"}, "failure")
+        _require_fields(
+            payload,
+            {"kind", "feature_id", "reason"},
+            "failure",
+            {"case_id", "expected", "observed", "evidence", "stage"},
+        )
         validate_safe_payload(payload, "failure")
 
         def apply(campaign: Campaign) -> None:

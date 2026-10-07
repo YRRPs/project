@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ORCHESTRATOR = ROOT / ".claude/agents/yrrp-build-campaign.md"
 FEATURE_OWNER = ROOT / ".claude/agents/yrrp-feature-owner.md"
+SIGNED_RELEASE_SKILL = ROOT / ".claude/skills/yrrp-signed-ota-release/SKILL.md"
 
 
 def split_agent(text: str) -> tuple[str, str]:
@@ -106,6 +107,11 @@ class AgentDefinitionTest(unittest.TestCase):
             with self.subTest(path=path):
                 _, body = split_agent(path.read_text())
                 self.assertTrue(body.lstrip().startswith(prefix))
+
+    def test_signed_release_uses_campaign_launcher(self) -> None:
+        body = SIGNED_RELEASE_SKILL.read_text()
+        self.assertIn("yrrp-launch-campaign-build.py", body)
+        self.assertIn("Do not launch `sign-lineage-build.sh` directly", body)
 
     def test_project_settings_register_exec_form_hook(self) -> None:
         value = json.loads((ROOT / ".claude/settings.json").read_text())

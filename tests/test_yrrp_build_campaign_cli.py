@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -94,6 +95,32 @@ class CampaignCliTest(unittest.TestCase):
 
     def test_raw_command_is_not_written_to_state(self) -> None:
         self.create()
+        command = "ssh AndroidBuilder 'm SystemUI'"
+        digest = hashlib.sha256(command.encode()).hexdigest()
+        registration = {
+            "feature_id": "pulse",
+            "phase": "IMPLEMENTING",
+            "spec": "docs/spec.md",
+            "plan": "docs/plan.md",
+            "repositories": ["frameworks/base"],
+            "cheap_checks": [
+                {
+                    "check_id": "systemui-module",
+                    "command_sha256": digest,
+                    "location": "AndroidBuilder",
+                }
+            ],
+            "device_cases": [{"case_id": "pulse-nav"}],
+        }
+        result = self.run_cli(
+            "register-feature",
+            "--campaign-id",
+            "october-batch",
+            "--sender",
+            "feature-session",
+            payload=registration,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
         for state in ("IMPLEMENTING", "PREFLIGHT"):
             result = self.run_cli(
                 "transition",
@@ -103,8 +130,6 @@ class CampaignCliTest(unittest.TestCase):
                 state,
             )
             self.assertEqual(0, result.returncode, result.stderr)
-        command = "ssh AndroidBuilder 'm SystemUI'"
-
         result = self.run_cli(
             "authorize-preflight",
             "--campaign-id",

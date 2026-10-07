@@ -42,6 +42,7 @@ def readiness(feature_id: str = "pulse", revision: str = "a") -> dict:
         "clean_repositories": [repository],
         "check_evidence": [f"evidence/{feature_id}-preflight.txt"],
         "observability": "ready",
+        "restoration_steps": [f"restore {feature_id} settings"],
     }
 
 
@@ -61,6 +62,7 @@ def snapshot(repositories: dict[str, str] | None = None) -> dict:
     }
     return {
         "manifest_sha256": "b" * 64,
+        "manifest_evidence": "evidence/manifest.xml",
         "repositories": revisions,
         "branches": {name: "lineage-23.2" for name in revisions},
         "clean_repositories": sorted(revisions),
@@ -203,15 +205,30 @@ class CampaignServiceTest(unittest.TestCase):
             "ssh AndroidBuilder 'mka dist'",
             "ssh AndroidBuilder 'brunch sala'\"'\"'mi'",
             "ssh AndroidBuilder '/opt/yrrp/project/scripts/sign-lineage-build.sh'",
+            "ssh AndroidBuilder 'x=brunch; $x salami'",
+            "ssh AndroidBuilder 'x=mka; $x bacon'",
         ):
             with self.subTest(command=command):
                 with self.assertRaises(ValueError):
                     self.service.authorize_preflight("october-batch", command)
 
     def test_authorized_preflight_digest_is_consumed_once(self) -> None:
+        command = "ssh AndroidBuilder 'm SystemUI'"
+        payload = registration()
+        payload["cheap_checks"] = [
+            {
+                "check_id": "systemui-module",
+                "command_sha256": self.service.command_digest(command),
+                "location": "AndroidBuilder",
+            }
+        ]
+        self.service.register_feature(
+            "october-batch",
+            payload,
+            sender="feature-session",
+        )
         self.service.transition("october-batch", CampaignState.IMPLEMENTING)
         self.service.transition("october-batch", CampaignState.PREFLIGHT)
-        command = "ssh AndroidBuilder 'm SystemUI'"
 
         digest = self.service.authorize_preflight("october-batch", command)
         self.service.consume_preflight("october-batch", command)
@@ -415,7 +432,13 @@ class CampaignServiceTest(unittest.TestCase):
                     "blocked": 0,
                     "not_run": 0,
                     "failures": (
-                        [{"feature_id": feature_id, "case_id": f"{feature_id}-case"}]
+                        [
+                            {
+                                "feature_id": feature_id,
+                                "case_id": f"{feature_id}-case",
+                                "observed": "feature behavior failed",
+                            }
+                        ]
                         if failed
                         else []
                     ),
@@ -527,6 +550,7 @@ class CampaignServiceTest(unittest.TestCase):
             if key
             in {
                 "manifest_sha256",
+                "manifest_evidence",
                 "repositories",
                 "branches",
                 "clean_repositories",
@@ -625,6 +649,41 @@ class CampaignServiceTest(unittest.TestCase):
                 actor="yrrp-build-campaign",
             )
 
+    def test_device_result_requires_every_assigned_case(self) -> None:
+        self.advance_to_testing()
+        self.service.grant_device_lease("october-batch", "pulse")
+
+        with self.assertRaises(ValueError):
+            self.service.record_device_result(
+                "october-batch",
+                "pulse",
+                {
+                    "build_id": "20990101-000000",
+                    "passed": 0,
+                    "failed": 0,
+                    "blocked": 0,
+                    "not_run": 0,
+                    "failures": [],
+                    "restored_state": {"pulse_enabled": 0},
+                    "evidence": ["pulse.txt"],
+                    "next_phase": "ACCEPTED",
+                },
+            )
+
+    def test_record_case_rejects_unassigned_case(self) -> None:
+        self.advance_to_testing()
+        self.service.grant_device_lease("october-batch", "pulse")
+
+        with self.assertRaises(ValueError):
+            self.service.record_case(
+                "october-batch",
+                {
+                    "case_id": "invented-case",
+                    "feature_id": "pulse",
+                    "result": "PASS",
+                },
+            )
+
     def test_device_result_validates_counts_build_and_phase(self) -> None:
         self.advance_to_testing()
         self.service.grant_device_lease("october-batch", "pulse")
@@ -705,22 +764,27 @@ class CampaignServiceTest(unittest.TestCase):
         service = self.service
         store = self.store
         service.create("dry-run")
-        service.register_feature(
-            "dry-run",
-            registration("pulse"),
-            sender="pulse-session",
-        )
-        service.register_feature(
-            "dry-run",
-            registration("crt"),
-            sender="crt-session",
-        )
+        commands = {
+            "pulse": "ssh AndroidBuilder 'm SystemUI'",
+            "crt": "ssh AndroidBuilder 'atest SystemUiRavenTests'",
+        }
+        for feature_id in ("pulse", "crt"):
+            payload = registration(feature_id)
+            payload["cheap_checks"] = [
+                {
+                    "check_id": f"{feature_id}-preflight",
+                    "command_sha256": service.command_digest(commands[feature_id]),
+                    "location": "AndroidBuilder",
+                }
+            ]
+            service.register_feature(
+                "dry-run",
+                payload,
+                sender=f"{feature_id}-session",
+            )
         service.transition("dry-run", CampaignState.IMPLEMENTING)
         service.transition("dry-run", CampaignState.PREFLIGHT)
-        for command in (
-            "ssh AndroidBuilder 'm SystemUI'",
-            "ssh AndroidBuilder 'atest SystemUiRavenTests'",
-        ):
+        for command in commands.values():
             service.authorize_preflight("dry-run", command)
             service.consume_preflight("dry-run", command)
         service.mark_feature_ready("dry-run", "pulse", readiness("pulse", "a"))

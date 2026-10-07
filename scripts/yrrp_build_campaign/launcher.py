@@ -17,22 +17,42 @@ from pathlib import Path
 
 ANDROID = Path("/opt/android")
 PROJECT = Path("/opt/yrrp/project")
+SIGNING = Path("/opt/yrrp/signing")
 repositories = json.load(sys.stdin)
 
 
 def run(*args, cwd):
     return subprocess.run(
-        list(args),
-        cwd=cwd,
-        capture_output=True,
-        check=True,
-        text=True,
+        list(args), cwd=cwd, capture_output=True, check=True, text=True
     ).stdout.strip()
 
 
+def validate_preflight():
+    subprocess.run(
+        ["sha256sum", "--check", "--quiet", "MANIFEST.sha256"],
+        cwd=SIGNING,
+        check=True,
+    )
+    if (SIGNING / "testkey.pk8").readlink().name != "releasekey.pk8":
+        raise SystemExit("testkey.pk8 does not point to releasekey.pk8")
+    if (SIGNING / "testkey.x509.pem").readlink().name != "releasekey.x509.pem":
+        raise SystemExit("testkey.x509.pem does not point to releasekey.x509.pem")
+    processes = run("ps", "-eo", "cmd", cwd=ANDROID)
+    if any(name in processes for name in ("soong_ui", "ninja", "ota_from_target_files", "sign_target_files_apks")):
+        raise SystemExit("build or signing process is already active")
+    screens = subprocess.run(
+        ["screen", "-list"], capture_output=True, text=True
+    ).stdout
+    if ".yrrp-ota-build" in screens:
+        raise SystemExit("yrrp-ota-build screen already exists")
+    subprocess.run(["docker", "network", "inspect", "proxy-net"], check=True)
+
+
+validate_preflight()
 manifest = run(str(ANDROID / ".repo/repo/repo"), "manifest", "-r", cwd=ANDROID)
 result = {
     "manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+    "manifest_xml": manifest,
     "repositories": {},
     "branches": {},
     "clean_repositories": [],
@@ -49,26 +69,115 @@ for relative in repositories:
 print(json.dumps(result, sort_keys=True))
 '''
 
-REMOTE_BUILD_SCRIPT = r'''set -euo pipefail
-sudo install -d -m 0777 -o root -g utmp /run/screen
-if screen -list | grep -q '[.]yrrp-ota-build'; then
-    echo 'yrrp-ota-build screen already exists' >&2
-    exit 1
-fi
-mkdir -p /opt/android/out/signed
-stamp=$(date +%Y%m%d-%H%M%S)
-log=/opt/android/out/signed/yrrp-ota-build-${stamp}.log
-screen -L -Logfile "$log" -dmS yrrp-ota-build \
-    bash -lc 'exec /opt/yrrp/project/scripts/sign-lineage-build.sh'
-printf 'log=%s\nproject=%s\n' \
-    "$log" "$(git -C /opt/yrrp/project rev-parse HEAD)"
+REMOTE_LAUNCH_SCRIPT = r'''
+import fcntl
+import hashlib
+import json
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+
+ANDROID = Path("/opt/android")
+PROJECT = Path("/opt/yrrp/project")
+SIGNING = Path("/opt/yrrp/signing")
+payload = json.load(sys.stdin)
+expected = payload["snapshot"]
+campaign_id = payload["campaign_id"]
+repositories = sorted(expected["repositories"])
+
+
+def run(*args, cwd):
+    return subprocess.run(
+        list(args), cwd=cwd, capture_output=True, check=True, text=True
+    ).stdout.strip()
+
+
+def validate_preflight():
+    subprocess.run(
+        ["sha256sum", "--check", "--quiet", "MANIFEST.sha256"],
+        cwd=SIGNING,
+        check=True,
+    )
+    if (SIGNING / "testkey.pk8").readlink().name != "releasekey.pk8":
+        raise SystemExit("testkey.pk8 does not point to releasekey.pk8")
+    if (SIGNING / "testkey.x509.pem").readlink().name != "releasekey.x509.pem":
+        raise SystemExit("testkey.x509.pem does not point to releasekey.x509.pem")
+    processes = run("ps", "-eo", "cmd", cwd=ANDROID)
+    if any(name in processes for name in ("soong_ui", "ninja", "ota_from_target_files", "sign_target_files_apks")):
+        raise SystemExit("build or signing process is already active")
+    subprocess.run(["docker", "network", "inspect", "proxy-net"], check=True)
+
+
+def current_source():
+    validate_preflight()
+    manifest = run(str(ANDROID / ".repo/repo/repo"), "manifest", "-r", cwd=ANDROID)
+    result = {
+        "manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+        "repositories": {},
+        "branches": {},
+        "clean_repositories": [],
+        "project_sha": run("git", "rev-parse", "HEAD", cwd=PROJECT),
+    }
+    for relative in repositories:
+        root = ANDROID / relative
+        result["repositories"][relative] = run("git", "rev-parse", "HEAD", cwd=root)
+        result["branches"][relative] = run(
+            "git", "rev-parse", "--abbrev-ref", "HEAD", cwd=root
+        )
+        if not run("git", "status", "--porcelain", cwd=root):
+            result["clean_repositories"].append(relative)
+    return result
+
+
+lock_path = Path("/home/android/.yrrp-build-launch.lock")
+lock_path.touch(mode=0o600, exist_ok=True)
+with lock_path.open("r+") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    current = current_source()
+    frozen = {key: expected[key] for key in current}
+    if current != frozen:
+        raise SystemExit("remote source changed after local verification")
+    subprocess.run(
+        ["sudo", "install", "-d", "-m", "0777", "-o", "root", "-g", "utmp", "/run/screen"],
+        check=True,
+    )
+    screens = subprocess.run(
+        ["screen", "-list"], capture_output=True, text=True
+    ).stdout
+    if ".yrrp-ota-build" in screens:
+        raise SystemExit("yrrp-ota-build screen already exists")
+    output = ANDROID / "out/signed"
+    output.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    log = output / f"yrrp-ota-build-{stamp}.log"
+    claim_path = Path("/home/android/.yrrp-campaign-claim.json")
+    claim = {
+        "campaign_id": campaign_id,
+        "source_snapshot_sha256": hashlib.sha256(
+            json.dumps(expected, separators=(",", ":"), sort_keys=True).encode()
+        ).hexdigest(),
+        "expires_at": int(time.time()) + 300,
+    }
+    claim_path.write_text(json.dumps(claim, sort_keys=True) + "\n")
+    claim_path.chmod(0o600)
+    subprocess.run(
+        [
+            "screen", "-L", "-Logfile", str(log), "-dmS", "yrrp-ota-build",
+            "env", f"YRRP_CAMPAIGN_CLAIM_FILE={claim_path}",
+            "/opt/yrrp/project/scripts/sign-lineage-build.sh",
+        ],
+        check=True,
+    )
+    print(json.dumps({"log": str(log), "project": current["project_sha"]}))
 '''
 
 SnapshotProvider = Callable[[Campaign], dict[str, Any]]
-BuildRunner = Callable[[], None]
+BuildRunner = Callable[[str, dict[str, Any]], None]
 
 
-def collect_remote_snapshot(campaign: Campaign) -> dict[str, Any]:
+def collect_remote_source(campaign: Campaign) -> tuple[dict[str, Any], str]:
     base_snapshot = campaign.source_snapshot or {
         "repositories": campaign.expected_revisions()
     }
@@ -82,16 +191,25 @@ def collect_remote_snapshot(campaign: Campaign) -> dict[str, Any]:
         shell=False,
     )
     live = json.loads(result.stdout)
-    return {
-        **base_snapshot,
-        **live,
-    }
+    manifest = str(live.pop("manifest_xml"))
+    return {**base_snapshot, **live}, manifest
 
 
-def launch_remote_build() -> None:
+def collect_remote_snapshot(campaign: Campaign) -> dict[str, Any]:
+    snapshot, _ = collect_remote_source(campaign)
+    return snapshot
+
+
+def launch_remote_build(
+    campaign_id: str,
+    expected_snapshot: dict[str, Any],
+) -> None:
     subprocess.run(
-        ["ssh", "AndroidBuilder", "bash", "-s"],
-        input=REMOTE_BUILD_SCRIPT,
+        ["ssh", "AndroidBuilder", "python3", "-c", REMOTE_LAUNCH_SCRIPT],
+        input=json.dumps(
+            {"campaign_id": campaign_id, "snapshot": expected_snapshot},
+            sort_keys=True,
+        ),
         capture_output=True,
         check=True,
         text=True,
@@ -115,7 +233,7 @@ def launch_campaign(
         agent_type=str(authorization["agent_type"]),
     )
     try:
-        build_runner()
+        build_runner(campaign_id, current_snapshot)
     except Exception as error:
         service.record_launch_failure(campaign_id, str(error))
         raise

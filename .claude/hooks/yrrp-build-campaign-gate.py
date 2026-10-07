@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shlex
 import sys
 from pathlib import Path
@@ -14,14 +13,10 @@ SCRIPTS = PROJECT_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from yrrp_build_campaign.command_policy import is_read_only_builder_command
 from yrrp_build_campaign.service import CampaignService
 from yrrp_build_campaign.store import CampaignStore
 
-SIGNING_SCRIPT = re.compile(r"(?:^|[\s'\"/])sign-lineage-build\.sh(?:[\s;'\"]|$)")
-READ_ONLY_BUILDER = re.compile(
-    r"\b(?:cat|tail|head|ps|pgrep|sha256sum|git\s+(?:status|rev-parse)|"
-    r"screen\s+-list|docker\s+inspect)\b"
-)
 LAUNCHER = "scripts/yrrp-launch-campaign-build.py"
 
 
@@ -35,6 +30,19 @@ def _tokens(command: str) -> list[str]:
 def _is_builder_ssh(command: str) -> bool:
     tokens = _tokens(command)
     return "ssh" in tokens and "AndroidBuilder" in tokens
+
+
+def _is_direct_signing(command: str) -> bool:
+    tokens = _tokens(command)
+    if not tokens:
+        return False
+    if Path(tokens[0].rstrip(";&|()")).name == "sign-lineage-build.sh":
+        return True
+    if Path(tokens[0]).name in {"bash", "sh"} and len(tokens) > 1:
+        return Path(tokens[1]).name == "sign-lineage-build.sh"
+    if Path(tokens[0]).name == "env":
+        return any(Path(token).name == "sign-lineage-build.sh" for token in tokens[1:])
+    return False
 
 
 def launcher_campaign_id(command: str) -> str | None:
@@ -54,10 +62,10 @@ def launcher_campaign_id(command: str) -> str | None:
 def classify(command: str) -> str:
     if launcher_campaign_id(command) is not None:
         return "launcher"
-    if SIGNING_SCRIPT.search(command):
+    if _is_direct_signing(command):
         return "builder"
     if _is_builder_ssh(command):
-        if READ_ONLY_BUILDER.search(command):
+        if is_read_only_builder_command(command):
             return "readonly"
         return "builder"
     return "other"
