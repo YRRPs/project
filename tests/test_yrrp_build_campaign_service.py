@@ -17,6 +17,24 @@ from yrrp_build_campaign.service import CampaignService
 from yrrp_build_campaign.store import CampaignStore
 
 
+def command_ref(step_id: str) -> dict:
+    return {
+        "check_id": step_id,
+        "command_sha256": "f" * 64,
+        "location": "device",
+    }
+
+
+def device_case(feature_id: str) -> dict:
+    return {
+        "case_id": f"{feature_id}-case",
+        "setup_checks": [],
+        "action_id": f"exercise-{feature_id}",
+        "expected": f"{feature_id} behaves as designed",
+        "cleanup_checks": [command_ref(f"restore-{feature_id}")],
+    }
+
+
 def registration(feature_id: str = "pulse") -> dict:
     command = f"m {feature_id}"
     return {
@@ -32,7 +50,7 @@ def registration(feature_id: str = "pulse") -> dict:
                 "location": "AndroidBuilder",
             }
         ],
-        "device_cases": [{"case_id": f"{feature_id}-case"}],
+        "device_cases": [device_case(feature_id)],
     }
 
 
@@ -43,7 +61,7 @@ def readiness(feature_id: str = "pulse", revision: str = "a") -> dict:
         "clean_repositories": [repository],
         "check_evidence": [f"evidence/{feature_id}-preflight.txt"],
         "observability": "ready",
-        "restoration_steps": [f"restore {feature_id} settings"],
+        "restoration_steps": [command_ref(f"restore-{feature_id}")],
     }
 
 
@@ -64,7 +82,7 @@ def snapshot(
         for feature_id, repository in zip(feature_ids, revisions, strict=True)
     }
     matrix = {
-        feature_id: [{"case_id": f"{feature_id}-case"}]
+        feature_id: [device_case(feature_id)]
         for feature_id in feature_ids
     }
     return {

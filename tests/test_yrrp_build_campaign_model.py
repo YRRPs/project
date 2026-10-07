@@ -11,6 +11,24 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 
+def command_ref(step_id: str) -> dict:
+    return {
+        "check_id": step_id,
+        "command_sha256": "c" * 64,
+        "location": "device",
+    }
+
+
+def device_case() -> dict:
+    return {
+        "case_id": "pulse-nav",
+        "setup_checks": [],
+        "action_id": "exercise-pulse",
+        "expected": "Pulse renders as configured",
+        "cleanup_checks": [command_ref("restore-pulse")],
+    }
+
+
 class CampaignModelTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -63,7 +81,10 @@ class CampaignModelTest(unittest.TestCase):
                         }
                     ],
                     "device_cases": [
-                        {"case_id": "pulse-nav", "adb_command": "adb shell id"}
+                        {
+                            **device_case(),
+                            "expected": "adb shell settings get secure x",
+                        }
                     ],
                 },
                 sender="feature-session",
@@ -85,7 +106,7 @@ class CampaignModelTest(unittest.TestCase):
                             "location": "AndroidBuilder",
                         }
                     ],
-                    "device_cases": [{"case_id": "pulse-nav"}],
+                    "device_cases": [device_case()],
                 },
                 sender="feature-session",
             )
@@ -111,7 +132,7 @@ class CampaignModelTest(unittest.TestCase):
                         "location": "AndroidBuilder",
                     }
                 ],
-                "device_cases": [{"case_id": "pulse-nav"}],
+                "device_cases": [device_case()],
             },
             sender="",
         )
@@ -123,7 +144,7 @@ class CampaignModelTest(unittest.TestCase):
                     "clean_repositories": ["frameworks/base"],
                     "check_evidence": ["evidence/preflight.txt"],
                     "observability": "ready",
-                    "restoration_steps": ["restore Pulse settings"],
+                    "restoration_steps": [command_ref("restore-pulse")],
                 }
             )
 
@@ -142,7 +163,7 @@ class CampaignModelTest(unittest.TestCase):
                         "location": "AndroidBuilder",
                     }
                 ],
-                "device_cases": [{"case_id": "pulse-nav"}],
+                "device_cases": [device_case()],
             },
             sender="feature-session",
         )
@@ -151,8 +172,32 @@ class CampaignModelTest(unittest.TestCase):
             "clean_repositories": ["frameworks/base"],
             "check_evidence": ["preflight.txt"],
             "observability": "ready",
-            "restoration_steps": ["restore Pulse settings"],
+            "restoration_steps": [command_ref("restore-pulse")],
             "command": "raw command text",
+        }
+
+        with self.assertRaises(ValueError):
+            feature.mark_ready(readiness)
+
+    def test_readiness_rejects_raw_restoration_commands(self) -> None:
+        feature = self.model.FeatureRecord.from_registration(
+            {
+                "feature_id": "pulse",
+                "phase": "IMPLEMENTING",
+                "spec": "docs/spec.md",
+                "plan": "docs/plan.md",
+                "repositories": ["frameworks/base"],
+                "cheap_checks": [command_ref("systemui-module")],
+                "device_cases": [device_case()],
+            },
+            sender="feature-session",
+        )
+        readiness = {
+            "revisions": {"frameworks/base": "a" * 40},
+            "clean_repositories": ["frameworks/base"],
+            "check_evidence": ["preflight.txt"],
+            "observability": "ready",
+            "restoration_steps": ["adb shell settings put secure x 0"],
         }
 
         with self.assertRaises(ValueError):
@@ -175,7 +220,7 @@ class CampaignModelTest(unittest.TestCase):
                         "location": "AndroidBuilder",
                     }
                 ],
-                "device_cases": [{"case_id": "pulse-nav"}],
+                "device_cases": [device_case()],
             },
             sender="feature-session",
         )

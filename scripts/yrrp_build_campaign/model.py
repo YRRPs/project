@@ -42,7 +42,17 @@ READINESS_FIELDS = {
     "observability",
     "restoration_steps",
 }
-DEVICE_CASE_FIELDS = {"case_id", "expected", "setup", "action", "cleanup"}
+DEVICE_CASE_FIELDS = {
+    "case_id",
+    "setup_checks",
+    "action_id",
+    "expected",
+    "cleanup_checks",
+}
+RAW_COMMAND_VALUE = re.compile(
+    r"^\s*(?:adb|ssh|mka?|atest|brunch|bash|sh|python\d*)\b",
+    re.IGNORECASE,
+)
 SNAPSHOT_FIELDS = {
     "manifest_sha256",
     "manifest_evidence",
@@ -155,6 +165,8 @@ def validate_safe_payload(value: Any, label: str) -> None:
     elif isinstance(value, list):
         for nested in value:
             validate_safe_payload(nested, label)
+    elif isinstance(value, str) and RAW_COMMAND_VALUE.match(value):
+        raise ValueError(f"{label} contains raw command text")
 
 
 def digest_json(value: Any) -> str:
@@ -180,22 +192,52 @@ def _validate_check(value: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _validate_command_refs(
+    values: Any,
+    label: str,
+    *,
+    require_nonempty: bool,
+) -> list[dict[str, str]]:
+    if not isinstance(values, list):
+        raise ValueError(f"{label} must be a list")
+    if require_nonempty and not values:
+        raise ValueError(f"{label} must not be empty")
+    return [_validate_check(dict(item)) for item in values]
+
+
 def _validate_device_cases(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if not values:
         raise ValueError("at least one device case is required")
     seen: set[str] = set()
     result = []
     for value in values:
-        unknown = set(value) - DEVICE_CASE_FIELDS
-        if unknown:
-            raise ValueError(
-                "device case contains unknown fields: " + ", ".join(sorted(unknown))
-            )
+        if set(value) != DEVICE_CASE_FIELDS:
+            raise ValueError("device case fields do not match required schema")
         case_id = validate_slug(str(value["case_id"]))
+        action_id = validate_slug(str(value["action_id"]))
+        expected = str(value["expected"]).strip()
+        if not expected:
+            raise ValueError("device case expected result is required")
         if case_id in seen:
             raise ValueError(f"duplicate assigned device case: {case_id}")
         seen.add(case_id)
-        result.append({**value, "case_id": case_id})
+        result.append(
+            {
+                "case_id": case_id,
+                "setup_checks": _validate_command_refs(
+                    value["setup_checks"],
+                    "device setup checks",
+                    require_nonempty=False,
+                ),
+                "action_id": action_id,
+                "expected": expected,
+                "cleanup_checks": _validate_command_refs(
+                    value["cleanup_checks"],
+                    "device cleanup checks",
+                    require_nonempty=False,
+                ),
+            }
+        )
     validate_safe_payload(result, "device cases")
     return result
 
@@ -260,9 +302,12 @@ class FeatureRecord:
             raise ValueError("check evidence is required")
         if readiness.get("observability") not in {"ready", "not-applicable"}:
             raise ValueError("observability must be ready or not-applicable")
-        if not readiness["restoration_steps"]:
-            raise ValueError("restoration steps are required")
-        self.readiness = dict(readiness)
+        restoration_steps = _validate_command_refs(
+            readiness["restoration_steps"],
+            "restoration steps",
+            require_nonempty=True,
+        )
+        self.readiness = {**readiness, "restoration_steps": restoration_steps}
         self.device_result = None
         self.phase = FeaturePhase.READY_FOR_BUILD
 

@@ -27,6 +27,24 @@ from yrrp_build_campaign.store import CampaignStore
 MANIFEST = b"<manifest/>\n"
 
 
+def command_ref(step_id: str) -> dict:
+    return {
+        "check_id": step_id,
+        "command_sha256": "f" * 64,
+        "location": "device",
+    }
+
+
+def device_case() -> dict:
+    return {
+        "case_id": "pulse-nav",
+        "setup_checks": [],
+        "action_id": "exercise-pulse",
+        "expected": "Pulse renders as configured",
+        "cleanup_checks": [command_ref("restore-pulse")],
+    }
+
+
 def frozen_snapshot() -> dict:
     return {
         "manifest_sha256": hashlib.sha256(MANIFEST).hexdigest(),
@@ -37,7 +55,7 @@ def frozen_snapshot() -> dict:
         "project_sha": "e" * 40,
         "build_mode": "signed-ota",
         "matrix_sha256": digest_json(
-            {"pulse": [{"case_id": "pulse-nav"}]}
+            {"pulse": [device_case()]}
         ),
         "concern_inventory_sha256": digest_json(
             {
@@ -72,7 +90,7 @@ class CampaignLauncherTest(unittest.TestCase):
                         "location": "AndroidBuilder",
                     }
                 ],
-                "device_cases": [{"case_id": "pulse-nav"}],
+                "device_cases": [device_case()],
             },
             sender="feature-session",
         )
@@ -84,7 +102,7 @@ class CampaignLauncherTest(unittest.TestCase):
                 "clean_repositories": ["frameworks/base"],
                 "check_evidence": ["preflight.txt"],
                 "observability": "ready",
-                "restoration_steps": ["restore Pulse settings"],
+                "restoration_steps": [command_ref("restore-pulse")],
             },
         )
         for state in (

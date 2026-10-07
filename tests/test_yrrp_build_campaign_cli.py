@@ -13,6 +13,22 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "yrrp-build-campaign.py"
 
 
+def device_case() -> dict:
+    return {
+        "case_id": "pulse-nav",
+        "setup_checks": [],
+        "action_id": "exercise-pulse",
+        "expected": "Pulse renders as configured",
+        "cleanup_checks": [
+            {
+                "check_id": "restore-pulse",
+                "command_sha256": "f" * 64,
+                "location": "device",
+            }
+        ],
+    }
+
+
 class CampaignCliTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
@@ -62,7 +78,7 @@ class CampaignCliTest(unittest.TestCase):
                     "location": "AndroidBuilder",
                 }
             ],
-            "device_cases": [{"case_id": "pulse-nav"}],
+            "device_cases": [device_case()],
         }
 
         result = self.run_cli(
@@ -110,7 +126,7 @@ class CampaignCliTest(unittest.TestCase):
                     "location": "AndroidBuilder",
                 }
             ],
-            "device_cases": [{"case_id": "pulse-nav"}],
+            "device_cases": [device_case()],
         }
         result = self.run_cli(
             "register-feature",

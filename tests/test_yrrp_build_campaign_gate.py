@@ -21,6 +21,32 @@ from yrrp_build_campaign.service import CampaignService
 from yrrp_build_campaign.store import CampaignStore
 
 
+def device_case() -> dict:
+    return {
+        "case_id": "pulse-nav",
+        "setup_checks": [],
+        "action_id": "exercise-pulse",
+        "expected": "Pulse renders as configured",
+        "cleanup_checks": [
+            {
+                "check_id": "restore-pulse",
+                "command_sha256": "f" * 64,
+                "location": "device",
+            }
+        ],
+    }
+
+
+def restoration_steps() -> list[dict]:
+    return [
+        {
+            "check_id": "restore-pulse",
+            "command_sha256": "f" * 64,
+            "location": "device",
+        }
+    ]
+
+
 def load_hook():
     spec = importlib.util.spec_from_file_location("yrrp_campaign_gate", HOOK)
     if spec is None or spec.loader is None:
@@ -84,7 +110,7 @@ class CampaignGateTest(unittest.TestCase):
                         "location": "AndroidBuilder",
                     }
                 ],
-                "device_cases": [{"case_id": "pulse-nav"}],
+                "device_cases": [device_case()],
             },
             sender="feature-session",
         )
@@ -96,7 +122,7 @@ class CampaignGateTest(unittest.TestCase):
                 "clean_repositories": ["frameworks/base"],
                 "check_evidence": ["evidence/preflight.txt"],
                 "observability": "ready",
-                "restoration_steps": ["restore Pulse settings"],
+                "restoration_steps": restoration_steps(),
             },
         )
         for state in (
@@ -231,7 +257,7 @@ class CampaignGateTest(unittest.TestCase):
                         "location": "AndroidBuilder",
                     }
                 ],
-                "device_cases": [{"case_id": "pulse-nav"}],
+                "device_cases": [device_case()],
             },
             sender="feature-session",
         )

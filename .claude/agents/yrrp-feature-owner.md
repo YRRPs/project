@@ -45,7 +45,7 @@ cheap_checks:
 device_cases:
 ```
 
-Do not include a self-reported session address. Cross-session envelope supplies the canonical sender. Each `cheap_checks` item contains `check_id`, `command_sha256`, and `location`; send raw command text only in the cross-session request for one-time preflight authorization, never in campaign registration or ledger fields.
+Do not include a self-reported session address. Cross-session envelope supplies the canonical sender. Each `cheap_checks`, `setup_checks`, `cleanup_checks`, and `restoration_steps` item contains only `check_id`, `command_sha256`, and `location`. Each device case contains exactly `case_id`, `setup_checks`, `action_id`, `expected`, and `cleanup_checks`. Send raw command text only in the cross-session request for one-time preflight authorization, never in campaign registration or ledger fields.
 
 Retry `ListAgents` and registration before reporting `READY_FOR_BUILD`. An unregistered feature cannot join a frozen batch.
 

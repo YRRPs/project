@@ -61,7 +61,7 @@ cheap_checks:
 device_cases:
 ```
 
-Reject missing fields through a reply to the same sender. Every `cheap_checks` item contains only `check_id`, `command_sha256`, and `location`; never persist raw command text. Register valid payload through the campaign CLI and acknowledge campaign ID plus feature ID.
+Reject missing fields through a reply to the same sender. Every check and restoration reference contains only `check_id`, `command_sha256`, and `location`. Every device case contains exactly `case_id`, `setup_checks`, `action_id`, `expected`, and `cleanup_checks`. Never persist raw command text. Register valid payload through the campaign CLI and acknowledge campaign ID plus feature ID.
 
 Track each feature through `READY_FOR_BUILD`. Reject readiness without revisions, clean repositories, check evidence, observability status, device cases, and restoration steps.
 
