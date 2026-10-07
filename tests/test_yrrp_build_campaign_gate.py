@@ -493,7 +493,49 @@ class CampaignGateTest(unittest.TestCase):
         campaign = self.service().store.load("october-batch")
 
         self.assertEqual(CampaignState.FROZEN, campaign.state)
-        self.assertEqual(1, len(campaign.recovery_authorizations))
+
+    def test_freeze_clears_pending_recovery_authorizations(self) -> None:
+        self.prepare_frozen(pending_recovery=GENERATE_RECOVERY)
+
+        campaign = self.service().store.load("october-batch")
+        cleared = [
+            item for item in campaign.events
+            if item["kind"] == "recovery-authorizations-cleared"
+        ]
+        decision = load_hook().evaluate(event(GENERATE_RECOVERY))
+
+        self.assertEqual([], campaign.recovery_authorizations)
+        self.assertEqual(1, len(cleared))
+        self.assertEqual(1, cleared[0]["details"]["count"])
+        self.assertEqual("deny", decision["hookSpecificOutput"]["permissionDecision"])
+
+    def test_freeze_without_recovery_authorizations_records_no_clear_event(self) -> None:
+        self.prepare_frozen()
+
+        campaign = self.service().store.load("october-batch")
+
+        self.assertNotIn(
+            "recovery-authorizations-cleared",
+            [item["kind"] for item in campaign.events],
+        )
+
+    def test_recovery_consumption_denied_while_frozen(self) -> None:
+        self.prepare_frozen()
+        service = self.service()
+        digest = service.command_digest(GENERATE_RECOVERY)
+
+        def inject(loaded) -> None:
+            loaded.recovery_authorizations.append(digest)
+
+        service.store.mutate("october-batch", inject)
+        with self.assertRaisesRegex(ValueError, "FROZEN; recovery is not allowed"):
+            service.consume_recovery("october-batch", GENERATE_RECOVERY, "yrrp-build-campaign")
+        decision = load_hook().evaluate(event(GENERATE_RECOVERY))
+
+        self.assertEqual("deny", decision["hookSpecificOutput"]["permissionDecision"])
+        self.assertEqual(
+            [digest], service.store.load("october-batch").recovery_authorizations
+        )
 
     def test_recovery_authorization_rejects_other_commands(self) -> None:
         service = self.service()

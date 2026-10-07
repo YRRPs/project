@@ -380,6 +380,13 @@ class Campaign:
         }
         self.approvals.append(approval_record)
         self.record_event("frozen", actor, approval_record)
+        if self.recovery_authorizations:
+            self.record_event(
+                "recovery-authorizations-cleared",
+                actor,
+                {"count": len(self.recovery_authorizations)},
+            )
+            self.recovery_authorizations = []
         self.transition(CampaignState.FROZEN)
 
     def _validate_feature_readiness(self) -> None:

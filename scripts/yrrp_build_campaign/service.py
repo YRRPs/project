@@ -252,6 +252,8 @@ class CampaignService:
         digest = self.command_digest(command)
 
         def apply(campaign: Campaign) -> None:
+            if campaign.state == CampaignState.FROZEN:
+                raise ValueError("campaign is FROZEN; recovery is not allowed")
             try:
                 campaign.recovery_authorizations.remove(digest)
             except ValueError as error:
