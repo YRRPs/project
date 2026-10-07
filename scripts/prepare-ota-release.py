@@ -3,19 +3,28 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import hashlib
-import json
 import re
 import shutil
+import sys
 import urllib.parse
 import uuid
 import zipfile
 from pathlib import Path
 
-DEVICE = "salami"
-LINEAGE_VERSION = "23.2"
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from yrrp_ota.archive import (  # noqa: E402
+    open_unique_zip,
+    parse_properties,
+    read_metadata,
+    read_system_properties,
+    require,
+    sha256,
+    write_json,
+)
+from yrrp_ota.naming import BUILD_ID_PATTERN, DEVICE, LINEAGE_VERSION, full_ota_name  # noqa: E402
+
 RELEASE_TYPE = "UNOFFICIAL"
-BUILD_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}$")
 DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 IMAGE_NAMES = (
     "boot.img",
@@ -27,39 +36,6 @@ IMAGE_NAMES = (
 )
 
 
-def parse_properties(data: bytes, source: str) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for line in data.decode("utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if "=" not in stripped:
-            raise ValueError(f"invalid property in {source}: {stripped}")
-        key, value = stripped.split("=", 1)
-        if key in result:
-            raise ValueError(f"duplicate property in {source}: {key}")
-        result[key] = value
-    return result
-
-
-def open_unique_zip(path: Path) -> zipfile.ZipFile:
-    if not path.is_file() or path.stat().st_size == 0 or not zipfile.is_zipfile(path):
-        raise ValueError(f"required ZIP missing, empty, or invalid: {path}")
-    archive = zipfile.ZipFile(path)
-    names = archive.namelist()
-    if len(names) != len(set(names)):
-        archive.close()
-        raise ValueError(f"duplicate ZIP member in {path}")
-    return archive
-
-
-def require(properties: dict[str, str], key: str, source: str) -> str:
-    value = properties.get(key, "").strip()
-    if not value:
-        raise ValueError(f"missing {key} in {source}")
-    return value
-
-
 def validate_public_base_url(value: str) -> str:
     parsed = urllib.parse.urlsplit(value)
     if parsed.scheme != "https" or not parsed.hostname:
@@ -69,18 +45,6 @@ def validate_public_base_url(value: str) -> str:
     if parsed.path not in ("", "/"):
         raise ValueError("public base URL must not contain a path")
     return value.rstrip("/")
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
-def write_json(path: Path, value: object) -> None:
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def copy_member(archive: zipfile.ZipFile, member: str, destination: Path) -> None:
@@ -215,7 +179,7 @@ def prepare_release(
     output = Path(output)
     if not BUILD_ID_PATTERN.fullmatch(build_id):
         raise ValueError("build ID must match YYYYMMDD-HHMMSS")
-    if ota.name != f"lineage-{LINEAGE_VERSION}-{DEVICE}-{build_id}-signed-ota.zip":
+    if ota.name != full_ota_name(build_id):
         raise ValueError("signed OTA filename does not match device, version, and build ID")
     public_base_url = validate_public_base_url(public_base_url)
     if not DIGEST_PATTERN.fullmatch(base_image_digest):
@@ -233,20 +197,12 @@ def prepare_release(
         updates_dir.mkdir(parents=True)
         with open_unique_zip(ota) as ota_zip, open_unique_zip(target_files) as target_zip:
             metadata = validate_metadata(
-                parse_properties(ota_zip.read("META-INF/com/android/metadata"), "OTA metadata")
+                read_metadata(ota_zip, "OTA metadata")
             )
             product_properties = parse_properties(
                 target_zip.read("PRODUCT/etc/build.prop"), "target-files PRODUCT build.prop"
             )
-            system_member = next(
-                (name for name in ("SYSTEM/etc/build.prop", "SYSTEM/build.prop") if name in target_zip.namelist()),
-                None,
-            )
-            if system_member is None:
-                raise ValueError("target-files SYSTEM build.prop is missing")
-            system_properties = parse_properties(
-                target_zip.read(system_member), "target-files SYSTEM build.prop"
-            )
+            system_properties = read_system_properties(target_zip)
             validate_build_properties(product_properties, system_properties, metadata)
             shutil.copyfile(ota, release_dir / ota.name)
             for image in IMAGE_NAMES:
