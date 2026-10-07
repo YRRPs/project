@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -183,6 +185,34 @@ class CampaignGateTest(unittest.TestCase):
             "deny",
             second["hookSpecificOutput"]["permissionDecision"],
         )
+
+    def test_process_fails_closed_for_malformed_json(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input="{",
+            capture_output=True,
+            text=True,
+            env=os.environ | {"YRRP_CAMPAIGN_ROOT": str(self.root)},
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(
+            "deny",
+            output["hookSpecificOutput"]["permissionDecision"],
+        )
+
+    def test_process_is_silent_for_read_only_command(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(HOOK)],
+            input=json.dumps(event("ssh AndroidBuilder 'cat build.status'")),
+            capture_output=True,
+            text=True,
+            env=os.environ | {"YRRP_CAMPAIGN_ROOT": str(self.root)},
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("", result.stdout)
 
 
 if __name__ == "__main__":

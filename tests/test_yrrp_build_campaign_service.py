@@ -268,6 +268,108 @@ class CampaignServiceTest(unittest.TestCase):
         )
         self.assertEqual(CampaignState.IMPLEMENTING, campaign.state)
 
+    def test_two_features_share_one_build_and_serial_device_leases(self) -> None:
+        service = self.service
+        store = self.store
+        service.create("dry-run")
+        service.register_feature(
+            "dry-run",
+            registration("pulse"),
+            sender="pulse-session",
+        )
+        service.register_feature(
+            "dry-run",
+            registration("crt"),
+            sender="crt-session",
+        )
+        service.transition("dry-run", CampaignState.IMPLEMENTING)
+        service.transition("dry-run", CampaignState.PREFLIGHT)
+        for command in (
+            "ssh AndroidBuilder 'm SystemUI'",
+            "ssh AndroidBuilder 'atest SystemUiRavenTests'",
+        ):
+            service.authorize_preflight("dry-run", command)
+            service.consume_preflight("dry-run", command)
+        service.mark_feature_ready("dry-run", "pulse", readiness("pulse", "a"))
+        service.mark_feature_ready("dry-run", "crt", readiness("crt", "d"))
+        service.transition("dry-run", CampaignState.READY_TO_FREEZE)
+        service.freeze(
+            "dry-run",
+            {
+                "manifest_sha256": "b" * 64,
+                "repositories": {
+                    "repo/pulse": "a" * 40,
+                    "repo/crt": "d" * 40,
+                },
+                "matrix_sha256": "c" * 64,
+            },
+            "Freeze and build",
+        )
+        build_command = "ssh AndroidBuilder 'brunch salami'"
+        service.claim_build("dry-run", build_command)
+        service.record_build_result(
+            "dry-run",
+            {"status": "complete", "evidence": ["build.txt"]},
+        )
+        service.grant_device_lease("dry-run", "pulse")
+        with self.assertRaises(ValueError):
+            service.grant_device_lease("dry-run", "crt")
+        service.record_case(
+            "dry-run",
+            {"case_id": "pulse-case", "feature_id": "pulse", "result": "PASS"},
+        )
+        service.record_device_result(
+            "dry-run",
+            "pulse",
+            {
+                "build_id": "20990101-000000",
+                "passed": 1,
+                "failed": 0,
+                "blocked": 0,
+                "not_run": 0,
+                "failures": [],
+                "restored_state": {"pulse_enabled": 0},
+                "evidence": ["pulse.txt"],
+                "next_phase": "ACCEPTED",
+            },
+        )
+        service.grant_device_lease("dry-run", "crt")
+        service.record_case(
+            "dry-run",
+            {"case_id": "crt-case", "feature_id": "crt", "result": "FAIL"},
+        )
+        service.record_device_result(
+            "dry-run",
+            "crt",
+            {
+                "build_id": "20990101-000000",
+                "passed": 0,
+                "failed": 1,
+                "blocked": 0,
+                "not_run": 0,
+                "failures": [
+                    {
+                        "feature_id": "crt",
+                        "case_id": "crt-case",
+                        "observed": "animation absent",
+                    }
+                ],
+                "restored_state": {"crt_enabled": 1},
+                "evidence": ["crt.txt"],
+                "next_phase": "FIXING",
+            },
+        )
+        service.transition("dry-run", CampaignState.FIX_BATCH_READY)
+
+        state_text = store.json_path("dry-run").read_text()
+        ledger = store.markdown_path("dry-run").read_text()
+        self.assertIn("pulse-session", ledger)
+        self.assertIn("crt-session", ledger)
+        self.assertIn('"result": "PASS"', ledger)
+        self.assertIn('"result": "FAIL"', ledger)
+        self.assertNotIn(build_command, state_text)
+        self.assertIn(service.command_digest(build_command), state_text)
+
 
 if __name__ == "__main__":
     unittest.main()
