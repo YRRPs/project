@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import multiprocessing
 import sys
 import tempfile
@@ -46,7 +47,13 @@ def readiness(feature_id: str = "pulse", revision: str = "a") -> dict:
     }
 
 
-def snapshot(repositories: dict[str, str] | None = None) -> dict:
+MANIFEST = b"<manifest/>\n"
+
+
+def snapshot(
+    repositories: dict[str, str] | None = None,
+    campaign_id: str = "october-batch",
+) -> dict:
     revisions = repositories or {"repo/pulse": "a" * 40}
     feature_ids = [name.rsplit("/", 1)[-1] for name in revisions]
     concern_inventory = {
@@ -61,8 +68,8 @@ def snapshot(repositories: dict[str, str] | None = None) -> dict:
         for feature_id in feature_ids
     }
     return {
-        "manifest_sha256": "b" * 64,
-        "manifest_evidence": "evidence/manifest.xml",
+        "manifest_sha256": hashlib.sha256(MANIFEST).hexdigest(),
+        "manifest_evidence": f"evidence/{campaign_id}/manifest.xml",
         "repositories": revisions,
         "branches": {name: "lineage-23.2" for name in revisions},
         "clean_repositories": sorted(revisions),
@@ -113,6 +120,11 @@ class CampaignServiceTest(unittest.TestCase):
         self.store = CampaignStore(Path(self.temp.name) / "campaigns")
         self.service = CampaignService(self.store)
         self.service.create("october-batch")
+        self.store.write_evidence(
+            "october-batch",
+            "manifest.xml",
+            MANIFEST,
+        )
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -378,6 +390,7 @@ class CampaignServiceTest(unittest.TestCase):
     def test_follow_up_freeze_preserves_accepted_unaffected_feature(self) -> None:
         service = self.service
         service.create("follow-up")
+        self.store.write_evidence("follow-up", "manifest.xml", MANIFEST)
         for feature_id, sender in (("pulse", "pulse-session"), ("crt", "crt-session")):
             service.register_feature(
                 "follow-up",
@@ -396,7 +409,8 @@ class CampaignServiceTest(unittest.TestCase):
         ):
             service.transition("follow-up", state)
         first_snapshot = snapshot(
-            {"repo/pulse": "a" * 40, "repo/crt": "d" * 40}
+            {"repo/pulse": "a" * 40, "repo/crt": "d" * 40},
+            campaign_id="follow-up",
         )
         service.freeze(
             "follow-up",
@@ -453,7 +467,8 @@ class CampaignServiceTest(unittest.TestCase):
         service.transition("follow-up", CampaignState.PREFLIGHT)
         service.transition("follow-up", CampaignState.READY_TO_FREEZE)
         follow_up_snapshot = snapshot(
-            {"repo/pulse": "a" * 40, "repo/crt": "f" * 40}
+            {"repo/pulse": "a" * 40, "repo/crt": "f" * 40},
+            campaign_id="follow-up",
         )
 
         frozen = service.freeze(
@@ -570,6 +585,7 @@ class CampaignServiceTest(unittest.TestCase):
             actor="yrrp-build-campaign",
         )
         self.service.create("second-batch")
+        self.store.write_evidence("second-batch", "manifest.xml", MANIFEST)
         self.service.register_feature(
             "second-batch",
             registration("crt"),
@@ -590,7 +606,10 @@ class CampaignServiceTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.service.freeze(
                 "second-batch",
-                snapshot({"repo/crt": "d" * 40}),
+                snapshot(
+                    {"repo/crt": "d" * 40},
+                    campaign_id="second-batch",
+                ),
                 "Freeze and build",
                 actor="yrrp-build-campaign",
             )
@@ -764,6 +783,7 @@ class CampaignServiceTest(unittest.TestCase):
         service = self.service
         store = self.store
         service.create("dry-run")
+        store.write_evidence("dry-run", "manifest.xml", MANIFEST)
         commands = {
             "pulse": "ssh AndroidBuilder 'm SystemUI'",
             "crt": "ssh AndroidBuilder 'atest SystemUiRavenTests'",
@@ -791,7 +811,8 @@ class CampaignServiceTest(unittest.TestCase):
         service.mark_feature_ready("dry-run", "crt", readiness("crt", "d"))
         service.transition("dry-run", CampaignState.READY_TO_FREEZE)
         frozen_snapshot = snapshot(
-            {"repo/pulse": "a" * 40, "repo/crt": "d" * 40}
+            {"repo/pulse": "a" * 40, "repo/crt": "d" * 40},
+            campaign_id="dry-run",
         )
         service.freeze(
             "dry-run",

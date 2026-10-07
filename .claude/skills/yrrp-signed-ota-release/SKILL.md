@@ -33,6 +33,8 @@ python3 scripts/yrrp-launch-campaign-build.py --campaign-id <campaign-id>
 
 The project `PreToolUse` hook verifies the agent type and creates one one-time authorization. The launcher consumes it, rechecks source on `AndroidBuilder` under a remote lock, creates the builder claim, and starts `sign-lineage-build.sh` in `screen`. `claude --bare`, disabled project hooks, direct SSH builds, and direct signing-script calls are unsupported.
 
+Threat boundary: the VPN-only `android` builder account is trusted. These controls prevent accidental and agent-driven bypass; they do not defend against a human intentionally forging files or commands as that same account. The user accepted this boundary on 2026-10-07. A hostile-account boundary would require a signed claim or privileged launch service.
+
 The signing script defaults `YRRP_CERT_DIR`, `OTA_PUBLIC_BASE_URL`, `OTA_BASE_IMAGE_REF`, and `OTA_NETWORK`. It always runs `breakfast salami` and `mka target-files-package otatools` first, so a stale target-files ZIP is never signed.
 
 ## 3. Watch

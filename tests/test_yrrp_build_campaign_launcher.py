@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -22,10 +23,13 @@ from yrrp_build_campaign.service import CampaignService
 from yrrp_build_campaign.store import CampaignStore
 
 
+MANIFEST = b"<manifest/>\n"
+
+
 def frozen_snapshot() -> dict:
     return {
-        "manifest_sha256": "b" * 64,
-        "manifest_evidence": "evidence/manifest.xml",
+        "manifest_sha256": hashlib.sha256(MANIFEST).hexdigest(),
+        "manifest_evidence": "evidence/october-batch/manifest.xml",
         "repositories": {"frameworks/base": "a" * 40},
         "branches": {"frameworks/base": "lineage-23.2"},
         "clean_repositories": ["frameworks/base"],
@@ -51,6 +55,7 @@ class CampaignLauncherTest(unittest.TestCase):
         self.store = CampaignStore(Path(self.temp.name) / "campaigns")
         self.service = CampaignService(self.store)
         self.service.create("october-batch")
+        self.store.write_evidence("october-batch", "manifest.xml", MANIFEST)
         self.service.register_feature(
             "october-batch",
             {

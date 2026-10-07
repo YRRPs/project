@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -66,6 +67,8 @@ class CampaignGateTest(unittest.TestCase):
     def prepare_frozen(self) -> None:
         service = self.service()
         service.create("october-batch")
+        manifest = b"<manifest/>\n"
+        service.store.write_evidence("october-batch", "manifest.xml", manifest)
         service.register_feature(
             "october-batch",
             {
@@ -105,8 +108,8 @@ class CampaignGateTest(unittest.TestCase):
         prepared = service.prepare_snapshot(
             "october-batch",
             {
-                "manifest_sha256": "b" * 64,
-                "manifest_evidence": "evidence/manifest.xml",
+                "manifest_sha256": hashlib.sha256(manifest).hexdigest(),
+                "manifest_evidence": "evidence/october-batch/manifest.xml",
                 "repositories": {"frameworks/base": "a" * 40},
                 "branches": {"frameworks/base": "lineage-23.2"},
                 "clean_repositories": ["frameworks/base"],

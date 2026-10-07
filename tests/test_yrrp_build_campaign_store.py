@@ -94,6 +94,28 @@ class CampaignStoreTest(unittest.TestCase):
                 b"safe\n",
             )
 
+    def test_manifest_evidence_must_belong_to_campaign_and_match_digest(self) -> None:
+        self.store.save(Campaign.new("october-batch"))
+        relative = self.store.write_evidence(
+            "october-batch",
+            "manifest.xml",
+            b"<manifest/>\n",
+        )
+
+        self.store.verify_evidence(
+            "october-batch",
+            relative,
+            "5cd294a1b20c3f5f5cb8fd12ef19b535879a64a89a76560970041db03855b057",
+        )
+        with self.assertRaises(ValueError):
+            self.store.verify_evidence("october-batch", relative, "0" * 64)
+        with self.assertRaises(ValueError):
+            self.store.verify_evidence(
+                "other-campaign",
+                relative,
+                "5cd294a1b20c3f5f5cb8fd12ef19b535879a64a89a76560970041db03855b057",
+            )
+
     def test_evidence_is_private(self) -> None:
         self.store.save(Campaign.new("october-batch"))
 

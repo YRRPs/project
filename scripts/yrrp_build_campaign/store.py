@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -183,6 +184,25 @@ class CampaignStore:
             path = self._contained(directory / name)
             self._atomic_write(path, content)
         return str(path.relative_to(self.root))
+
+    def verify_evidence(
+        self,
+        campaign_id: str,
+        relative: str,
+        expected_sha256: str,
+    ) -> None:
+        validate_slug(campaign_id)
+        expected_parent = Path("evidence") / campaign_id
+        relative_path = Path(relative)
+        if relative_path.parent != expected_parent:
+            raise ValueError("evidence does not belong to campaign")
+        with self.lock():
+            path = self._contained(self.root / relative_path)
+            if not path.is_file():
+                raise ValueError(f"evidence file is missing: {relative}")
+            actual = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual != expected_sha256:
+            raise ValueError("evidence digest does not match snapshot")
 
     @staticmethod
     def _json_block(value: Any) -> list[str]:

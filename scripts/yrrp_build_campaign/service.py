@@ -189,6 +189,13 @@ class CampaignService:
         approval: str,
         actor: str,
     ) -> Campaign:
+        if "manifest_evidence" not in snapshot or "manifest_sha256" not in snapshot:
+            raise ValueError("snapshot requires manifest evidence and digest")
+        self.store.verify_evidence(
+            campaign_id,
+            str(snapshot["manifest_evidence"]),
+            str(snapshot["manifest_sha256"]),
+        )
         return self.store.mutate_unique_frozen(
             campaign_id,
             lambda campaign: campaign.freeze(snapshot, approval, actor),
