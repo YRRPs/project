@@ -165,6 +165,7 @@ with lock_path.open("r+") as lock:
     subprocess.run(
         [
             "screen", "-L", "-Logfile", str(log), "-dmS", "yrrp-ota-build",
+            "flock", "-x", str(lock_path),
             "env", f"YRRP_CAMPAIGN_CLAIM_FILE={claim_path}",
             "/opt/yrrp/project/scripts/sign-lineage-build.sh",
         ],

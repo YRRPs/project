@@ -13,6 +13,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from yrrp_build_campaign.launcher import (
+    REMOTE_LAUNCH_SCRIPT,
     collect_remote_snapshot,
     collect_remote_source,
     launch_campaign,
@@ -176,6 +177,10 @@ class CampaignLauncherTest(unittest.TestCase):
         campaign = self.store.load("october-batch")
         self.assertEqual(CampaignState.FIX_BATCH_READY, campaign.state)
         self.assertEqual("launch-failed", campaign.build_attempts[-1]["status"])
+
+    def test_remote_build_holds_checkout_lock_for_full_process(self) -> None:
+        self.assertIn('"flock", "-x"', REMOTE_LAUNCH_SCRIPT)
+        self.assertIn(".yrrp-build-launch.lock", REMOTE_LAUNCH_SCRIPT)
 
     @patch("yrrp_build_campaign.launcher.subprocess.run")
     def test_remote_commands_use_fixed_argument_vectors(self, run) -> None:

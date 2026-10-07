@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ORCHESTRATOR = ROOT / ".claude/agents/yrrp-build-campaign.md"
 FEATURE_OWNER = ROOT / ".claude/agents/yrrp-feature-owner.md"
 SIGNED_RELEASE_SKILL = ROOT / ".claude/skills/yrrp-signed-ota-release/SKILL.md"
+BUILDER_SKILL = ROOT / ".claude/skills/yrrp-builder-access/SKILL.md"
 
 
 def split_agent(text: str) -> tuple[str, str]:
@@ -107,6 +108,12 @@ class AgentDefinitionTest(unittest.TestCase):
             with self.subTest(path=path):
                 _, body = split_agent(path.read_text())
                 self.assertTrue(body.lstrip().startswith(prefix))
+
+    def test_builder_mutations_share_campaign_lock(self) -> None:
+        body = BUILDER_SKILL.read_text()
+        self.assertIn(".yrrp-build-launch.lock", body)
+        self.assertIn("repo sync", body)
+        self.assertIn("git checkout", body)
 
     def test_signed_release_uses_campaign_launcher(self) -> None:
         body = SIGNED_RELEASE_SKILL.read_text()
