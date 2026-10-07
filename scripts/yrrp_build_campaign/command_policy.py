@@ -74,9 +74,11 @@ def _options(tokens: list[str]) -> dict[str, str] | None:
 
 
 def _is_generate_recovery(options: dict[str, str]) -> bool:
-    return set(options) == {"--source-build", "--target-build"} and all(
-        BUILD_ID.fullmatch(value) for value in options.values()
-    )
+    if set(options) != {"--source-build", "--target-build"}:
+        return False
+    if not all(BUILD_ID.fullmatch(value) for value in options.values()):
+        return False
+    return options["--source-build"] != options["--target-build"]
 
 
 def _is_deploy_recovery(options: dict[str, str]) -> bool:
@@ -95,9 +97,19 @@ def _is_deploy_recovery(options: dict[str, str]) -> bool:
 
 
 def is_supported_recovery_command(command: str) -> bool:
-    """Accept only the exact builder reruns the build campaign may authorize once."""
-    remote = builder_remote_tokens(command)
-    if not remote:
+    """Accept only the exact builder reruns the build campaign may authorize once.
+
+    The whole command must be ``ssh AndroidBuilder <script> <options>``: no ssh
+    options, no wrapper and no second command, because builder_remote_tokens
+    only inspects what follows the first AndroidBuilder token.
+    """
+    tokens = _tokens(command)
+    if tokens[:2] != ["ssh", "AndroidBuilder"] or len(tokens) < 3:
+        return False
+    remote = tokens[2:]
+    if SHELL_SYNTAX.search(" ".join(remote)):
+        return False
+    if not all(SAFE_ARGUMENT.fullmatch(item) for item in remote):
         return False
     options = _options(remote[1:])
     if options is None:

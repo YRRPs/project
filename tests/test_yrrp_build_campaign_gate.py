@@ -363,6 +363,14 @@ class CampaignGateTest(unittest.TestCase):
             "ssh AndroidBuilder /opt/yrrp/project/scripts/sign-lineage-build.sh",
             GENERATE_RECOVERY + "; rm -rf /",
             "ssh AndroidBuilder m SystemUI",
+            "bash -c 'ssh AndroidBuilder rm -rf /opt/android/out' ; " + GENERATE_RECOVERY,
+            GENERATE_RECOVERY.replace(
+                "ssh AndroidBuilder", "ssh -o 'ProxyCommand=sh -c \"x\"' AndroidBuilder"
+            ),
+            GENERATE_RECOVERY.replace(
+                "ssh AndroidBuilder", "ssh -o SetEnv=YRRP_BUILD_LOCK_HELD=1 AndroidBuilder"
+            ),
+            GENERATE_RECOVERY.replace("20261008-090000", "20261007-083337"),
         ):
             self.assertFalse(is_supported_recovery_command(rejected), rejected)
 
