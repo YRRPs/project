@@ -12,6 +12,8 @@ readonly status_file=${YRRP_STATUS_FILE:-/home/android/signed-build.status}
 readonly campaign_claim_file=${YRRP_CAMPAIGN_CLAIM_FILE:-}
 readonly output_dir=${build_root}/out/signed
 readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh}
+readonly incremental_script=${YRRP_INCREMENTAL_SCRIPT:-${script_dir}/generate-incremental-ota.sh}
+readonly ota_container=${OTA_CONTAINER_NAME:-yrrp-ota-server}
 failure_domain=signing
 
 : "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
@@ -55,6 +57,31 @@ require_file() {
         printf 'Required file missing or empty: %s\n' "${file}" >&2
         exit 1
     fi
+}
+
+# Print the live release build ID when it can be an incremental source.
+# Print a skip reason to stderr and nothing to stdout when it cannot.
+resolve_incremental_source() {
+    local device build_id
+    if ! docker container inspect "${ota_container}" >/dev/null 2>&1; then
+        printf 'incremental-skipped: no live OTA container\n' >&2
+        return 0
+    fi
+    device=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.device" }}' "${ota_container}")
+    if [[ ${device} != salami ]]; then
+        printf 'incremental-skipped: live container serves device %s\n' "${device:-unknown}" >&2
+        return 0
+    fi
+    build_id=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.build-id" }}' "${ota_container}")
+    if [[ ! ${build_id} =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
+        printf 'Live OTA container has invalid build-id label: %s\n' "${build_id}" >&2
+        return 1
+    fi
+    if [[ ! -s "${output_dir}/lineage-23.2-salami-${build_id}-signed-target_files.zip" ]]; then
+        printf 'incremental-skipped: no signed target-files for live build %s\n' "${build_id}" >&2
+        return 0
+    fi
+    printf '%s\n' "${build_id}"
 }
 
 [[ -n "${campaign_claim_file}" && -f "${campaign_claim_file}" ]] || {
@@ -213,6 +240,19 @@ fi
 rm -rf "${verify_dir}"
 verify_dir=
 
+printf 'generating-incremental-ota\n' > "${status_file}"
+failure_domain=incremental
+incremental_ota=
+incremental_source=$(resolve_incremental_source)
+if [[ -n ${incremental_source} ]]; then
+    YRRP_BUILD_LOCK_HELD=1 "${incremental_script}" \
+        --source-build "${incremental_source}" \
+        --target-build "${build_date}"
+    incremental_ota="${output_dir}/lineage-23.2-salami-${incremental_source}-to-${build_date}-signed-incremental-ota.zip"
+    require_file "${incremental_ota}"
+fi
+failure_domain=signing
+
 readonly target_files_sha256=$(sha256sum "${signed_target_files}" | awk '{print $1}')
 readonly ota_sha256=$(sha256sum "${signed_ota}" | awk '{print $1}')
 readonly summary="${output_dir}/lineage-23.2-salami-${build_date}-SHA256SUMS.txt"
@@ -220,17 +260,22 @@ readonly summary="${output_dir}/lineage-23.2-salami-${build_date}-SHA256SUMS.txt
 {
     printf '%s  %s\n' "${target_files_sha256}" "$(basename "${signed_target_files}")"
     printf '%s  %s\n' "${ota_sha256}" "$(basename "${signed_ota}")"
+    if [[ -n ${incremental_ota} ]]; then
+        printf '%s  %s\n' "$(sha256sum "${incremental_ota}" | awk '{print $1}')" "$(basename "${incremental_ota}")"
+    fi
 } > "${summary}"
 
 printf 'preparing-ota-release\n' > "${status_file}"
 failure_domain=deployment
-OTA_STATUS_FILE="${status_file}" "${deploy_script}" \
-    --ota "${signed_ota}" \
-    --target-files "${signed_target_files}" \
-    --build-id "${build_date}"
+deploy_args=(--ota "${signed_ota}" --target-files "${signed_target_files}" --build-id "${build_date}")
+if [[ -n ${incremental_ota} ]]; then
+    deploy_args+=(--incremental "${incremental_ota}")
+fi
+OTA_STATUS_FILE="${status_file}" YRRP_BUILD_LOCK_HELD=1 "${deploy_script}" "${deploy_args[@]}"
 failure_domain=signing
 
 printf 'complete\n' > "${status_file}"
 printf 'Signed target files: %s\n' "${signed_target_files}"
 printf 'Signed OTA: %s\n' "${signed_ota}"
+[[ -z ${incremental_ota} ]] || printf 'Signed incremental OTA: %s\n' "${incremental_ota}"
 printf 'Checksums: %s\n' "${summary}"
