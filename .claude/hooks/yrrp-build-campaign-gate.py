@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -13,11 +14,15 @@ SCRIPTS = PROJECT_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
-from yrrp_build_campaign.command_policy import is_read_only_builder_command
-from yrrp_build_campaign.service import CampaignService
+from yrrp_build_campaign.command_policy import (
+    is_read_only_builder_command,
+    is_supported_recovery_command,
+)
+from yrrp_build_campaign.service import CAMPAIGN_AGENT, CampaignService
 from yrrp_build_campaign.store import CampaignStore
 
 LAUNCHER = "scripts/yrrp-launch-campaign-build.py"
+CAMPAIGN_CLI = "yrrp-build-campaign.py"
 
 
 def _tokens(command: str) -> list[str]:
@@ -45,6 +50,20 @@ def _is_direct_signing(command: str) -> bool:
     return False
 
 
+def _is_recovery_authorization(command: str) -> bool:
+    """Match the campaign CLI's authorize-recovery subcommand anywhere in a pipeline."""
+    tokens = [
+        part
+        for token in _tokens(command)
+        for part in re.split(r"[;&|()]+", token)
+        if part
+    ]
+    return any(
+        Path(token).name == CAMPAIGN_CLI and tokens[index + 1 : index + 2] == ["authorize-recovery"]
+        for index, token in enumerate(tokens)
+    )
+
+
 def launcher_campaign_id(command: str) -> str | None:
     tokens = _tokens(command)
     if len(tokens) != 4:
@@ -60,6 +79,12 @@ def launcher_campaign_id(command: str) -> str | None:
 
 
 def classify(command: str) -> str:
+    if _is_recovery_authorization(command):
+        return "recovery-authorization"
+    return _classify_build(command)
+
+
+def _classify_build(command: str) -> str:
     if launcher_campaign_id(command) is not None:
         return "launcher"
     if _is_direct_signing(command):
@@ -94,6 +119,8 @@ def evaluate(event: dict[str, Any]) -> dict[str, Any] | None:
         return None
     command = str(event["tool_input"]["command"])
     kind = classify(command)
+    if kind == "recovery-authorization":
+        return _gate_recovery_authorization(event, command)
     if kind in {"other", "readonly"}:
         return None
     service = CampaignService(CampaignStore(campaign_root()))
@@ -101,9 +128,28 @@ def evaluate(event: dict[str, Any]) -> dict[str, Any] | None:
         campaign_id = service.active_campaign_id()
         if kind == "launcher":
             return _authorize_launcher(event, service, campaign_id, command)
+        if is_supported_recovery_command(command):
+            return _authorize_builder_recovery(event, service, campaign_id, command)
         return _authorize_builder_preflight(service, campaign_id, command)
     except Exception as error:
         return decision("deny", _denial_reason(error))
+
+
+def _gate_recovery_authorization(event: dict[str, Any], command: str) -> dict[str, Any] | None:
+    agent_type = str(event.get("agent_type", ""))
+    if agent_type != CAMPAIGN_AGENT:
+        return decision(
+            "deny",
+            f"Build campaign gate: only the {CAMPAIGN_AGENT} session may run "
+            f"authorize-recovery, not agent type {agent_type or '<none>'!r}.",
+        )
+    if _classify_build(command) != "other":
+        return decision(
+            "deny",
+            "Build campaign gate: run authorize-recovery on its own, "
+            "without a builder, signing, or launcher command in the same Bash call.",
+        )
+    return None
 
 
 def _authorize_launcher(
@@ -119,6 +165,23 @@ def _authorize_launcher(
     agent_type = str(event.get("agent_type", ""))
     service.authorize_launcher(campaign_id, actor, agent_type)
     return decision("allow", f"Authorized fixed launcher for campaign {campaign_id}")
+
+
+def _authorize_builder_recovery(
+    event: dict[str, Any],
+    service: CampaignService,
+    campaign_id: str,
+    command: str,
+) -> dict[str, Any]:
+    agent_type = str(event.get("agent_type", ""))
+    try:
+        service.consume_recovery(campaign_id, command, agent_type)
+    except ValueError as error:
+        raise ValueError(
+            f"recovery command refused: {error}; only the {CAMPAIGN_AGENT} session may "
+            "run a recovery it authorized once with authorize-recovery"
+        ) from error
+    return decision("allow", f"Authorized one-time recovery command for campaign {campaign_id}")
 
 
 def _authorize_builder_preflight(

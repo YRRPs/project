@@ -15,6 +15,7 @@ from .model import (
 )
 from .store import CampaignStore
 
+CAMPAIGN_AGENT = "yrrp-build-campaign"
 PUBLIC_TRANSITIONS = {
     CampaignState.COLLECTING,
     CampaignState.IMPLEMENTING,
@@ -227,7 +228,7 @@ class CampaignService:
         return digest
 
     def authorize_recovery(self, campaign_id: str, command: str) -> str:
-        """Allow one exact builder rerun; the gate hook consumes it like a preflight."""
+        """Allow one exact builder rerun that only the campaign session may consume."""
         if not is_supported_recovery_command(command):
             raise ValueError("unsupported recovery command structure")
         digest = self.command_digest(command)
@@ -235,7 +236,7 @@ class CampaignService:
         def apply(campaign: Campaign) -> None:
             if campaign.state == CampaignState.FROZEN:
                 raise ValueError("campaign is FROZEN; launch or invalidate the freeze first")
-            campaign.preflight_authorizations.append(digest)
+            campaign.recovery_authorizations.append(digest)
             campaign.record_event(
                 "recovery-authorized",
                 "campaign-cli",
@@ -244,6 +245,24 @@ class CampaignService:
 
         self.store.mutate(campaign_id, apply)
         return digest
+
+    def consume_recovery(self, campaign_id: str, command: str, agent_type: str) -> None:
+        if agent_type != CAMPAIGN_AGENT:
+            raise ValueError(f"only the {CAMPAIGN_AGENT} session may run recovery commands")
+        digest = self.command_digest(command)
+
+        def apply(campaign: Campaign) -> None:
+            try:
+                campaign.recovery_authorizations.remove(digest)
+            except ValueError as error:
+                raise ValueError("recovery command is not authorized") from error
+            campaign.record_event(
+                "recovery-consumed",
+                "campaign-hook",
+                {"command_sha256": digest, "agent_type": agent_type},
+            )
+
+        self.store.mutate(campaign_id, apply)
 
     def consume_preflight(self, campaign_id: str, command: str) -> None:
         digest = self.command_digest(command)
@@ -267,7 +286,7 @@ class CampaignService:
         actor: str,
         agent_type: str,
     ) -> Campaign:
-        if agent_type != "yrrp-build-campaign":
+        if agent_type != CAMPAIGN_AGENT:
             raise ValueError("only yrrp-build-campaign may launch a build")
 
         def apply(campaign: Campaign) -> None:

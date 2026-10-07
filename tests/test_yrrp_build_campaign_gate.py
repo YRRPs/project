@@ -104,7 +104,7 @@ class CampaignGateTest(unittest.TestCase):
     def service(self) -> CampaignService:
         return CampaignService(CampaignStore(self.root))
 
-    def prepare_frozen(self) -> None:
+    def prepare_frozen(self, pending_recovery: str | None = None) -> None:
         service = self.service()
         service.create("october-batch")
         manifest = b"<manifest/>\n"
@@ -156,6 +156,8 @@ class CampaignGateTest(unittest.TestCase):
                 "project_sha": "e" * 40,
             },
         )
+        if pending_recovery is not None:
+            service.authorize_recovery("october-batch", pending_recovery)
         service.freeze(
             "october-batch",
             prepared,
@@ -383,6 +385,115 @@ class CampaignGateTest(unittest.TestCase):
         second = hook.evaluate(event(GENERATE_RECOVERY))
         self.assertEqual("allow", first["hookSpecificOutput"]["permissionDecision"])
         self.assertEqual("deny", second["hookSpecificOutput"]["permissionDecision"])
+
+    def test_recovery_consumption_requires_campaign_agent(self) -> None:
+        service = self.service()
+        service.create("october-batch")
+        service.authorize_recovery("october-batch", GENERATE_RECOVERY)
+        hook = load_hook()
+
+        foreign = hook.evaluate(event(GENERATE_RECOVERY, agent_type="yrrp-feature-owner"))
+        missing = hook.evaluate(event(GENERATE_RECOVERY, agent_type=""))
+        with self.assertRaisesRegex(ValueError, "yrrp-build-campaign"):
+            service.consume_recovery("october-batch", GENERATE_RECOVERY, "yrrp-feature-owner")
+        owner = hook.evaluate(event(GENERATE_RECOVERY))
+
+        self.assertEqual("deny", foreign["hookSpecificOutput"]["permissionDecision"])
+        self.assertIn("recovery", foreign["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertEqual("deny", missing["hookSpecificOutput"]["permissionDecision"])
+        self.assertEqual("allow", owner["hookSpecificOutput"]["permissionDecision"])
+        campaign = service.store.load("october-batch")
+        self.assertEqual([], campaign.recovery_authorizations)
+        self.assertEqual("recovery-consumed", campaign.events[-1]["kind"])
+
+    def test_recovery_and_preflight_authorizations_are_separate(self) -> None:
+        service = self.service()
+        service.create("october-batch")
+        digest = service.authorize_recovery("october-batch", GENERATE_RECOVERY)
+
+        campaign = service.store.load("october-batch")
+        self.assertEqual([digest], campaign.recovery_authorizations)
+        self.assertEqual([], campaign.preflight_authorizations)
+        with self.assertRaisesRegex(ValueError, "preflight command is not authorized"):
+            service.consume_preflight("october-batch", GENERATE_RECOVERY)
+
+        service.store.mutate(
+            "october-batch",
+            lambda campaign: campaign.preflight_authorizations.append(
+                service.command_digest(DEPLOY_RECOVERY)
+            ),
+        )
+        with self.assertRaisesRegex(ValueError, "recovery command is not authorized"):
+            service.consume_recovery("october-batch", DEPLOY_RECOVERY, "yrrp-build-campaign")
+        denied = load_hook().evaluate(event(DEPLOY_RECOVERY))
+        self.assertEqual("deny", denied["hookSpecificOutput"]["permissionDecision"])
+
+    def test_authorize_recovery_cli_is_campaign_only(self) -> None:
+        hook = load_hook()
+        payload = "printf '%s' '{\"command\": \"x\"}' | "
+        commands = (
+            "python3 scripts/yrrp-build-campaign.py authorize-recovery --campaign-id october-batch",
+            f"python3 {ROOT}/scripts/yrrp-build-campaign.py authorize-recovery "
+            "--campaign-id october-batch",
+            payload + "python3 scripts/yrrp-build-campaign.py authorize-recovery "
+            "--campaign-id october-batch",
+            "python3 ./scripts/yrrp-build-campaign.py authorize-recovery --campaign-id october-batch",
+            "python3 scripts/yrrp-build-campaign.py authorize-recovery;true",
+        )
+        for command in commands:
+            with self.subTest(command=command):
+                denied = hook.evaluate(event(command, agent_type="yrrp-feature-owner"))
+                self.assertEqual("deny", denied["hookSpecificOutput"]["permissionDecision"])
+                self.assertIn(
+                    "yrrp-build-campaign",
+                    denied["hookSpecificOutput"]["permissionDecisionReason"],
+                )
+                self.assertEqual(
+                    "deny",
+                    hook.evaluate(event(command, agent_type=""))[
+                        "hookSpecificOutput"
+                    ]["permissionDecision"],
+                )
+                self.assertIsNone(hook.evaluate(event(command)))
+        self.assertIsNone(
+            hook.evaluate(
+                event(
+                    "python3 scripts/yrrp-build-campaign.py status --campaign-id october-batch",
+                    agent_type="yrrp-feature-owner",
+                )
+            )
+        )
+
+    def test_authorize_recovery_cli_cannot_carry_a_builder_command(self) -> None:
+        hook = load_hook()
+        command = (
+            "python3 scripts/yrrp-build-campaign.py authorize-recovery "
+            "--campaign-id october-batch < payload.json; ssh AndroidBuilder cat status"
+        )
+
+        output = hook.evaluate(event(command))
+
+        self.assertEqual("deny", output["hookSpecificOutput"]["permissionDecision"])
+
+    def test_state_without_recovery_authorizations_loads(self) -> None:
+        service = self.service()
+        service.create("october-batch")
+        path = service.store.json_path("october-batch")
+        value = json.loads(path.read_text())
+        value.pop("recovery_authorizations", None)
+        path.write_text(json.dumps(value))
+
+        campaign = service.store.load("october-batch")
+
+        self.assertEqual([], campaign.recovery_authorizations)
+
+    def test_pending_recovery_does_not_block_freeze(self) -> None:
+        self.prepare_frozen(pending_recovery=GENERATE_RECOVERY)
+
+        campaign = self.service().store.load("october-batch")
+
+        self.assertEqual(CampaignState.FROZEN, campaign.state)
+        self.assertEqual(1, len(campaign.recovery_authorizations))
 
     def test_recovery_authorization_rejects_other_commands(self) -> None:
         service = self.service()

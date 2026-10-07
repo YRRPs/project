@@ -321,6 +321,7 @@ class Campaign:
     source_snapshot: dict[str, Any] | None = None
     approvals: list[dict[str, Any]] = field(default_factory=list)
     preflight_authorizations: list[str] = field(default_factory=list)
+    recovery_authorizations: list[str] = field(default_factory=list)
     launcher_authorizations: list[dict[str, Any]] = field(default_factory=list)
     build_attempts: list[dict[str, Any]] = field(default_factory=list)
     installation: dict[str, Any] | None = None
