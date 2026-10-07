@@ -3,6 +3,9 @@ set -Eeuo pipefail
 
 readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly prepare_script=${script_dir}/prepare-ota-release.py
+source "${script_dir}/yrrp-release-lib.sh"
+: "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
+: "${OTA_BASE_IMAGE_REF:=ghcr.io/yrrps/ota-server:main}"
 readonly container_name=${OTA_CONTAINER_NAME:-yrrp-ota-server}
 readonly hostname=${OTA_HOSTNAME:-ota-server}
 readonly network=${OTA_NETWORK:-proxy-net}
@@ -16,6 +19,8 @@ readonly lock_file=${OTA_LOCK_FILE:-/opt/android/out/.ota-deploy.lock}
 ota=
 target_files=
 build_id=
+incremental=
+source_incremental=
 context=
 previous_exists=false
 previous_stopped=false
@@ -27,7 +32,7 @@ candidate_image=
 previous_image=
 
 usage() {
-    echo "usage: $0 --ota FILE --target-files FILE --build-id YYYYMMDD-HHMMSS" >&2
+    echo "usage: $0 --ota FILE --target-files FILE --build-id YYYYMMDD-HHMMSS [--incremental FILE]" >&2
     exit 64
 }
 
@@ -48,6 +53,7 @@ while (($#)); do
         --ota) ota=${2:-}; shift 2 ;;
         --target-files) target_files=${2:-}; shift 2 ;;
         --build-id) build_id=${2:-}; shift 2 ;;
+        --incremental) incremental=${2:-}; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -78,13 +84,27 @@ wait_for_health() {
     return 1
 }
 
+container_get() {
+    docker exec "${container_name}" sh -c "wget -q -O - http://127.0.0.1:${internal_port}$1 | grep -q '$2'"
+}
+
+container_range() {
+    docker exec "${container_name}" sh -c \
+        "printf 'GET $1 HTTP/1.1\\r\\nHost: localhost\\r\\nRange: bytes=0-0\\r\\nConnection: close\\r\\n\\r\\n' | nc 127.0.0.1 ${internal_port} | grep -q '206 Partial Content'"
+}
+
 verify_candidate() {
-    local ota_name
+    local ota_name incremental_name
     ota_name=$(basename "${ota}")
     docker exec "${container_name}" wget -q -O /dev/null "http://127.0.0.1:${internal_port}/healthz" || return 1
     docker exec "${container_name}" wget -q -O /dev/null "http://127.0.0.1:${internal_port}/updates/salami.json" || return 1
-    docker exec "${container_name}" sh -c \
-        "printf 'GET /install/salami/${build_id}/${ota_name} HTTP/1.1\\r\\nHost: localhost\\r\\nRange: bytes=0-0\\r\\nConnection: close\\r\\n\\r\\n' | nc 127.0.0.1 ${internal_port} | grep -q '206 Partial Content'" || return 1
+    container_range "/install/salami/${build_id}/${ota_name}" || return 1
+    container_get /updates/salami/1.json "${ota_name}" || return 1
+    if [[ -n ${incremental} ]]; then
+        incremental_name=$(basename "${incremental}")
+        container_get "/updates/salami/${source_incremental}.json" "${incremental_name}" || return 1
+        container_range "/install/salami/${build_id}/${incremental_name}" || return 1
+    fi
 }
 
 rollback_transaction() {
@@ -146,6 +166,7 @@ trap 'exit 143' TERM
 mkdir -p "$(dirname "${lock_file}")" "${work_dir}"
 exec 9>"${lock_file}"
 flock -n 9 || fail "another OTA deployment is running"
+yrrp_require_build_lock_free || exit 1
 
 require_command docker
 require_command flock
@@ -178,13 +199,22 @@ mapfile -t base_digests < <(
 ((${#base_digests[@]} == 1)) || fail "OTA base image must resolve to exactly one repository digest"
 readonly base_digest=${base_digests[0]}
 context=${work_dir}/release-${build_id}-$$
-python3 "${prepare_script}" \
-    --ota "${ota}" \
-    --target-files "${target_files}" \
-    --build-id "${build_id}" \
-    --public-base-url "${OTA_PUBLIC_BASE_URL}" \
-    --base-image-digest "${base_digest}" \
-    --output "${context}" >/dev/null
+prepare_args=(
+    --ota "${ota}"
+    --target-files "${target_files}"
+    --build-id "${build_id}"
+    --public-base-url "${OTA_PUBLIC_BASE_URL}"
+    --base-image-digest "${base_digest}"
+    --output "${context}"
+)
+if [[ -n ${incremental} ]]; then
+    prepare_args+=(--incremental "${incremental}")
+fi
+python3 "${prepare_script}" "${prepare_args[@]}" >/dev/null
+if [[ -n ${incremental} ]]; then
+    source_incremental=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source_incremental"])' "${incremental}.json")
+    [[ ${source_incremental} =~ ^[0-9]+$ ]] || fail "incremental meta has non-numeric source_incremental"
+fi
 cat > "${context}/Dockerfile" <<'EOF'
 ARG OTA_BASE_IMAGE
 FROM ${OTA_BASE_IMAGE}

@@ -24,13 +24,13 @@ yrrp_cert_sha256() {
 # Refuse to run while a campaign build holds the launch lock. sign-lineage-build.sh
 # already runs under that lock and sets YRRP_BUILD_LOCK_HELD=1 for its children.
 yrrp_require_build_lock_free() {
-    local lock_file=${YRRP_BUILD_LOCK_FILE:-/home/android/.yrrp-build-launch.lock}
+    local build_lock_file=${YRRP_BUILD_LOCK_FILE:-/home/android/.yrrp-build-launch.lock}
     if [[ ${YRRP_BUILD_LOCK_HELD:-} == 1 ]]; then
         return 0
     fi
-    exec 8>>"${lock_file}"
+    exec 8>>"${build_lock_file}"
     if ! flock -n 8; then
-        printf 'A campaign build holds %s\n' "${lock_file}" >&2
+        printf 'A campaign build holds %s\n' "${build_lock_file}" >&2
         return 1
     fi
 }
