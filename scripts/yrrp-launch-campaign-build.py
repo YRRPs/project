@@ -21,6 +21,22 @@ def campaign_root() -> Path:
     return project / ".claude" / "build-campaigns"
 
 
+REMOTE_OUTPUT_TAIL_LINES = 40
+
+
+def format_launch_error(error: Exception) -> str:
+    message = f"campaign launch error: {error}"
+    if not isinstance(error, subprocess.CalledProcessError):
+        return message
+    for label, stream in (("stderr", error.stderr), ("stdout", error.stdout)):
+        if isinstance(stream, bytes):
+            stream = stream.decode(errors="replace")
+        tail = (stream or "").strip().splitlines()[-REMOTE_OUTPUT_TAIL_LINES:]
+        if tail:
+            message += f"\nremote {label}:\n" + "\n".join(tail)
+    return message
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Launch one frozen YRRP build campaign")
     parser.add_argument("--campaign-id", required=True)
@@ -42,7 +58,7 @@ def main() -> int:
         else:
             launch_campaign(service, arguments.campaign_id)
     except (OSError, TypeError, ValueError, subprocess.SubprocessError) as error:
-        print(f"campaign launch error: {error}", file=sys.stderr)
+        print(format_launch_error(error), file=sys.stderr)
         return 2
     return 0
 
