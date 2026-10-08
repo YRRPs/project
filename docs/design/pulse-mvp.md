@@ -110,6 +110,19 @@ attached
 
 Every false transition releases capture and removes window. Activation errors latch until eligibility resets, preventing retry loops.
 
+## Color modes (issue #4)
+
+`lineage_pulse_color_mode` selects how `PulseController` colors the bars. `0` or any unknown value is Solid: the stored RGB. `1` is Match theme: white with the system dark theme on, black with it off. `lineage_pulse_alpha` applies in both modes.
+
+`PulseThemeRepository` maps the `UI_MODE_NIGHT` bit from the `@Main` `ConfigurationInteractor.configurationValues` flow, which emits the current configuration on collection and then every change. Night mode is appearance only: it is not an eligibility input, so a theme change calls `setColor` on the shown overlay and leaves `captureEpoch` unchanged. The dump adds `colorMode=`, `nightMode=` and `effectiveColor=#AARRGGBB`; `PulseLog` records `colorMode=` and `nightMode=` transitions.
+
+```bash
+adb shell settings put secure lineage_pulse_color_mode 1   # Match theme
+adb shell cmd uimode night yes                             # bars turn white
+adb shell cmd uimode night no                              # bars turn black
+adb shell settings delete secure lineage_pulse_color_mode  # back to Solid
+```
+
 ## Controls
 
 ```bash
