@@ -68,6 +68,6 @@ Only two shapes are accepted, and the command must be exactly `ssh AndroidBuilde
 
 ## Known gaps
 
-- Builds before manifest `0c819fd` lack `lineage.updater.uri`; on those, set it per boot as root (`adb root; adb shell setprop lineage.updater.uri https://ota.yimura.dev/updates/salami.json`). Later builds get it from `vendor/extra/product.mk`.
+- Builds before manifest `0c819fd` lack `lineage.updater.uri`; on those, set it per boot as root (`adb root; adb shell setprop lineage.updater.uri 'https://ota.yimura.dev/updates/{device}/{incr}.json'`). Later builds get it from `vendor/extra/product.mk`.
 - Incremental sources live in `out/signed/`; wiping `out/` makes the next release full-only.
 - The release image build prints `InvalidDefaultArgInFrom`; harmless, the digest is passed explicitly.

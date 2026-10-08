@@ -24,6 +24,7 @@ from yrrp_build_campaign.launcher import (
     collect_remote_snapshot,
     collect_remote_source,
     launch_campaign,
+    local_project_sha,
     launch_remote_build,
 )
 from yrrp_build_campaign.model import CampaignState, digest_json
@@ -228,8 +229,14 @@ class CampaignLauncherTest(unittest.TestCase):
         run.return_value.stdout = '{"manifest_sha256":"b", "manifest_xml":"<manifest/>", "repositories":{}, "branches":{}, "clean_repositories":[], "project_sha":"e"}'
         campaign = self.store.load("october-batch")
 
-        source, manifest = collect_remote_source(campaign)
-        collect_remote_snapshot(campaign)
+        source, manifest = collect_remote_source(
+            campaign,
+            project_sha_provider=lambda: "e" * 40,
+        )
+        collect_remote_snapshot(
+            campaign,
+            project_sha_provider=lambda: "e" * 40,
+        )
         launch_remote_build("october-batch", frozen_snapshot())
 
         self.assertEqual("<manifest/>", manifest)
@@ -239,6 +246,38 @@ class CampaignLauncherTest(unittest.TestCase):
             self.assertIsInstance(args[0], list)
             self.assertFalse(kwargs.get("shell", False))
 
+    @patch("yrrp_build_campaign.launcher.subprocess.run")
+    def test_local_project_sha_rejects_dirty_checkout(self, run) -> None:
+        run.return_value.stdout = " M scripts/yrrp_build_campaign/launcher.py\n"
+
+        with self.assertRaisesRegex(ValueError, "local project checkout is dirty"):
+            local_project_sha()
+
+        self.assertEqual(
+            ["git", "status", "--porcelain"],
+            run.call_args.args[0],
+        )
+
+    @patch("yrrp_build_campaign.launcher.subprocess.run")
+    def test_snapshot_payload_binds_remote_project_to_local_head(self, run) -> None:
+        run.return_value.stdout = '{"manifest_sha256":"b", "manifest_xml":"<manifest/>", "repositories":{}, "branches":{}, "clean_repositories":[], "project_sha":"e"}'
+        campaign = self.store.load("october-batch")
+
+        collect_remote_source(
+            campaign,
+            project_sha_provider=lambda: "f" * 40,
+        )
+
+        payload = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual("f" * 40, payload["project_sha"])
+        self.assertEqual(["frameworks/base"], payload["repositories"])
+
+    def test_remote_scripts_reject_dirty_source_trees(self) -> None:
+        for script in (REMOTE_SNAPSHOT_SCRIPT, REMOTE_LAUNCH_SCRIPT):
+            with self.subTest(script=script[:20]):
+                self.assertIn('run("git", "status", "--porcelain", cwd=PROJECT)', script)
+                self.assertIn('"forall", "-e", "-c"', script)
+                self.assertIn("source checkout has dirty repositories", script)
 
     def capture_remote_argvs(self) -> list[tuple[list[str], str]]:
         captured: list[tuple[list[str], str]] = []
@@ -251,7 +290,10 @@ class CampaignLauncherTest(unittest.TestCase):
 
         campaign = self.store.load("october-batch")
         with patch("yrrp_build_campaign.launcher.subprocess.run", fake_run):
-            collect_remote_source(campaign)
+            collect_remote_source(
+                campaign,
+                project_sha_provider=lambda: "e" * 40,
+            )
             launch_remote_build("october-batch", frozen_snapshot())
         return captured
 

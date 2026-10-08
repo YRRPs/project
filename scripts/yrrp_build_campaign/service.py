@@ -4,7 +4,7 @@ import hashlib
 import time
 from typing import Any
 
-from .command_policy import is_supported_preflight_command, is_supported_recovery_command
+from .command_policy import is_supported_preflight_command, recovery_target_build
 from .model import (
     Campaign,
     CampaignState,
@@ -71,6 +71,10 @@ def _require_fields(
     unknown = sorted(set(payload) - required - (optional or set()))
     if unknown:
         raise ValueError(f"{label} has unknown fields: {', '.join(unknown)}")
+
+
+def _device_case_key(feature_id: str, case_id: str) -> str:
+    return f"{feature_id}:{case_id}"
 
 
 class CampaignService:
@@ -229,13 +233,19 @@ class CampaignService:
 
     def authorize_recovery(self, campaign_id: str, command: str) -> str:
         """Allow one exact builder rerun that only the campaign session may consume."""
-        if not is_supported_recovery_command(command):
+        target_build = recovery_target_build(command)
+        if target_build is None:
             raise ValueError("unsupported recovery command structure")
         digest = self.command_digest(command)
 
         def apply(campaign: Campaign) -> None:
             if campaign.state == CampaignState.FROZEN:
                 raise ValueError("campaign is FROZEN; launch or invalidate the freeze first")
+            if not campaign.build_attempts:
+                raise ValueError("recovery requires a campaign build attempt")
+            latest_build = campaign.build_attempts[-1].get("build_id")
+            if target_build != latest_build:
+                raise ValueError("recovery target does not match latest campaign build")
             campaign.recovery_authorizations.append(digest)
             campaign.record_event(
                 "recovery-authorized",
@@ -491,9 +501,10 @@ class CampaignService:
             }
             if case_id not in assigned:
                 raise ValueError(f"device case is not assigned: {case_id}")
-            if case_id in campaign.device_cases:
+            key = _device_case_key(feature_id, case_id)
+            if key in campaign.device_cases:
                 raise ValueError(f"duplicate device case: {case_id}")
-            campaign.device_cases[case_id] = dict(payload)
+            campaign.device_cases[key] = dict(payload)
             campaign.record_event("device-case", campaign.features[feature_id].sender, dict(payload))
 
         return self.store.mutate(campaign_id, apply)
@@ -551,8 +562,8 @@ class CampaignService:
             for item in campaign.features[feature_id].device_cases
         }
         feature_cases = {
-            case_id: item
-            for case_id, item in campaign.device_cases.items()
+            str(item["case_id"]): item
+            for item in campaign.device_cases.values()
             if item["feature_id"] == feature_id
         }
         if set(feature_cases) != assigned:
@@ -569,7 +580,7 @@ class CampaignService:
         }
         if supplied != derived:
             raise ValueError("device result counts do not match recorded cases")
-        CampaignService._validate_result_phase(payload)
+        CampaignService._validate_result_phase(payload, feature_id, feature_cases)
         feature = campaign.features[feature_id]
         feature.device_result = dict(payload)
         feature.phase = FeaturePhase(payload["next_phase"])
@@ -582,13 +593,18 @@ class CampaignService:
         )
 
     @staticmethod
-    def _validate_result_phase(payload: dict[str, Any]) -> None:
+    def _validate_result_phase(
+        payload: dict[str, Any],
+        feature_id: str,
+        feature_cases: dict[str, dict[str, Any]],
+    ) -> None:
         failed = int(payload["failed"])
         blocked = int(payload["blocked"])
         not_run = int(payload["not_run"])
         failures = payload["failures"]
         if len(failures) != failed:
             raise ValueError("failure details must match failed case count")
+        failure_case_ids = []
         for failure in failures:
             _require_fields(
                 failure,
@@ -596,6 +612,16 @@ class CampaignService:
                 "feature failure",
                 {"expected", "evidence"},
             )
+            if failure["feature_id"] != feature_id:
+                raise ValueError("failure details do not match failed device cases")
+            failure_case_ids.append(str(failure["case_id"]))
+        failed_case_ids = {
+            case_id
+            for case_id, item in feature_cases.items()
+            if item["result"] == "FAIL"
+        }
+        if set(failure_case_ids) != failed_case_ids:
+            raise ValueError("failure details do not match failed device cases")
         if failed and payload["next_phase"] != FeaturePhase.FIXING:
             raise ValueError("failed result must enter FIXING")
         if not failed and (blocked or not_run) and payload["next_phase"] != FeaturePhase.BLOCKED:

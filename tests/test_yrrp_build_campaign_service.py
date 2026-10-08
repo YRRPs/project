@@ -285,6 +285,26 @@ class CampaignServiceTest(unittest.TestCase):
                 actor="yrrp-build-campaign",
             )
 
+    def test_recovery_target_must_match_latest_build_attempt(self) -> None:
+        self.advance_to_frozen()
+        self.service.claim_build(
+            "october-batch",
+            current_snapshot=snapshot(),
+            actor="yrrp-build-campaign",
+        )
+        self.service.record_build_result("october-batch", build_result())
+        mismatched = (
+            "ssh AndroidBuilder /opt/yrrp/project/scripts/generate-incremental-ota.sh "
+            "--source-build 20261007-083337 --target-build 20261008-090000"
+        )
+        matching = mismatched.replace("20261008-090000", "20990101-000000")
+
+        with self.assertRaisesRegex(ValueError, "latest campaign build"):
+            self.service.authorize_recovery("october-batch", mismatched)
+
+        digest = self.service.authorize_recovery("october-batch", matching)
+        self.assertEqual(64, len(digest))
+
     def test_device_lease_is_exclusive(self) -> None:
         self.advance_to_testing()
 
@@ -314,7 +334,7 @@ class CampaignServiceTest(unittest.TestCase):
                 "failures": [
                     {
                         "feature_id": "pulse",
-                        "case_id": "pulse-nav",
+                        "case_id": "pulse-case",
                         "observed": "not rendered",
                     }
                 ],
@@ -325,7 +345,7 @@ class CampaignServiceTest(unittest.TestCase):
         )
 
         self.assertIsNone(campaign.active_device_lease)
-        self.assertEqual("pulse-nav", campaign.failures[0]["case_id"])
+        self.assertEqual("pulse-case", campaign.failures[0]["case_id"])
         self.assertEqual(FeaturePhase.FIXING, campaign.features["pulse"].phase)
 
     def test_concurrent_registrations_do_not_lose_updates(self) -> None:
@@ -369,7 +389,7 @@ class CampaignServiceTest(unittest.TestCase):
                 "failures": [
                     {
                         "feature_id": "pulse",
-                        "case_id": "pulse-nav",
+                        "case_id": "pulse-case",
                         "observed": "not rendered",
                     }
                 ],
@@ -721,6 +741,38 @@ class CampaignServiceTest(unittest.TestCase):
                 },
             )
 
+    def test_device_result_failure_must_match_feature_and_case(self) -> None:
+        self.advance_to_testing()
+        self.service.grant_device_lease("october-batch", "pulse")
+        self.service.record_case(
+            "october-batch",
+            {"case_id": "pulse-case", "feature_id": "pulse", "result": "FAIL"},
+        )
+        mismatches = (
+            {"feature_id": "crt", "case_id": "pulse-case"},
+            {"feature_id": "pulse", "case_id": "crt-case"},
+        )
+
+        for mismatch in mismatches:
+            with self.subTest(mismatch=mismatch):
+                payload = {
+                    "build_id": "20990101-000000",
+                    "passed": 0,
+                    "failed": 1,
+                    "blocked": 0,
+                    "not_run": 0,
+                    "failures": [{**mismatch, "observed": "not rendered"}],
+                    "restored_state": {"pulse_enabled": 0},
+                    "evidence": ["pulse-dump.txt"],
+                    "next_phase": "FIXING",
+                }
+                with self.assertRaisesRegex(ValueError, "failure details"):
+                    self.service.record_device_result(
+                        "october-batch",
+                        "pulse",
+                        payload,
+                    )
+
     def test_device_result_validates_counts_build_and_phase(self) -> None:
         self.advance_to_testing()
         self.service.grant_device_lease("october-batch", "pulse")
@@ -796,6 +848,80 @@ class CampaignServiceTest(unittest.TestCase):
 
         self.assertEqual(CampaignState.ACCEPTED, accepted.state)
         self.assertEqual(FeaturePhase.ACCEPTED, accepted.features["pulse"].phase)
+
+    def test_features_can_record_same_case_id(self) -> None:
+        service = self.service
+        revisions = {"repo/pulse": "a" * 40, "repo/crt": "d" * 40}
+        for feature_id in ("pulse", "crt"):
+            payload = registration(feature_id)
+            payload["device_cases"][0]["case_id"] = "smoke"
+            service.register_feature(
+                "october-batch",
+                payload,
+                sender=f"{feature_id}-session",
+            )
+            service.mark_feature_ready(
+                "october-batch",
+                feature_id,
+                readiness(feature_id, "a" if feature_id == "pulse" else "d"),
+            )
+        for state in (
+            CampaignState.IMPLEMENTING,
+            CampaignState.PREFLIGHT,
+            CampaignState.READY_TO_FREEZE,
+        ):
+            service.transition("october-batch", state)
+        prepared = service.prepare_snapshot(
+            "october-batch",
+            {
+                "manifest_sha256": hashlib.sha256(MANIFEST).hexdigest(),
+                "manifest_evidence": "evidence/october-batch/manifest.xml",
+                "repositories": revisions,
+                "branches": {name: "lineage-23.2" for name in revisions},
+                "clean_repositories": sorted(revisions),
+                "project_sha": "e" * 40,
+            },
+        )
+        service.freeze(
+            "october-batch",
+            prepared,
+            "Freeze and build",
+            actor="yrrp-build-campaign",
+        )
+        service.claim_build(
+            "october-batch",
+            current_snapshot=prepared,
+            actor="yrrp-build-campaign",
+        )
+        service.record_build_result("october-batch", build_result())
+        service.record_installation("october-batch", installation(prepared))
+
+        for feature_id in ("pulse", "crt"):
+            service.grant_device_lease("october-batch", feature_id)
+            service.record_case(
+                "october-batch",
+                {"case_id": "smoke", "feature_id": feature_id, "result": "PASS"},
+            )
+            service.record_device_result(
+                "october-batch",
+                feature_id,
+                {
+                    "build_id": "20990101-000000",
+                    "passed": 1,
+                    "failed": 0,
+                    "blocked": 0,
+                    "not_run": 0,
+                    "failures": [],
+                    "restored_state": {f"{feature_id}_enabled": 0},
+                    "evidence": [f"{feature_id}.txt"],
+                    "next_phase": "ACCEPTED",
+                },
+            )
+
+        campaign = service.finalize_testing("october-batch")
+
+        self.assertEqual(CampaignState.ACCEPTED, campaign.state)
+        self.assertEqual(2, len(campaign.device_cases))
 
     def test_two_features_share_one_build_and_serial_device_leases(self) -> None:
         service = self.service

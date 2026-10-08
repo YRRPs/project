@@ -4,10 +4,13 @@ import json
 import shlex
 import subprocess
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from .model import Campaign
 from .service import CampaignService
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 REMOTE_SNAPSHOT_SCRIPT = r'''
 import hashlib
@@ -19,13 +22,39 @@ from pathlib import Path
 ANDROID = Path("/opt/android")
 PROJECT = Path("/opt/yrrp/project")
 SIGNING = Path("/opt/yrrp/signing")
-repositories = json.load(sys.stdin)
+payload = json.load(sys.stdin)
+repositories = payload["repositories"]
+expected_project_sha = payload["project_sha"]
 
 
 def run(*args, cwd):
     return subprocess.run(
         list(args), cwd=cwd, capture_output=True, check=True, text=True
     ).stdout.strip()
+
+
+def validate_source_checkout():
+    project_sha = run("git", "rev-parse", "HEAD", cwd=PROJECT)
+    if project_sha != expected_project_sha:
+        raise SystemExit(
+            f"builder project SHA {project_sha} does not match launcher "
+            f"{expected_project_sha}"
+        )
+    if run("git", "status", "--porcelain", cwd=PROJECT):
+        raise SystemExit("builder project checkout is dirty")
+    command = (
+        'dirty=$(git status --porcelain); if [ -n "$dirty" ]; then '
+        'printf "%s\\n%s\\n" "$REPO_PATH" "$dirty" >&2; exit 1; fi'
+    )
+    check = subprocess.run(
+        [str(ANDROID / ".repo/repo/repo"), "forall", "-e", "-c", command],
+        cwd=ANDROID,
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode:
+        sys.stderr.write(check.stderr)
+        raise SystemExit("source checkout has dirty repositories")
 
 
 def build_process_active(processes):
@@ -67,6 +96,7 @@ def validate_preflight():
         raise SystemExit("testkey.pk8 does not point to releasekey.pk8")
     if (SIGNING / "testkey.x509.pem").readlink().name != "releasekey.x509.pem":
         raise SystemExit("testkey.x509.pem does not point to releasekey.x509.pem")
+    validate_source_checkout()
     if build_process_active(run("ps", "-eo", "args", cwd=ANDROID)):
         raise SystemExit("build or signing process is already active")
     screens = subprocess.run(
@@ -119,12 +149,37 @@ payload = json.load(sys.stdin)
 expected = payload["snapshot"]
 campaign_id = payload["campaign_id"]
 repositories = sorted(expected["repositories"])
+expected_project_sha = expected["project_sha"]
 
 
 def run(*args, cwd):
     return subprocess.run(
         list(args), cwd=cwd, capture_output=True, check=True, text=True
     ).stdout.strip()
+
+
+def validate_source_checkout():
+    project_sha = run("git", "rev-parse", "HEAD", cwd=PROJECT)
+    if project_sha != expected_project_sha:
+        raise SystemExit(
+            f"builder project SHA {project_sha} does not match launcher "
+            f"{expected_project_sha}"
+        )
+    if run("git", "status", "--porcelain", cwd=PROJECT):
+        raise SystemExit("builder project checkout is dirty")
+    command = (
+        'dirty=$(git status --porcelain); if [ -n "$dirty" ]; then '
+        'printf "%s\\n%s\\n" "$REPO_PATH" "$dirty" >&2; exit 1; fi'
+    )
+    check = subprocess.run(
+        [str(ANDROID / ".repo/repo/repo"), "forall", "-e", "-c", command],
+        cwd=ANDROID,
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode:
+        sys.stderr.write(check.stderr)
+        raise SystemExit("source checkout has dirty repositories")
 
 
 def build_process_active(processes):
@@ -166,6 +221,7 @@ def validate_preflight():
         raise SystemExit("testkey.pk8 does not point to releasekey.pk8")
     if (SIGNING / "testkey.x509.pem").readlink().name != "releasekey.x509.pem":
         raise SystemExit("testkey.x509.pem does not point to releasekey.x509.pem")
+    validate_source_checkout()
     if build_process_active(run("ps", "-eo", "args", cwd=ANDROID)):
         raise SystemExit("build or signing process is already active")
     subprocess.run(
@@ -243,6 +299,26 @@ with lock_path.open("r+") as lock:
 
 SnapshotProvider = Callable[[Campaign], dict[str, Any]]
 BuildRunner = Callable[[str, dict[str, Any]], None]
+ProjectShaProvider = Callable[[], str]
+
+
+def local_project_sha() -> str:
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    if status:
+        raise ValueError("local project checkout is dirty")
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
 
 
 def remote_python_argv(script: str) -> list[str]:
@@ -254,14 +330,20 @@ def remote_python_argv(script: str) -> list[str]:
     return ["ssh", "AndroidBuilder", "python3", "-c", shlex.quote(script)]
 
 
-def collect_remote_source(campaign: Campaign) -> tuple[dict[str, Any], str]:
+def collect_remote_source(
+    campaign: Campaign,
+    project_sha_provider: ProjectShaProvider = local_project_sha,
+) -> tuple[dict[str, Any], str]:
     base_snapshot = campaign.source_snapshot or {
         "repositories": campaign.expected_revisions()
     }
-    repositories = sorted(base_snapshot["repositories"])
+    payload = {
+        "project_sha": project_sha_provider(),
+        "repositories": sorted(base_snapshot["repositories"]),
+    }
     result = subprocess.run(
         remote_python_argv(REMOTE_SNAPSHOT_SCRIPT),
-        input=json.dumps(repositories),
+        input=json.dumps(payload, sort_keys=True),
         capture_output=True,
         check=True,
         text=True,
@@ -272,8 +354,11 @@ def collect_remote_source(campaign: Campaign) -> tuple[dict[str, Any], str]:
     return {**base_snapshot, **live}, manifest
 
 
-def collect_remote_snapshot(campaign: Campaign) -> dict[str, Any]:
-    snapshot, _ = collect_remote_source(campaign)
+def collect_remote_snapshot(
+    campaign: Campaign,
+    project_sha_provider: ProjectShaProvider = local_project_sha,
+) -> dict[str, Any]:
+    snapshot, _ = collect_remote_source(campaign, project_sha_provider)
     return snapshot
 
 

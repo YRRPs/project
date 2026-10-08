@@ -37,17 +37,37 @@ def _is_builder_ssh(command: str) -> bool:
     return "ssh" in tokens and "AndroidBuilder" in tokens
 
 
-def _is_direct_signing(command: str) -> bool:
-    tokens = _tokens(command)
-    if not tokens:
-        return False
-    if Path(tokens[0].rstrip(";&|()")).name == "sign-lineage-build.sh":
+def _shell_segments(command: str) -> list[list[str]]:
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return []
+    segments: list[list[str]] = [[]]
+    for token in tokens:
+        if token and all(character in ";&|()" for character in token):
+            segments.append([])
+            continue
+        segments[-1].append(token)
+    return [segment for segment in segments if segment]
+
+
+def _segment_runs_signer(segment: list[str]) -> bool:
+    command = Path(segment[0]).name
+    if command == "sign-lineage-build.sh":
         return True
-    if Path(tokens[0]).name in {"bash", "sh"} and len(tokens) > 1:
-        return Path(tokens[1]).name == "sign-lineage-build.sh"
-    if Path(tokens[0]).name == "env":
-        return any(Path(token).name == "sign-lineage-build.sh" for token in tokens[1:])
-    return False
+    if command in {"bash", "sh"} and "-c" in segment:
+        index = segment.index("-c")
+        return index + 1 < len(segment) and _is_direct_signing(segment[index + 1])
+    wrappers = {"command", "env", "exec", "flock", "nohup", "sudo"}
+    return command in wrappers and any(
+        Path(token).name == "sign-lineage-build.sh" for token in segment[1:]
+    )
+
+
+def _is_direct_signing(command: str) -> bool:
+    return any(_segment_runs_signer(segment) for segment in _shell_segments(command))
 
 
 def _is_recovery_authorization(command: str) -> bool:

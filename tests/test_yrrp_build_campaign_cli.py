@@ -182,6 +182,10 @@ class CampaignCliTest(unittest.TestCase):
 
     def test_authorize_recovery_stores_only_digest(self) -> None:
         self.create()
+        state_path = self.root / "october-batch.json"
+        campaign = json.loads(state_path.read_text())
+        campaign["build_attempts"] = [{"build_id": "20261008-090000"}]
+        state_path.write_text(json.dumps(campaign))
         command = (
             "ssh AndroidBuilder /opt/yrrp/project/scripts/generate-incremental-ota.sh "
             "--source-build 20261007-083337 --target-build 20261008-090000"

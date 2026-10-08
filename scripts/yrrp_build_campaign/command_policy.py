@@ -96,6 +96,26 @@ def _is_deploy_recovery(options: dict[str, str]) -> bool:
     return len(options) == 4 and re.fullmatch(pattern, incremental) is not None
 
 
+def recovery_target_build(command: str) -> str | None:
+    tokens = _tokens(command)
+    if tokens[:2] != ["ssh", "AndroidBuilder"] or len(tokens) < 3:
+        return None
+    remote = tokens[2:]
+    if SHELL_SYNTAX.search(" ".join(remote)):
+        return None
+    if not all(SAFE_ARGUMENT.fullmatch(item) for item in remote):
+        return None
+    options = _options(remote[1:])
+    if options is None:
+        return None
+    script = remote[0]
+    if script == GENERATE_INCREMENTAL and _is_generate_recovery(options):
+        return options["--target-build"]
+    if script == DEPLOY_RELEASE and _is_deploy_recovery(options):
+        return options["--build-id"]
+    return None
+
+
 def is_supported_recovery_command(command: str) -> bool:
     """Accept only the exact builder reruns the build campaign may authorize once.
 
@@ -103,19 +123,4 @@ def is_supported_recovery_command(command: str) -> bool:
     options, no wrapper and no second command, because builder_remote_tokens
     only inspects what follows the first AndroidBuilder token.
     """
-    tokens = _tokens(command)
-    if tokens[:2] != ["ssh", "AndroidBuilder"] or len(tokens) < 3:
-        return False
-    remote = tokens[2:]
-    if SHELL_SYNTAX.search(" ".join(remote)):
-        return False
-    if not all(SAFE_ARGUMENT.fullmatch(item) for item in remote):
-        return False
-    options = _options(remote[1:])
-    if options is None:
-        return False
-    if remote[0] == GENERATE_INCREMENTAL:
-        return _is_generate_recovery(options)
-    if remote[0] == DEPLOY_RELEASE:
-        return _is_deploy_recovery(options)
-    return False
+    return recovery_target_build(command) is not None

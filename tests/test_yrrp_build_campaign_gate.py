@@ -157,13 +157,43 @@ class CampaignGateTest(unittest.TestCase):
             },
         )
         if pending_recovery is not None:
-            service.authorize_recovery("october-batch", pending_recovery)
+            digest = service.command_digest(pending_recovery)
+            service.store.mutate(
+                "october-batch",
+                lambda campaign: campaign.recovery_authorizations.append(digest),
+            )
         service.freeze(
             "october-batch",
             prepared,
             "Freeze and build",
             actor="yrrp-build-campaign",
         )
+
+    def prepare_recovery_campaign(self) -> CampaignService:
+        self.prepare_frozen()
+        service = self.service()
+        campaign = service.store.load("october-batch")
+        service.claim_build(
+            "october-batch",
+            current_snapshot=campaign.source_snapshot,
+            actor="yrrp-build-campaign",
+        )
+        service.record_build_result(
+            "october-batch",
+            {
+                "build_id": "20261008-090000",
+                "status": "complete",
+                "status_file": "/home/android/signed-build.status",
+                "log_path": "/opt/android/out/signed/build.log",
+                "project_sha": "e" * 40,
+                "started_at": "2026-10-08T09:00:00Z",
+                "completed_at": "2026-10-08T10:00:00Z",
+                "final_status": "complete",
+                "signed_artifact_evidence": ["sha256.txt"],
+                "public_ota_evidence": ["ota-health.txt"],
+            },
+        )
+        return service
 
     def test_classifies_exact_launcher_and_raw_builder_commands(self) -> None:
         hook = load_hook()
@@ -183,6 +213,19 @@ class CampaignGateTest(unittest.TestCase):
             "ssh AndroidBuilder 'git status; mka bacon'",
         )
         for command in raw_commands:
+            with self.subTest(command=command):
+                self.assertEqual("builder", hook.classify(command))
+
+    def test_wrapped_signing_commands_are_builds(self) -> None:
+        hook = load_hook()
+        commands = (
+            "cd /opt/yrrp/project && scripts/sign-lineage-build.sh",
+            "touch claim.json; env YRRP_CAMPAIGN_CLAIM_FILE=claim.json "
+            "/opt/yrrp/project/scripts/sign-lineage-build.sh",
+            "bash -c 'cd /opt/yrrp/project && ./scripts/sign-lineage-build.sh'",
+        )
+
+        for command in commands:
             with self.subTest(command=command):
                 self.assertEqual("builder", hook.classify(command))
 
@@ -377,8 +420,7 @@ class CampaignGateTest(unittest.TestCase):
             self.assertFalse(is_supported_recovery_command(rejected), rejected)
 
     def test_recovery_authorization_is_one_time(self) -> None:
-        service = self.service()
-        service.create("october-batch")
+        service = self.prepare_recovery_campaign()
         service.authorize_recovery("october-batch", GENERATE_RECOVERY)
         hook = load_hook()
         first = hook.evaluate(event(GENERATE_RECOVERY))
@@ -387,8 +429,7 @@ class CampaignGateTest(unittest.TestCase):
         self.assertEqual("deny", second["hookSpecificOutput"]["permissionDecision"])
 
     def test_recovery_consumption_requires_campaign_agent(self) -> None:
-        service = self.service()
-        service.create("october-batch")
+        service = self.prepare_recovery_campaign()
         service.authorize_recovery("october-batch", GENERATE_RECOVERY)
         hook = load_hook()
 
@@ -407,8 +448,7 @@ class CampaignGateTest(unittest.TestCase):
         self.assertEqual("recovery-consumed", campaign.events[-1]["kind"])
 
     def test_recovery_and_preflight_authorizations_are_separate(self) -> None:
-        service = self.service()
-        service.create("october-batch")
+        service = self.prepare_recovery_campaign()
         digest = service.authorize_recovery("october-batch", GENERATE_RECOVERY)
 
         campaign = service.store.load("october-batch")
