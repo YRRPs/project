@@ -64,9 +64,16 @@ PROJECT_MOUNT = PROJECT_HOST_PATH + ":/project:rw"
 
 
 def run(*args, cwd=None, check=True):
-    return subprocess.run(
-        list(args), cwd=cwd, capture_output=True, check=check, text=True
-    )
+    try:
+        return subprocess.run(
+            list(args), cwd=cwd, capture_output=True, check=check, text=True
+        )
+    except subprocess.CalledProcessError as error:
+        if error.stdout:
+            sys.stderr.write(error.stdout)
+        if error.stderr:
+            sys.stderr.write(error.stderr)
+        raise
 
 
 def output(*args, cwd=None):
@@ -134,8 +141,8 @@ def synchronize_project(expected_sha):
     image_id = inspection[1]
     run(
         "docker", "run", "--rm", "--user", "950:950",
-        "-v", PROJECT_MOUNT, image_id,
-        "python3", "-c", PROJECT_UPDATE_SCRIPT, expected_sha,
+        "-v", PROJECT_MOUNT, "--entrypoint", "python3", image_id,
+        "-c", PROJECT_UPDATE_SCRIPT, expected_sha,
     )
     validate_project(expected_sha)
 

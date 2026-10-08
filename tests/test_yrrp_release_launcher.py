@@ -297,6 +297,25 @@ class RemotePrepareContractTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIn(text, REMOTE_PREPARE_SCRIPT)
 
+    def test_remote_child_failure_relays_captured_output(self) -> None:
+        namespace = load_embedded_functions(
+            REMOTE_PREPARE_SCRIPT,
+            {"run"},
+            {"subprocess": subprocess, "sys": sys},
+        )
+        error = subprocess.CalledProcessError(
+            64,
+            ["docker", "run"],
+            output="child stdout\n",
+            stderr="child stderr\n",
+        )
+        stderr = io.StringIO()
+        with patch.object(subprocess, "run", side_effect=error), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(subprocess.CalledProcessError):
+                namespace["run"]("docker", "run")
+        self.assertIn("child stdout", stderr.getvalue())
+        self.assertIn("child stderr", stderr.getvalue())
+
     def test_remote_prepare_embeds_project_update_program(self) -> None:
         module = ast.parse(REMOTE_PREPARE_SCRIPT)
         assigned = {
@@ -316,6 +335,7 @@ class RemotePrepareContractTest(unittest.TestCase):
             ".Image",
             '"docker", "run", "--rm"',
             '"--user", "950:950"',
+            '"--entrypoint", "python3"',
             "/mnt/fast/docker/android/project",
             '":/project:rw"',
             '"/opt/yrrp/project"',
