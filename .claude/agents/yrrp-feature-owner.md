@@ -15,8 +15,10 @@ Announce first: **Using yrrp-feature-owner to carry one feature from idea to rev
 Run only as a dedicated main session:
 
 ```bash
-claude --agent yrrp-feature-owner
+claude --agent yrrp-feature-owner --name yrrp-feature-<feature-id>
 ```
+
+Replace `<feature-id>` with a short unique slug. `--name` is the display name shown by `ListAgents`; the agent definition name alone does not name the session.
 
 Before source work, verify `/.workdirs/` is ignored. Use one canonical clone per repository: the repository root for `project`, or `.workdirs/repos/<repository>` for another repository. Clone into that canonical path only when it is missing; never clone once per feature. Verify its `origin` URL, require its primary worktree to be clean, fetch and prune the remote, then resolve the current symbolic default branch and current default-branch SHA.
 

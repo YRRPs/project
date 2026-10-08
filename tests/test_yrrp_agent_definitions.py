@@ -287,7 +287,11 @@ class AgentDefinitionTest(unittest.TestCase):
         self.assertEqual("yrrp-feature-owner", frontmatter_value(frontmatter, "name"))
         self.assertIn("model: inherit", frontmatter)
         self.assertNotIn("tools:", frontmatter)
-        self.assertIn("claude --agent yrrp-feature-owner", body)
+        self.assertIn(
+            "claude --agent yrrp-feature-owner --name yrrp-feature-<feature-id>",
+            body,
+        )
+        self.assertIn("`--name` is the display name shown by `ListAgents`", body)
         self.assertIn("dedicated main session", body)
 
     def test_feature_owner_uses_isolated_workdirs_from_remote_default(self) -> None:
@@ -373,7 +377,11 @@ class AgentDefinitionTest(unittest.TestCase):
     def test_release_manager_has_exact_identity_and_tool_boundary(self) -> None:
         frontmatter, body = split_agent(RELEASE_MANAGER.read_text())
         self.assertEqual("yrrp-release-manager", frontmatter_value(frontmatter, "name"))
-        self.assertIn("claude --agent yrrp-release-manager", body)
+        self.assertIn(
+            "claude --agent yrrp-release-manager --name yrrp-release-manager",
+            body,
+        )
+        self.assertIn("`--name` makes `ListAgents` discovery deterministic", body)
         self.assertIn("dedicated main session", body)
 
         self.assertEqual(1, frontmatter.splitlines().count("tools:"))

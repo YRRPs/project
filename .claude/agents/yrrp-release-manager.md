@@ -26,8 +26,10 @@ Announce first: **Using yrrp-release-manager to turn reviewed feature PRs into o
 Run only as a dedicated main session:
 
 ```bash
-claude --agent yrrp-release-manager
+claude --agent yrrp-release-manager --name yrrp-release-manager
 ```
+
+Keep this exact unique display name. `--name` makes `ListAgents` discovery deterministic; `--agent` selects behavior but does not name the session.
 
 Accept `FEATURE_READY` handoffs from feature-owner sessions. Do not implement or edit feature source and do not launch implementation agents. The fixed release CLI and receipt creation are permitted without general-purpose `Edit` or `Write` tools. The final message must contain the receipt path and release result; a progress note is not a result.
 
