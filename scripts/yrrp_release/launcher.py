@@ -22,14 +22,21 @@ import sys
 from pathlib import Path
 
 PROJECT = Path("/project")
-PROJECT_URL = "https://github.com/YRRPs/lineageos-salami-custom.git"
+PROJECT_URL = "https://github.com/YRRPs/project.git"
 expected_sha = sys.argv[1]
 
 
 def run(*args):
-    return subprocess.run(
-        list(args), cwd=PROJECT, capture_output=True, check=True, text=True
-    ).stdout.strip()
+    try:
+        return subprocess.run(
+            list(args), cwd=PROJECT, capture_output=True, check=True, text=True
+        ).stdout.strip()
+    except subprocess.CalledProcessError as error:
+        if error.stdout:
+            sys.stderr.write(error.stdout)
+        if error.stderr:
+            sys.stderr.write(error.stderr)
+        raise
 
 
 if run("git", "status", "--porcelain"):

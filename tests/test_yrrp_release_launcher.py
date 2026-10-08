@@ -347,10 +347,29 @@ class RemotePrepareContractTest(unittest.TestCase):
 
     def test_project_update_refuses_dirty_fetches_public_sha_and_detaches_exact(self) -> None:
         self.assertIn('"git", "status", "--porcelain"', PROJECT_UPDATE_SCRIPT)
-        self.assertIn("https://github.com/YRRPs/lineageos-salami-custom.git", PROJECT_UPDATE_SCRIPT)
+        self.assertIn("https://github.com/YRRPs/project.git", PROJECT_UPDATE_SCRIPT)
         self.assertIn('"git", "fetch"', PROJECT_UPDATE_SCRIPT)
         self.assertIn('"git", "checkout", "--detach"', PROJECT_UPDATE_SCRIPT)
         self.assertIn('"git", "rev-parse", "HEAD"', PROJECT_UPDATE_SCRIPT)
+
+    def test_project_update_relays_git_failure_output(self) -> None:
+        namespace = load_embedded_functions(
+            PROJECT_UPDATE_SCRIPT,
+            {"run"},
+            {"subprocess": subprocess, "sys": sys, "PROJECT": Path("/project")},
+        )
+        error = subprocess.CalledProcessError(
+            128,
+            ["git", "fetch"],
+            output="git stdout\n",
+            stderr="fatal: repository not found\n",
+        )
+        stderr = io.StringIO()
+        with patch.object(subprocess, "run", side_effect=error), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(subprocess.CalledProcessError):
+                namespace["run"]("git", "fetch")
+        self.assertIn("git stdout", stderr.getvalue())
+        self.assertIn("repository not found", stderr.getvalue())
 
     def test_prepare_syncs_and_detaches_each_requested_repo_at_exact_sha(self) -> None:
         calls = []
