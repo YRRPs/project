@@ -9,7 +9,6 @@ readonly build_root=${YRRP_BUILD_ROOT:-/opt/android}
 readonly cert_dir=${YRRP_CERT_DIR:-/opt/yrrp/signing}
 readonly password_file=${YRRP_RUNTIME_PASSWORD_FILE:-/home/android/.android-signing-passwords}
 readonly status_file=${YRRP_STATUS_FILE:-/home/android/signed-build.status}
-readonly campaign_claim_file=${YRRP_CAMPAIGN_CLAIM_FILE:-}
 readonly output_dir=${build_root}/out/signed
 readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh}
 readonly incremental_script=${YRRP_INCREMENTAL_SCRIPT:-${script_dir}/generate-incremental-ota.sh}
@@ -86,36 +85,32 @@ resolve_incremental_source() {
     printf '%s\n' "${build_id}"
 }
 
-[[ -n "${campaign_claim_file}" && -f "${campaign_claim_file}" ]] || {
-    printf 'Campaign claim file is required\n' >&2
+readonly build_lock_fd=${YRRP_BUILD_LOCK_FD:-}
+[[ ${build_lock_fd} =~ ^[0-9]+$ ]] || {
+    printf 'Release launcher must provide numeric YRRP_BUILD_LOCK_FD\n' >&2
     exit 1
 }
-[[ $(stat -c '%a' "${campaign_claim_file}") == 600 ]] || {
-    printf 'Campaign claim file must have mode 600\n' >&2
+[[ -e /proc/$$/fd/${build_lock_fd} ]] || {
+    printf 'YRRP_BUILD_LOCK_FD is not open: %s\n' "${build_lock_fd}" >&2
     exit 1
 }
-[[ $(stat -c '%u' "${campaign_claim_file}") == $(id -u) ]] || {
-    printf 'Campaign claim file must be owned by current user\n' >&2
+readonly build_lock_file=/home/android/.yrrp-build-launch.lock
+build_lock_fd_identity=$(stat -Lc '%d:%i' -- "/proc/$$/fd/${build_lock_fd}") || {
+    printf 'Cannot identify YRRP_BUILD_LOCK_FD: %s\n' "${build_lock_fd}" >&2
     exit 1
 }
-python3 - "${campaign_claim_file}" <<'PY'
-import json
-import re
-import sys
-import time
-from pathlib import Path
-
-claim = json.loads(Path(sys.argv[1]).read_text())
-if set(claim) != {"campaign_id", "source_snapshot_sha256", "expires_at"}:
-    raise SystemExit("Campaign claim schema is invalid")
-if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", str(claim["campaign_id"])):
-    raise SystemExit("Campaign claim ID is invalid")
-if not re.fullmatch(r"[0-9a-f]{64}", str(claim["source_snapshot_sha256"])):
-    raise SystemExit("Campaign claim source digest is invalid")
-if int(claim["expires_at"]) < int(time.time()):
-    raise SystemExit("Campaign claim has expired")
-PY
-rm -f "${campaign_claim_file}"
+build_lock_file_identity=$(stat -Lc '%d:%i' -- "${build_lock_file}") || {
+    printf 'Cannot identify canonical release lock: %s\n' "${build_lock_file}" >&2
+    exit 1
+}
+[[ ${build_lock_fd_identity} == "${build_lock_file_identity}" ]] || {
+    printf 'YRRP_BUILD_LOCK_FD is not the canonical release lock\n' >&2
+    exit 1
+}
+flock -n "${build_lock_fd}" || {
+    printf 'YRRP_BUILD_LOCK_FD does not hold the release lock\n' >&2
+    exit 1
+}
 
 require_file "${deploy_script}"
 [[ -x "${deploy_script}" ]] || {

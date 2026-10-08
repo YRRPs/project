@@ -145,12 +145,12 @@ class DeployOtaReleaseTest(unittest.TestCase):
         result = self.run_deploy("initial", ota_env=False)
         self.assertEqual(0, result.returncode, result.stderr)
 
-    def test_refuses_while_campaign_build_holds_lock(self) -> None:
+    def test_refuses_while_release_build_holds_lock(self) -> None:
         with (self.root / "build.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             result = self.run_deploy("initial")
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("A campaign build holds", result.stderr)
+        self.assertIn("A release build holds", result.stderr)
         self.assertFalse(self.log.exists())
 
 

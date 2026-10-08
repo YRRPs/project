@@ -16,7 +16,10 @@ out/
 # Local Superpowers working documents
 /docs/superpowers/
 
-# Local YRRP build campaign state
+# Local worktrees and YRRP release state
+/.workdirs/
+/.claude/releases/
+# Legacy read-only archive; active release tooling must not inspect or modify it.
 /.claude/build-campaigns/
 
 # Python state

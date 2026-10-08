@@ -1,51 +1,49 @@
 ---
 name: yrrp-manifest-and-forks
-description: Use when changing which repositories the ROM builds from or publishing YRRP repos — "fork <repo>", "add a fork to the manifest", "override a Lineage project", "our manifest", "default.xml", "repo sync fails", "hooks is different", "--force-sync not enabled", "switch the checkout to our manifest", "push to frameworks_base", "YRRPs", "new repo in the org", "GHCR image is stale", "Dependabot PRs", "merge dependabot", "builder image main tag", "workflow didn't publish". Covers the org's repository map, adding a forked project, the force-sync trap, and GHCR publishing races. NOT for building or signing (yrrp-signed-ota-release).
+description: Use when changing or publishing the repositories the ROM builds from — "fork this repo", "add a fork to the manifest", "override a Lineage project", "our default.xml", "repo sync fails", "hooks is different", "--force-sync not enabled", "switch to our manifest", "push frameworks/base", "new YRRPs repo", "GHCR image is stale", "merge Dependabot", or "workflow did not publish". Covers local feature branches and PRs, release-manager merge ownership, exact-SHA scoped builder sync, force-sync backup and approval safety, and GHCR revision checks. NOT for feature implementation on the builder, signing/build execution, key restoration, or unscoped checkout cleanup.
 ---
 
 # YRRP manifest and forks
 
-Announce first: **Using yrrp-manifest-and-forks to change the source topology.**
+Announce first: **Using yrrp-manifest-and-forks to publish reviewed source topology safely.**
+
+## Role split
+
+Feature owners fetch the remote's current symbolic default branch, create a fresh clone or worktree beneath `.workdirs/`, implement and test locally, push a feature branch, and open a PR. They never mutate `/opt/android` or call `yrrp-builder-access`.
+
+The `yrrp-release-manager` reviews and merges selected PRs, captures the actual merged default-branch SHA for each repository, and is the only role that publishes integration changes or requests builder synchronization. After selected PR merges and merged project SHA capture, fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA. Run `prepare` and `launch` from that checkout. Retain it through release completion; there is no automatic cleanup. Builder sync is scoped to those exact merged SHAs through `python3 scripts/yrrp-release.py prepare --project-sha ... --repo PATH=SHA`; never sync an inferred branch tip.
 
 ## Repository map
 
-GitHub org `YRRPs`, all public, Apache-2.0 for original work:
-
-| Repo | Local path | Role |
+| Repository | Builder path | Role |
 |---|---|---|
-| `project` | `~/Documents/Projects/lineageos-salami-custom` | docs, scripts, tests; cloned read-only into the builder |
-| `android` | — | repo manifest; `default.xml` overrides Lineage projects |
-| `android_frameworks_base` | builder `/opt/android/frameworks/base` | Pulse fork, branch `lineage-23.2` |
-| `android_packages_apps_Settings` | builder `/opt/android/packages/apps/Settings` | YRRPs Settings hub, pages, search and setting controllers; branch `lineage-23.2` |
-| `android_vendor_extra` | `~/Documents/Projects/android_vendor_extra`, builder `vendor/extra` | product overrides inherited first by `vendor/lineage/config/common.mk` (Updater URL); put new properties here instead of forking `vendor/lineage` |
-| `android_build_server` | `~/Documents/Projects/android_build_server` | builder image → `ghcr.io/yrrps/android-build-server:main` |
-| `ota_server` | `~/Documents/Projects/ota_server` | Nginx OTA base → `ghcr.io/yrrps/ota-server:main` |
+| `YRRPs/project` | `/opt/yrrp/project` read-only | Release scripts, docs, tests |
+| `YRRPs/android` | manifest checkout | `repo init` manifest |
+| `YRRPs/android_frameworks_base` | `/opt/android/frameworks/base` | Framework and SystemUI changes |
+| `YRRPs/android_packages_apps_Settings` | `/opt/android/packages/apps/Settings` | YRRPs Settings UI |
+| `YRRPs/android_vendor_extra` | `/opt/android/vendor/extra` | Product properties and additive overrides |
+| `YRRPs/android_build_server` | image | Builder container |
+| `YRRPs/ota_server` | image | OTA Nginx base |
 
-Forks go in the org, never the user's personal profile.
+Forks belong in `YRRPs`, retain upstream history and licensing, and use `lineage-23.2` as the integration branch.
 
-## Adding a forked project
+## Add or change a fork
 
-1. Fork the Lineage repo into the org, keeping the `android_<path>` name.
-2. In `android/default.xml`, replace the project's entry with one using `remote="yrrp"` (the remote fetches `https://github.com/YRRPs`). Keep the original `path` and `groups`.
-3. Push the manifest, then on the builder run `repo sync <path>` for that path only.
+1. Create the correctly named `android_<path>` fork in the organization.
+2. Make the manifest change on a local feature branch and open a PR; preserve the original checkout `path` and groups while selecting `remote="yrrp"`.
+3. After review, the release manager merges the fork and manifest PRs and captures both actual merged SHAs.
+4. Run the fixed prepare command with the project SHA plus each changed path/SHA. Require returned repository and revision-locked manifest evidence before build approval.
 
-## The force-sync trap
+## Force-sync safety
 
-Changing a project's `name` makes `repo sync` fail with:
+A changed project name may produce `hooks is different` and `--force-sync not enabled`. Before any forced sync:
 
-```text
-hooks is different ...
---force-sync not enabled
-```
+1. Under the shared builder lock, confirm all unique commits are published and create `/opt/android/.backups/<name>-<date>.bundle` with `git bundle create --all`; verify it with `git bundle verify`.
+2. Ask through `AskUserQuestion` with exactly **Force-sync only `<path>`** and **Stop**.
+3. If approved, run only `repo sync --force-sync <path>` under the shared lock, then report `HEAD`, requested merged SHA, clean status, and backup path.
 
-`--force-sync` rewrites that project's Git metadata and worktree. Before it:
+Never run unscoped `--force-sync`, `repo sync -d`, `git reset --hard`, or `git clean`. The fixed prepare flow remains preferred because it scopes source to reviewed exact SHAs.
 
-1. Confirm all unique work in that project is pushed, and create a backup: `git -C /opt/android/<path> bundle create /opt/android/.backups/<name>-$(date +%Y%m%d).bundle --all`, then `git bundle verify` it.
-2. Ask through `AskUserQuestion` (options: force-sync only `<path>` / stop). Never run an unscoped `--force-sync`, `repo sync -d`, `git reset --hard`, or `git clean` on the checkout.
-3. Run `repo sync --force-sync <path>` and report the new `HEAD` against the fork's branch.
+## GHCR revision evidence
 
-## GHCR publishing
-
-Pushes to `main` in `android_build_server` and `ota_server` publish `:main` images through pinned-SHA workflows. Merging several Dependabot PRs in quick succession can leave `:main` built from an intermediate commit. After a batch of merges, compare the image's `org.opencontainers.image.revision` label with `git rev-parse origin/main`, and rerun the workflow on `main` if they differ.
-
-Package visibility cannot be changed through the GitHub API; the user changes it in the web UI.
+Pushes to `main` in `android_build_server` and `ota_server` publish `:main` images through pinned workflows. After rapid merges, compare image label `org.opencontainers.image.revision` with the actual merged `origin/main` SHA. If they differ, rerun the workflow for that exact SHA and recheck the label before use. Package visibility remains a user web-UI action.

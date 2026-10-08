@@ -44,12 +44,12 @@ controller procedure in the Settings skill.
 - Before the first device build, add a Dumpable and a LogBuffer for the feature's gates and lifecycle. Use rom-feature-observability for this.
 
 - Commit in the org fork of the touched repo, with one commit per logical step. Export the series to `patches/<repo>/<feature>/` with `SHA256SUMS.txt`. See yrrp-manifest-and-forks.
-- The shared Ravenwood and Robolectric SystemUI test targets fail on unrelated existing fixtures. Do not report that as your breakage. Use these as the authoritative checks:
+- The shared Ravenwood and Robolectric SystemUI test targets fail on unrelated existing fixtures. Do not report that as your breakage. Run locally available focused checks in the feature worktree, then put these merged-source checks in the `FEATURE_READY` proof plan for `yrrp-release-manager`:
   1. `m SystemUI-core`
   2. `m SystemUI`
   3. Standalone runs of the new test classes
   4. A full `brunch salami`
   5. `classes.dex` inspection of the packaged `SystemUI.apk`, confirming the new classes are present
-- Run long builds through yrrp-builder-access.
-- Format Kotlin with `/opt/android/external/ktfmt/ktfmt.sh`. It needs JDK 21 on `PATH`.
-- A build that passes on the builder does not prove the feature works on the device. Say which behaviors are still unverified on hardware.
+- Feature owners never invoke `yrrp-builder-access`; release manager owns every remote compile and product build.
+- Format Kotlin locally when the formatter is available. Otherwise record formatting as an unproven pre-merge check for release-manager execution with `/opt/android/external/ktfmt/ktfmt.sh` and JDK 21.
+- A build that passes on the builder does not prove the feature works on the device. State which hardware behaviors remain `UNPROVEN` and give exact post-release checks.

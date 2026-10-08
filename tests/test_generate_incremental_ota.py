@@ -129,12 +129,12 @@ class GenerateIncrementalOtaTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("pre-build-incremental does not match source build", result.stderr)
 
-    def test_refuses_while_campaign_build_holds_lock(self) -> None:
+    def test_refuses_while_release_build_holds_lock(self) -> None:
         with (self.root / "build.lock").open("a") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             result = self.run_script()
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("A campaign build holds", result.stderr)
+        self.assertIn("A release build holds", result.stderr)
 
     def test_inherited_password_file_is_reused_and_kept(self) -> None:
         inherited = self.root / "inherited-passwords"

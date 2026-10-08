@@ -18,7 +18,7 @@ Do not copy the current layout or key table into this skill. The design document
 ## Scope boundaries
 
 - Fork or manifest work: invoke `yrrp-manifest-and-forks`.
-- Any remote command: invoke `yrrp-builder-access`.
+- Any remote command belongs to `yrrp-release-manager`. Feature owners never invoke `yrrp-builder-access`.
 - Runtime gates, logs, or dumps: invoke `rom-feature-observability`.
 - Build signing or OTA work: invoke `yrrp-signed-ota-release`.
 - Runtime implementation without Settings changes belongs to the feature owner, not this skill.
@@ -35,11 +35,11 @@ Do not copy the current layout or key table into this skill. The design document
 8. Run the structural checker and quote its complete output in review evidence:
 
    ```bash
-   python3 scripts/check-yrrp-settings.py /opt/android/packages/apps/Settings
+   python3 scripts/check-yrrp-settings.py .workdirs/<feature-id>/android_packages_apps_Settings
    ```
 
    This checks structure only; it does not replace compilation, search routing, runtime, or device evidence.
-9. Use `yrrp-builder-access` for formatting/checkstyle, `m Settings`, and compile-only `m SettingsRoboTests`. If the AssetManager blocker remains, state exactly: **Robolectric executed 0 tests.** Do not present compilation as test execution.
+9. Keep feature-owner checks local. Put formatting/checkstyle, `m Settings`, and compile-only `m SettingsRoboTests` in the `FEATURE_READY` proof plan for `yrrp-release-manager` after merge. If the AssetManager blocker remains, record exactly: **Robolectric executed 0 tests.** Do not present compilation as test execution.
 10. Review the contract diff, impact matrix, checker output, build output, and documentation changes. Use `yrrp-manifest-and-forks` only if repository publication is requested and `yrrp-signed-ota-release` only if signed build/OTA work is requested.
 11. On device, verify both navigation directions, search terms and breadcrumbs, external setting changes, valid writes, invalid-value display, no read-time rewrite, process lifecycle, and feature dumpsys. Before reporting a runtime defect, read the feature dump and report `blockedBy`. Restore all user values changed during acceptance and report the restored values.
 12. Update `docs/design/yrrp-settings-ui.md` for current hierarchy/contracts and the feature document for runtime semantics. Report what is proven by checker, compilation, test execution, and hardware separately.

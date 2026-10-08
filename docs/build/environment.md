@@ -1,67 +1,52 @@
 # Build environment
 
-## Host and container
+## Role and trust boundary
 
-- TrueNAS host: `192.168.4.243`
-- Host deployment directory: `/mnt/fast/docker/android`
-- Canonical container source: [`YRRPs/android_build_server`](https://github.com/YRRPs/android_build_server)
-- Container SSH profile: `ssh AndroidBuilder`
-- Container: `lineageos-builder`
-- SSH endpoint: `192.168.4.243:4242`
-- Container user: `android` (`UID:GID 950:950`)
-- Container base: Debian 13 (`trixie`)
+Feature owners implement and test only in fresh clones or worktrees under `.workdirs/`, then push a branch, open a PR, and hand `FEATURE_READY` plus a proof plan to `yrrp-release-manager`. They never access the builder. The release manager reviews and merges selected PRs, records the actual merged default-branch SHAs, and is the sole owner of remote source mutation and releases.
 
-Use `AndroidBuilder` for all source, build, and container-shell work. Access TrueNAS directly only to maintain Docker configuration or lifecycle.
+The builder is VPN-restricted, key-only, and single-tenant. Its Docker socket grants host-root-equivalent control; that trust is accepted only within this boundary.
 
-## Persistent paths
+## Host and persistent paths
 
-| TrueNAS | Container | Purpose |
-| --- | --- | --- |
-| `/mnt/fast/docker/android/workspace` | `/opt/android` | Source, extracted blobs, and build output |
+- TrueNAS: `192.168.4.243`; Docker deployment at `/mnt/fast/docker/android`.
+- Builder SSH: `ssh AndroidBuilder` (`android@192.168.4.243:4242`).
+- Container: `lineageos-builder`, user `android` (`950:950`), Debian 13.
+
+| Host | Container | Purpose |
+|---|---|---|
+| `/mnt/fast/docker/android/workspace` | `/opt/android` | Source and output |
 | `/mnt/fast/docker/android/ccache` | `/ccache` | Compiler cache |
-| `/mnt/fast/docker/android/project` | `/opt/yrrp/project` (read-only) | Canonical signing and deployment tooling |
-| `/mnt/fast/docker/android/signing` | `/opt/yrrp/signing` | Persistent decrypted signing keys |
-| Docker volume `ssh-host-keys` | `/etc/ssh/host-keys` | Stable SSH host identity |
-| `/var/run/docker.sock` | `/var/run/docker.sock` | Host Docker control for local OTA deployment |
+| `/mnt/fast/docker/android/project` | `/opt/yrrp/project` read-only | Release tooling |
+| `/mnt/fast/docker/android/signing` | `/opt/yrrp/signing` | Persistent keys |
+| Docker socket | `/var/run/docker.sock` | Trusted release deployment and project-bind update |
 
-`CCACHE_MAXSIZE=100G`; compression is disabled.
+The fixed release CLI updates the read-only project bind through a short-lived sibling container: it mounts the host project directory read-write only there, verifies cleanliness, fetches the requested project SHA, checks out that exact SHA detached, and exits. The live builder mount remains read-only.
 
-## Baseline checkout
+## Exact source and lock
 
-```text
-Manifest: https://github.com/YRRPs/android.git
-Branch: lineage-23.2
-Projects: 1,164
-Device: salami
-Product: lineage_salami
+`/home/android/.yrrp-build-launch.lock` covers preparation, source synchronization, launch, and the full signed release. Lock acquisition is non-blocking. Never delete or bypass it.
+
+After selected PR merges and merged project SHA capture, fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA. Verify its status is clean. Run `prepare` and `launch` from that checkout to satisfy the launcher's local clean-HEAD prerequisite. Retain it through release completion; there is no automatic cleanup.
+
+From that release checkout, run:
+
+```bash
+python3 scripts/yrrp-release.py prepare \
+  --project-sha <actual-merged-project-sha> \
+  --repo frameworks/base=<actual-merged-sha>
 ```
 
-Proprietary source package:
+Preparation checks idle state, signing/network prerequisites, checkout cleanliness, exact scoped repository SHAs, and a revision-locked manifest. It returns the project SHA, repository SHAs, manifest, and manifest SHA-256 without building. The release manager presents that evidence for the separate **Build and release** approval, then passes the same SHAs and exact digest to `launch`.
 
-```text
-https://mirrorbits.lineageos.org/full/salami/20261002/lineage-23.2-20261002-nightly-salami-signed.zip
-SHA-256: e080f63ae23bb866a5234bcc1c79b6ee708ad2a210effa57851b248690784619
-```
+## Detached operation and recreation
 
-## First verified build
+The fixed launcher runs the release in `screen` and writes `/home/android/signed-build.status`. Monitor that status plus the exact `log` path returned by `yrrp-release.py launch` (currently `/opt/android/out/signed/yrrp-ota-build-<timestamp>.log`); never guess a fixed log filename. Report the returned path and observed values, and do not infer completion from elapsed time. Source, keys, output, and ccache survive container recreation; container-layer changes do not.
 
-```text
-lineage-23.2-20261003-UNOFFICIAL-salami.zip  2,180,054,279 bytes
-boot.img                                      201,326,592 bytes
-recovery.img                                  104,857,600 bytes
-vendor_boot.img                               201,326,592 bytes
-Security patch level: 2026-09-01
-```
+Before recreation, prove the release lock is free and no build screen/process exists. Only the user runs the TrueNAS `docker compose up --force-recreate` command. Afterward verify UID/GID, Docker access, and all persistent mounts. OTA tooling refuses to replace unlabeled containers; the serving container has no host ports, keys, or Docker socket.
 
-Artifacts reside under `/opt/android/out/target/product/salami/`.
+## Baseline
 
-## Known behavior
-
-- `nsjail` sandboxing is disabled inside current Docker restrictions. Build succeeds without it.
-- `e2fsprogs` supplies `debugfs`, required to extract EXT4 `product.img` and `system_ext.img`.
-- SSH sessions need `/usr/sbin` and `/sbin` in `PATH`; Dockerfile configures this through `sshd`.
-- Runtime package experiments disappear when container is recreated unless added to Dockerfile.
-- Source, blobs, output, and ccache survive container recreation through bind mounts.
-- Builder Docker socket access equals root authority on TrueNAS host. SSH remains VPN-restricted, key-only, and single-tenant.
-- OTA release tooling refuses to replace containers not labeled as YRRP OTA resources.
-- OTA serving container joins external `proxy-net`, publishes no host ports, and never receives Docker socket.
+- Manifest: `https://github.com/YRRPs/android.git`, branch `lineage-23.2`
+- Device/product: OnePlus 11 `salami` / `lineage_salami`
+- Output: `/opt/android/out/target/product/salami/`
+- `CCACHE_MAXSIZE=100G`; `nsjail` is disabled under current container restrictions.

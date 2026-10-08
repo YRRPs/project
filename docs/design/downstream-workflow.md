@@ -1,85 +1,40 @@
 # Downstream source workflow
 
-## Repository architecture
+## Simple role split
 
-Use YRRP manifest fork as one-step source entry point:
+A feature owner handles one feature locally: fetch the remote's current symbolic default branch, create a fresh clone or worktree under `.workdirs/`, branch from the fetched default SHA, implement with TDD, run local checks, review, push, and open a PR. The handoff is `FEATURE_READY` with PR/repository/branch/base/tested-head evidence, acceptance criteria, and a structured proof plan. Feature owners never access the builder.
+
+The `yrrp-release-manager` owns integration and release: after each handoff it asks **Keep release open** or **This is the last feature**; it reviews and merges only selected PRs, captures actual merged default-branch SHAs, prepares exact source under the shared lock, obtains separate **Build and release** approval, launches, verifies, coordinates serial device proof, and writes an immutable receipt.
+
+## Source topology
+
+Initialize from `YRRPs/android` branch `lineage-23.2`. The manifest retains LineageOS as baseline and routes only modified projects to YRRP forks. Use product configuration or overlays before creating a source fork.
+
+Current durable repositories include `project`, `android`, `android_frameworks_base`, `android_packages_apps_Settings`, `android_vendor_extra`, `android_build_server`, and `ota_server`. Feature branches are short-lived; `lineage-23.2` is each source repository's reviewed integration branch.
+
+## Merge and exact builder sync
+
+Never build a feature branch or guessed remote head. After selected PR merges and merged project SHA capture, fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA. Verify its status is empty, then run `prepare` and `launch` from that checkout. Retain it through release completion; there is no automatic cleanup. Remove it only after a later explicit cleanup decision.
+
+From that checkout, run:
 
 ```bash
-repo init \
-  -u https://github.com/YRRPs/android.git \
-  -b lineage-23.2 \
-  --git-lfs
-repo sync
+python3 scripts/yrrp-release.py prepare \
+  --project-sha <actual-project-sha> \
+  --repo frameworks/base=<actual-merged-sha> \
+  --repo packages/apps/Settings=<actual-merged-sha>
 ```
 
-Manifest keeps LineageOS as baseline and routes only modified projects to YRRP. Device, kernel, and hardware dependencies remain Lineage-owned and roomservice-managed unless YRRP modifies them.
+Preparation acquires `/home/android/.yrrp-build-launch.lock`, updates the read-only project bind through a trusted Docker sibling, refuses dirty source, scoped-syncs requested paths, and creates a revision-locked manifest. The returned project SHA, repository SHAs, and manifest SHA-256 are the approval evidence. Launch must reuse those exact values.
 
-Current repositories:
+## Destructive sync safety
 
-```text
-project/                 # planning, research, release documentation
-android/                 # repo-init-capable manifest fork
-android_frameworks_base/ # Pulse and future framework changes
-android_packages_apps_Settings/ # YRRPs Settings hub, feature pages, search, and secure-setting controllers; builder /opt/android/packages/apps/Settings; branch lineage-23.2
-android_build_server/    # reusable build environment
-```
+Before a path-scoped `--force-sync`, prove unique work is published, create and verify a Git bundle backup, and ask through `AskUserQuestion` with **Force-sync only `<path>`** and **Stop**. Never run unscoped force sync, `repo sync -d`, `git reset --hard`, or `git clean` on the builder.
 
-Add `android_vendor_<rom>` when product configuration, packages, branding, properties, or overlays require canonical source.
+## Proof and durable records
 
-## Change placement
+Local checks document what they cannot prove. Proof plans name claim, trigger/setup, observable evidence, expected outcome, cheapest proving layer, limitations, post-release device check, and restoration. Device-only boundaries remain unproven until observed on the target device. Skip TalkBack and accessibility acceptance for this personal ROM.
 
-Use highest-level mechanism capable of expressing each change:
+Receipts live at ignored `.claude/releases/<build-id>.md`; they preserve exact SHAs, approval, artifacts, verification, and `PROVEN`/`FAILED`/`UNPROVEN` claim verdicts. `/.claude/build-campaigns/` remains ignored only as a legacy read-only archive; active tooling never reads or writes it.
 
-1. Product configuration
-2. Runtime resource overlay
-3. Build-time resource overlay
-4. Source-project fork
-
-Pulse requires `frameworks/base` fork because it adds SystemUI behavior.
-
-Patch files remain recovery exports or review artifacts. Project forks are canonical source.
-
-## Branches and remotes
-
-Organization forks use `lineage-23.2` as integration branch so manifest projects inherit one revision.
-
-Repo-managed checkout keeps Lineage remote name from manifest and adds YRRP destination explicitly:
-
-```text
-yrrp/lineage-23.2    downstream integration branch
-github/lineage-23.2  Lineage upstream branch
-```
-
-Feature branches may use descriptive local names such as `pulse-mvp`; publish tested integration state to `yrrp/lineage-23.2` without force-push.
-
-## Upstream updates
-
-1. Run `repo status` and resolve all local work.
-2. Push unique downstream commits and confirm recovery.
-3. Sync unchanged Lineage projects.
-4. Fetch Lineage remote in each fork.
-5. Merge or rebase Lineage `lineage-23.2` into reviewed feature branch.
-6. Resolve conflicts, run focused tests, and build ROM.
-7. Fast-forward YRRP integration branch.
-8. Generate locked release manifest with `repo manifest -r`.
-
-Avoid `repo sync -d`, `--force-sync`, `git reset --hard`, and `git clean` until all unique work is pushed and recoverable.
-
-## Durable and disposable state
-
-Durable:
-
-- YRRP manifest and project forks
-- Future `vendor/<rom>` source
-- Release signing keys and encrypted backups
-- Revision-locked release manifests
-- Signed target-files and release metadata
-
-Disposable:
-
-- Main source checkout
-- `out/`
-- ccache
-- Generated extraction directories
-
-Do not publish proprietary blobs. Record official source URL and checksum, then regenerate them.
+Durable state is published source, manifests, keys/backups, signed target-files, release metadata, and receipts. Main checkout, `out/`, ccache, and extraction directories are disposable only after required evidence is backed up.
