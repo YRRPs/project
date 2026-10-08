@@ -1,73 +1,86 @@
 ---
 name: yrrp-signed-ota-release
-description: Use when a frozen ROM build campaign should become an installable release — "make a signed build", "build and deploy an OTA", "push a new OTA", "release this", "start an OTA build", "sign the build", "publish to ota.yimura.dev", "update the OTA server", "redeploy the OTA container", "is the OTA live", "salami.json", "the install images", "clean-flash files", "signing-failed", "deployment-failed", "OTA 404". Covers signing preflight, fixed campaign launcher, status, signature verification, and public endpoints; also redeploys an existing signed release after an ota_server change. NOT for restoring keys (yrrp-signing-keys), general builder access (yrrp-builder-access), feature batching (yrrp-build-campaign), or unsigned brunch.
+description: Use from the release-manager session when merged ROM source should become an installable signed release — "make a signed build", "build and deploy an OTA", "release this", "start an OTA build", "sign the build", "publish to ota.yimura.dev", "update the OTA server", "redeploy the OTA container", "is the OTA live", "salami.json", "install images", "clean-flash files", "signing-failed", "incremental-failed", "deployment-failed", or "OTA 404". Covers prepare evidence, exact approval, fixed launch, monitoring, checksums, signatures, container/public/device verification, recovery, and receipts. NOT for feature implementation, unsigned brunch, choosing or merging PRs, general builder maintenance, or restoring signing keys.
 ---
 
 # YRRP signed OTA release
 
-Announce first: **Using yrrp-signed-ota-release to build, sign, and deploy.**
+Announce first: **Using yrrp-signed-ota-release to prepare, approve, launch, and prove one signed release.**
 
-The pipeline lives in this repo: `scripts/sign-lineage-build.sh` → `scripts/prepare-ota-release.py` → `scripts/deploy-ota-release.sh`. Read `docs/build/signing.md` and `docs/design/ota-hosting.md` for the contract; do not restate the scripts from memory.
+Invoke `yrrp-builder-access` for builder boundaries. Read `docs/build/signing.md` and `docs/design/ota-hosting.md`; the scripts are authoritative, so do not improvise their protocol.
 
-## 1. Preflight
+## 1. Prepare exact merged source
 
-All checks must pass before freeze. From a campaign in `READY_TO_FREEZE`, run the fixed capture command:
+After selected PR merges and merged project SHA capture, fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA. Verify it is clean, then run `prepare` and `launch` from that checkout. Retain it through release completion; there is no automatic cleanup.
 
-```bash
-python3 scripts/yrrp-launch-campaign-build.py --campaign-id <campaign-id> --capture-snapshot
-```
-
-Capture validates signing manifest checksums, release-key symlinks, idle build/sign processes, absence of an existing build screen, Docker network availability, revision-locked manifest, modified repository revisions/branches/clean states, and orchestration-project SHA. It stores the manifest as private campaign evidence and prints the canonical snapshot for freeze.
-
-If signing material fails validation, stop and use `yrrp-signing-keys`. If `/opt/yrrp/project` lags the required revision, update it before capture; never pull after source approval.
-
-## 2. Launch
-
-Do not launch `sign-lineage-build.sh` directly. It rejects invocations without the private, short-lived campaign claim created by the fixed launcher.
-
-After explicit freeze approval and canonical snapshot capture, launch from the `yrrp-build-campaign` main session only:
+The release manager supplies the actual merged default-branch SHA of this project and each selected Android repository:
 
 ```bash
-python3 scripts/yrrp-launch-campaign-build.py --campaign-id <campaign-id>
+python3 scripts/yrrp-release.py prepare \
+  --project-sha <40-hex-project-sha> \
+  --repo frameworks/base=<40-hex-merged-sha> \
+  --repo packages/apps/Settings=<40-hex-merged-sha>
 ```
 
-The project `PreToolUse` hook verifies the agent type and creates one one-time authorization. The launcher consumes it, rechecks source on `AndroidBuilder` under a remote lock, creates the builder claim, and starts `sign-lineage-build.sh` in `screen`. `claude --bare`, disabled project hooks, direct SSH builds, and direct signing-script calls are unsupported.
+Repeat `--repo PATH=SHA` only for selected repositories. `prepare` acquires the shared lock, validates signing/network/build-idle preconditions, updates the read-only project bind through a trusted Docker sibling, checks the whole checkout is clean, scoped-syncs exact requested SHAs, and returns JSON evidence including project SHA, repository SHAs, revision-locked manifest text, and `manifest_sha256`. It does not start a build.
 
-Threat boundary: the VPN-only `android` builder account is trusted. These controls prevent accidental and agent-driven bypass; they do not defend against a human intentionally forging files or commands as that same account. The user accepted this boundary on 2026-10-07. A hostile-account boundary would require a signed claim or privileged launch service.
+If signing validation fails, stop and invoke `yrrp-signing-keys`. If any revision or cleanliness evidence differs from the reviewed merge, stop; never substitute a nearby branch head.
 
-The signing script defaults `YRRP_CERT_DIR`, `OTA_PUBLIC_BASE_URL`, `OTA_BASE_IMAGE_REF`, and `OTA_NETWORK`. It always runs `breakfast salami` and `mka target-files-package otatools` first, so a stale target-files ZIP is never signed.
+## 2. Obtain one explicit approval
 
-## 3. Watch
+Present the exact returned project SHA, every repository path/SHA, and manifest SHA-256 through `AskUserQuestion` with these options:
 
-`/home/android/signed-build.status` moves through `building-target-files`, `signing-target-files`, `generating-signed-ota`, `verifying-signed-artifacts`, `generating-incremental-ota`, `preparing-ota-release`, deployer phases, then `complete`. Failure is `signing-failed:<exit>`, `incremental-failed:<exit>`, or `deployment-failed:<exit>`; read the log tail before diagnosing. A full build takes hours; poll sparingly.
+- **Build and release** — launch exactly the prepared source.
+- **Stop** — make no release mutation.
 
-## 4. Verify
+Do not launch from prose assent or from the earlier intake decision. The build decision occurs after preparation evidence exists.
 
-Report each of these with its output:
+## 3. Launch the same source
 
-- `sha256sum -c` on `/opt/android/out/signed/lineage-23.2-salami-<id>-SHA256SUMS.txt`.
-- `docker inspect yrrp-ota-server --format '{{.State.Health.Status}} {{.Image}}'` → `healthy`.
-- Public: `/healthz` 200, `/updates/salami.json` lists the new build ID, `/install/salami/<id>/` 200 with a listing, a `Range: bytes=0-0` request on the OTA ZIP returns 206 — all on `https://ota.yimura.dev`.
-
-Signature checks the script already performs, for manual diagnosis: OTA cert in `META-INF/com/android/otacert` must match `releasekey.x509.pem`; SystemUI APK `apksigner verify --print-certs` must match `platform`. `keytool -printcert -jarfile` reports modern OTAs as unsigned; that is not a failure.
-
-## Redeploy or recover without rebuilding
-
-If only `ota_server` changed (Nginx config, base image), do not rebuild or re-sign. Wait for the `ota_server` GitHub workflow to publish `ghcr.io/yrrps/ota-server:main`, then run `deploy-ota-release.sh` against the existing signed OTA and target-files in `/opt/android/out/signed/`. It builds a local `yrrp-ota-release:<id>` image (never pushed), swaps `yrrp-ota-server` on `proxy-net`, and rolls back on any failure or signal.
-
-The gate blocks raw builder commands, so authorize each rerun once from the `yrrp-build-campaign` session:
+Only after the exact **Build and release** answer, run:
 
 ```bash
-printf '%s' '{"command": "<exact ssh AndroidBuilder command>"}' \
-  | python3 scripts/yrrp-build-campaign.py authorize-recovery --campaign-id <id>
+python3 scripts/yrrp-release.py launch \
+  --approval 'Build and release' \
+  --project-sha <same-project-sha> \
+  --repo frameworks/base=<same-merged-sha> \
+  --repo packages/apps/Settings=<same-merged-sha> \
+  --manifest-sha256 <exact-prepare-manifest-sha256>
 ```
 
-Only the `yrrp-build-campaign` session may authorize or run a recovery. The hook enforces the agent type when it consumes an authorization. The authorize-step check parses command text and is best-effort. The gate does not inspect commands wrapped in another shell (`bash -c '…'`), so never wrap builder commands. Run `authorize-recovery` on its own, not in the same Bash call as a builder command. Freezing clears pending authorizations, and none can be consumed while the campaign is FROZEN.
+Launch reacquires the shared lock, rechecks source and manifest against the approved digest, and starts the fixed signer detached in `screen`. Never invoke `scripts/sign-lineage-build.sh` directly.
 
-Only two shapes are accepted, and the command must be exactly `ssh AndroidBuilder <script> <options>`, with no `ssh` options or wrapper: `generate-incremental-ota.sh --source-build <id> --target-build <id>`, and `deploy-ota-release.sh --ota … --target-files … --build-id <id> [--incremental …]` with paths under `/opt/android/out/signed/`. Run the authorized command as a background Bash command, and record its exit code and output as evidence. Both scripts refuse to run while a campaign build holds `/home/android/.yrrp-build-launch.lock`. `deploy-ota-release.sh` without `--incremental` publishes full-only. If the live release has an incremental, a redeploy must pass the same `--incremental /opt/android/out/signed/<name>` again, or the redeploy drops it.
+## 4. Monitor and verify
 
-## Known gaps
+Monitor `/home/android/signed-build.status`, `screen -list`, and the exact `log` path returned by `yrrp-release.py launch` (currently `/opt/android/out/signed/yrrp-ota-build-<timestamp>.log`). Do not guess or substitute a fixed log filename. A full build takes hours; poll sparingly and report exact evidence. The pipeline builds target-files and otatools, signs target-files and the full OTA, verifies certificates, generates an incremental when a valid live source exists, prepares checksums and install images, transactionally replaces the OTA container, and restores the prior healthy container on rollout failure.
 
-- Builds before manifest `0c819fd` lack `lineage.updater.uri`; on those, set it per boot as root (`adb root; adb shell setprop lineage.updater.uri 'https://ota.yimura.dev/updates/{device}/{incr}.json'`). Later builds get it from `vendor/extra/product.mk`.
-- Incremental sources live in `out/signed/`; wiping `out/` makes the next release full-only.
-- The release image build prints `InvalidDefaultArgInFrom`; harmless, the digest is passed explicitly.
+Before calling the release successful, capture:
+
+- `sha256sum -c /opt/android/out/signed/lineage-23.2-salami-<build-id>-SHA256SUMS.txt`.
+- OTA certificate equals `releasekey.x509.pem`; SystemUI signer equals `platform`.
+- `docker inspect yrrp-ota-server --format '{{.State.Health.Status}} {{.Image}}'` reports healthy and the intended image.
+- Public HTTPS: `/healthz` is 200, `/updates/salami.json` names the build, `/install/salami/<build-id>/` is 200, and a one-byte OTA range request is 206.
+- Device proof claims run serially using their trigger, observable, expected result, limitation, and restoration fields. Skip TalkBack and accessibility acceptance for this personal ROM.
+
+Assign every claim exactly one verdict: `PROVEN`, `FAILED`, or `UNPROVEN`. Local evidence never proves a device-only boundary.
+
+## 5. Recovery without rebuild
+
+For an incremental-generation or deployment-only retry, the release manager directly invokes the fixed incremental generator or deployer with exact existing artifacts under `/opt/android/out/signed/`:
+
+```bash
+ssh AndroidBuilder '/opt/yrrp/project/scripts/generate-incremental-ota.sh --source-build <source-id> --target-build <target-id>'
+ssh AndroidBuilder '/opt/yrrp/project/scripts/deploy-ota-release.sh --ota /opt/android/out/signed/<ota> --target-files /opt/android/out/signed/<target-files> --build-id <build-id> [--incremental /opt/android/out/signed/<incremental>]'
+```
+
+The invoked script non-blockingly acquires and holds `/home/android/.yrrp-build-launch.lock` for the entire operation and refuses if the lock is busy. Prior read-only inspection may diagnose an active release, but it is not the locking mechanism and never authorizes a retry. Run the chosen retry detached, preserve its exit code and output, and repeat the affected checksum/container/public checks. Do not rebuild or re-sign for an OTA-server-only change. A redeploy of a release that already has an incremental must pass the same incremental again.
+
+## 6. Immutable receipt
+
+Feed the completed release evidence to the fixed receipt command and require its returned path:
+
+```bash
+python3 scripts/yrrp-release.py receipt --input <private-json-file-or-->
+```
+
+The receipt is private and no-overwrite at `.claude/releases/<build-id>.md`; the JSON input file is preserved for correction and audit. It records selected PRs, tested and merged patch IDs, actual merged SHAs, the complete revision-locked manifest XML and digest from prepare, approval, build identity, artifacts, checksum/signature/container/public/device evidence, all `PROVEN`/`FAILED`/`UNPROVEN` claims, limitations, restoration, and unresolved gaps. A progress note is not the final result.

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Generate a signed incremental OTA from the live release to a new signed build.
-# sign-lineage-build.sh calls it during a campaign build. The build campaign may
-# rerun it standalone, after a one-time authorize-recovery, without a rebuild.
+# sign-lineage-build.sh calls it during a signed release. The release manager may
+# rerun it standalone after proving the shared release lock is free.
 set -Eeo pipefail
 
 umask 077

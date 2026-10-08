@@ -1,12 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
-import json
 import os
 import shutil
 import subprocess
 import tempfile
-import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -83,6 +82,18 @@ class SignLineageBuildTest(unittest.TestCase):
         write_release_command_stubs(self.bin)
         shutil.copy2(FAKE_LIVE_DOCKER, self.bin / "docker")
         (self.bin / "docker").chmod(0o755)
+        write_executable(
+            self.bin / "stat",
+            "#!/bin/sh\n"
+            "last=\n"
+            "for argument in \"$@\"; do last=$argument; done\n"
+            "if [ \"$last\" = /home/android/.yrrp-build-launch.lock ] "
+            "&& [ -n \"${YRRP_FAKE_CANONICAL_LOCK_ID:-}\" ]; then\n"
+            "  printf '%s\\n' \"$YRRP_FAKE_CANONICAL_LOCK_ID\"\n"
+            "  exit 0\n"
+            "fi\n"
+            "exec /usr/bin/stat \"$@\"\n",
+        )
 
     def _create_live_source(self, content: bytes = b"source") -> None:
         signed = self.build / "out/signed"
@@ -106,7 +117,7 @@ class SignLineageBuildTest(unittest.TestCase):
         deploy_exit: int = 0,
         *,
         include_ota_environment: bool = True,
-        include_campaign_claim: bool = True,
+        lock_mode: str = "locked",
         live_build: str | None = None,
         live_device: str = "salami",
         incremental_exit: int = 0,
@@ -120,19 +131,6 @@ class SignLineageBuildTest(unittest.TestCase):
             f"exit {deploy_exit}\n"
         )
         deploy.chmod(0o755)
-        claim = self.root / "campaign-claim.json"
-        if include_campaign_claim:
-            claim.write_text(
-                json.dumps(
-                    {
-                        "campaign_id": "test-campaign",
-                        "source_snapshot_sha256": "a" * 64,
-                        "expires_at": int(time.time()) + 300,
-                    }
-                )
-                + "\n"
-            )
-            claim.chmod(0o600)
         env = os.environ | {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "YRRP_BUILD_ROOT": str(self.build),
@@ -146,7 +144,7 @@ class SignLineageBuildTest(unittest.TestCase):
             "YRRP_RUNTIME_PASSWORD_FILE": str(self.root / "runtime-passwords"),
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
             "OTA_BASE_IMAGE_REF": "ghcr.io/yrrp/ota:main",
-            "YRRP_CAMPAIGN_CLAIM_FILE": str(claim),
+            "YRRP_BUILD_LOCK_HELD": "1",
             "YRRP_INCREMENTAL_SCRIPT": str(
                 self._incremental_stub(incremental_exit, unreadable_incremental)
             ),
@@ -157,13 +155,79 @@ class SignLineageBuildTest(unittest.TestCase):
         if not include_ota_environment:
             env.pop("OTA_PUBLIC_BASE_URL")
             env.pop("OTA_BASE_IMAGE_REF")
-        return subprocess.run([str(SCRIPT)], capture_output=True, text=True, env=env)
+        handles = []
+        pass_fds = ()
+        try:
+            if lock_mode == "invalid":
+                env["YRRP_BUILD_LOCK_FD"] = "not-a-fd"
+            elif lock_mode != "missing":
+                canonical_path = self.root / "launch.lock"
+                candidate_path = (
+                    self.root / "unrelated.lock"
+                    if lock_mode == "unrelated"
+                    else canonical_path
+                )
+                canonical_path.touch()
+                candidate = candidate_path.open("a+")
+                handles.append(candidate)
+                if lock_mode in {"locked", "unrelated"}:
+                    fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                elif lock_mode == "contended":
+                    holder = canonical_path.open("a+")
+                    handles.append(holder)
+                    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    raise ValueError(f"unknown lock mode: {lock_mode}")
+                canonical_stat = canonical_path.stat()
+                env["YRRP_FAKE_CANONICAL_LOCK_ID"] = (
+                    f"{canonical_stat.st_dev}:{canonical_stat.st_ino}"
+                )
+                env["YRRP_BUILD_LOCK_FD"] = str(candidate.fileno())
+                pass_fds = (candidate.fileno(),)
+            return subprocess.run(
+                [str(SCRIPT)],
+                capture_output=True,
+                text=True,
+                env=env,
+                pass_fds=pass_fds,
+            )
+        finally:
+            for handle in handles:
+                handle.close()
 
-    def test_requires_valid_campaign_claim(self) -> None:
-        result = self.run_script(include_campaign_claim=False)
+    def test_fake_lock_marker_without_inherited_fd_cannot_start(self) -> None:
+        result = self.run_script(lock_mode="missing")
 
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("Campaign claim file is required", result.stderr)
+        self.assertIn("YRRP_BUILD_LOCK_FD", result.stderr)
+        self.assertFalse(self.build_log.exists())
+
+    def test_invalid_inherited_fd_is_rejected(self) -> None:
+        result = self.run_script(lock_mode="invalid")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("YRRP_BUILD_LOCK_FD", result.stderr)
+        self.assertFalse(self.build_log.exists())
+
+    def test_inherited_locked_fd_allows_existing_flow(self) -> None:
+        result = self.run_script(lock_mode="locked")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("target-files-package otatools", self.build_log.read_text().strip())
+
+    def test_locked_unrelated_fd_is_rejected(self) -> None:
+        result = self.run_script(lock_mode="unrelated")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("canonical release lock", result.stderr)
+        self.assertFalse(self.build_log.exists())
+
+    def test_unlocked_inherited_fd_fails_when_lock_is_contended(self) -> None:
+        result = self.run_script(lock_mode="contended")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not hold the release lock", result.stderr)
+        self.assertFalse(self.build_log.exists())
 
     def test_uses_yrrp_ota_defaults(self) -> None:
         result = self.run_script(include_ota_environment=False)
