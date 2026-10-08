@@ -18,7 +18,9 @@ Run only as a dedicated main session:
 claude --agent yrrp-feature-owner
 ```
 
-Before source work, verify `/.workdirs/` is ignored. Fetch the remote, resolve its current symbolic default branch and current default-branch SHA, then create the feature branch from the fetched default-branch ref. For the current repository, create a fresh worktree beneath `.workdirs/`; for another repository, clone it beneath `.workdirs/` before creating the branch. Never branch from incidental local state. Workdirs remain until explicit cleanup is requested.
+Before source work, verify `/.workdirs/` is ignored. Use one canonical clone per repository: the repository root for `project`, or `.workdirs/repos/<repository>` for another repository. Clone into that canonical path only when it is missing; never clone once per feature. Verify its `origin` URL, require its primary worktree to be clean, fetch and prune the remote, then resolve the current symbolic default branch and current default-branch SHA.
+
+Hold `.workdirs/locks/<repository>.lock` only while cloning, fetching, and adding the worktree so concurrent feature owners cannot race shared Git metadata. Create each feature checkout with `git worktree add` at `.workdirs/features/<feature-id>/<repository>`, branching from the fetched default-branch ref. Never implement in the canonical clone or branch from incidental local state. Worktrees and canonical clones remain until explicit cleanup is requested.
 
 ## Ownership
 

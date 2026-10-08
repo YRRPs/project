@@ -2,7 +2,7 @@
 
 ## Simple role split
 
-A feature owner handles one feature locally: fetch the remote's current symbolic default branch, create a fresh clone or worktree under `.workdirs/`, branch from the fetched default SHA, implement with TDD, run local checks, review, push, and open a PR. The handoff is `FEATURE_READY` with PR/repository/branch/base/tested-head evidence, acceptance criteria, and a structured proof plan. Feature owners never access the builder.
+A feature owner handles one feature locally. Reuse one canonical clone per repository—the project root for `project`, or `.workdirs/repos/<repository>` for another repository—and clone only when that cache is missing. Under a short `.workdirs/locks/<repository>.lock`, verify origin and cleanliness, fetch/prune the current symbolic default branch, and add a per-feature worktree at `.workdirs/features/<feature-id>/<repository>`. Never implement in the canonical clone. Branch from the fetched default SHA, implement with TDD, run local checks, review, push, and open a PR. The handoff is `FEATURE_READY` with PR/repository/branch/base/tested-head evidence, acceptance criteria, and a structured proof plan. Feature owners never access the builder.
 
 The `yrrp-release-manager` owns integration and release: after each handoff it asks **Keep release open** or **This is the last feature**; it reviews and merges only selected PRs, captures actual merged default-branch SHAs, prepares exact source under the shared lock, obtains separate **Build and release** approval, launches, verifies, coordinates serial device proof, and writes an immutable receipt.
 

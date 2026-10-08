@@ -294,12 +294,18 @@ class AgentDefinitionTest(unittest.TestCase):
         body = FEATURE_OWNER.read_text().lower()
         for phrase in (
             "verify `/.workdirs/` is ignored",
-            "fetch the remote",
+            "one canonical clone per repository",
+            ".workdirs/repos/<repository>",
+            "clone into that canonical path only when it is missing",
+            "never clone once per feature",
+            "verify its `origin` url",
+            "fetch and prune the remote",
             "current symbolic default branch",
             "current default-branch sha",
-            "fresh worktree",
-            "clone",
-            "beneath `.workdirs/`",
+            ".workdirs/locks/<repository>.lock",
+            "git worktree add",
+            ".workdirs/features/<feature-id>/<repository>",
+            "never implement in the canonical clone",
             "fetched default-branch ref",
             "explicit cleanup",
         ):
