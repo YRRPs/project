@@ -156,17 +156,25 @@ def synchronize_repositories(repositories):
         run("git", "checkout", "--detach", expected_sha, cwd=root)
 
 
+def local_manifest_hashes():
+    directory = ANDROID / ".repo/local_manifests"
+    if not directory.is_dir():
+        return {}
+    result = {}
+    for path in sorted(directory.iterdir()):
+        if path.is_symlink() or not path.is_file() or path.suffix != ".xml":
+            raise SystemExit(f"unsupported local manifest entry: {path}")
+        result[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return result
+
+
 def validate_all_repositories_clean():
     manifests = ANDROID / ".repo/manifests"
     manifest_status = output("git", "status", "--porcelain", cwd=manifests)
     if manifest_status:
         sys.stderr.write(f"{manifests}\n{manifest_status}\n")
         raise SystemExit("repo manifest checkout is dirty")
-    local_manifests = ANDROID / ".repo/local_manifests"
-    local_entries = sorted(local_manifests.iterdir()) if local_manifests.is_dir() else []
-    if local_entries:
-        sys.stderr.write("\n".join(str(path) for path in local_entries) + "\n")
-        raise SystemExit("nonempty .repo/local_manifests is forbidden")
+    local_manifest_hashes()
     command = (
         'dirty=$(git status --porcelain); if [ -n "$dirty" ]; then '
         'printf "%s\\n%s\\n" "$REPO_PATH" "$dirty" >&2; exit 1; fi'
@@ -188,6 +196,7 @@ def capture_source(expected_project_sha, repositories, include_manifest=False):
     manifest = output(REPO, "manifest", "-r", cwd=ANDROID)
     source = {
         "manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+        "local_manifests": local_manifest_hashes(),
         "project_sha": output("git", "rev-parse", "HEAD", cwd=PROJECT),
         "repositories": {},
         "branches": {},

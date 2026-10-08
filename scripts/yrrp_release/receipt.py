@@ -365,7 +365,7 @@ def _validate_source(document: dict[str, Any]) -> None:
     _exact_keys(
         source,
         "source",
-        ("project_sha", "repositories", "manifest_sha256", "manifest_xml", "builder_log"),
+        ("project_sha", "repositories", "manifest_sha256", "manifest_xml", "local_manifests", "builder_log"),
     )
     validate_sha(_text(source, "project_sha", "source"), "source.project_sha")
     manifest_sha256 = validate_sha256(
@@ -381,6 +381,14 @@ def _validate_source(document: dict[str, Any]) -> None:
             raise ValueError("source.manifest_xml contains a prohibited Unicode control")
     if hashlib.sha256(manifest_xml.encode()).hexdigest() != manifest_sha256:
         raise ValueError("source manifest XML does not match manifest SHA-256")
+    local_manifests = _mapping(source["local_manifests"], "source.local_manifests")
+    for name, digest in local_manifests.items():
+        if not isinstance(name, str) or Path(name).name != name or not name.endswith(".xml"):
+            raise ValueError(f"invalid local manifest name: {name!r}")
+        try:
+            validate_sha256(digest, f"source.local_manifests[{name!r}]")
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid local manifest digest: {name}") from error
     _text(source, "builder_log", "source")
     repositories = _list(source["repositories"], "source.repositories")
     seen: set[str] = set()
@@ -875,6 +883,15 @@ def _source(document: dict[str, Any]) -> str:
         f"  - {_md(repository['repository'])}: `{_md(repository['sha'])}`"
         for repository in repositories
     )
+    lines.append("- Local manifest SHA-256 values:")
+    local_manifests = value["local_manifests"]
+    if local_manifests:
+        lines.extend(
+            f"  - {_md(name)}: `{_md(digest)}`"
+            for name, digest in sorted(local_manifests.items())
+        )
+    else:
+        lines.append("  - None.")
     manifest = value["manifest_xml"]
     fence = "```"
     while fence in manifest:

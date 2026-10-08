@@ -22,13 +22,13 @@ python3 scripts/yrrp-release.py prepare \
   --repo packages/apps/Settings=<40-hex-merged-sha>
 ```
 
-Repeat `--repo PATH=SHA` only for selected repositories. `prepare` acquires the shared lock, validates signing/network/build-idle preconditions, updates the read-only project bind through a trusted Docker sibling, checks the whole checkout is clean, scoped-syncs exact requested SHAs, and returns JSON evidence including project SHA, repository SHAs, revision-locked manifest text, and `manifest_sha256`. It does not start a build.
+Repeat `--repo PATH=SHA` only for selected repositories. `prepare` acquires the shared lock, validates signing/network/build-idle preconditions, updates the read-only project bind through a trusted Docker sibling, checks the whole checkout is clean, scoped-syncs exact requested SHAs, and returns JSON evidence including project SHA, repository SHAs, validated local-manifest filenames/hashes, revision-locked manifest text, and `manifest_sha256`. It does not start a build.
 
 If signing validation fails, stop and invoke `yrrp-signing-keys`. If any revision or cleanliness evidence differs from the reviewed merge, stop; never substitute a nearby branch head.
 
 ## 2. Obtain one explicit approval
 
-Present the exact returned project SHA, every repository path/SHA, and manifest SHA-256 through `AskUserQuestion` with these options:
+Present the exact returned project SHA, every repository path/SHA, validated local-manifest filename/hash pairs, and manifest SHA-256 through `AskUserQuestion` with these options:
 
 - **Build and release** — launch exactly the prepared source.
 - **Stop** — make no release mutation.
@@ -83,4 +83,4 @@ Feed the completed release evidence to the fixed receipt command and require its
 python3 scripts/yrrp-release.py receipt --input <private-json-file-or-->
 ```
 
-The receipt is private and no-overwrite at `.claude/releases/<build-id>.md`; the JSON input file is preserved for correction and audit. It records selected PRs, tested and merged patch IDs, actual merged SHAs, the complete revision-locked manifest XML and digest from prepare, approval, build identity, artifacts, checksum/signature/container/public/device evidence, all `PROVEN`/`FAILED`/`UNPROVEN` claims, limitations, restoration, and unresolved gaps. A progress note is not the final result.
+The receipt is private and no-overwrite at `.claude/releases/<build-id>.md`; the JSON input file is preserved for correction and audit. It records selected PRs, tested and merged patch IDs, actual merged SHAs, validated local-manifest hashes plus the complete revision-locked manifest XML and digest from prepare, approval, build identity, artifacts, checksum/signature/container/public/device evidence, all `PROVEN`/`FAILED`/`UNPROVEN` claims, limitations, restoration, and unresolved gaps. A progress note is not the final result.

@@ -27,6 +27,8 @@ DIGEST_A = "a" * 64
 DIGEST_B = "b" * 64
 MANIFEST_XML = '<manifest><project name="YRRPs/android_vendor_extra" path="vendor/extra" revision="a" /></manifest>\n'
 MANIFEST_DIGEST = hashlib.sha256(MANIFEST_XML.encode()).hexdigest()
+ROOMSERVICE_XML = '<manifest><project name="LineageOS/android_device_oneplus_salami" path="device/oneplus/salami" /></manifest>\n'
+ROOMSERVICE_DIGEST = hashlib.sha256(ROOMSERVICE_XML.encode()).hexdigest()
 
 
 def accepted_incremental_release() -> dict:
@@ -65,6 +67,7 @@ def accepted_incremental_release() -> dict:
             ],
             "manifest_sha256": MANIFEST_DIGEST,
             "manifest_xml": MANIFEST_XML,
+            "local_manifests": {"roomservice.xml": ROOMSERVICE_DIGEST},
             "builder_log": "/opt/android/logs/build-20261008-123456.log",
         },
         "build_and_signing": {
@@ -337,6 +340,7 @@ class ReceiptRenderingTest(unittest.TestCase):
             (("selected_changes", 0), "merged_patch_id"),
             (("selected_changes", 0), "acceptance_criteria"),
             (("source",), "manifest_xml"),
+            (("source",), "local_manifests"),
             (("source",), "builder_log"),
             (("source", "repositories", 0), "sha"),
             (("build_and_signing",), "evidence"),
@@ -495,6 +499,18 @@ class ReceiptRenderingTest(unittest.TestCase):
         document["source"]["manifest_xml"] = MANIFEST_XML.replace("vendor/extra", "vendor/other")
         with self.assertRaisesRegex(ValueError, "manifest"):
             render_receipt(document)
+
+    def test_source_records_validated_local_manifest_hashes(self) -> None:
+        document = accepted_incremental_release()
+        rendered = render_receipt(document)
+        self.assertIn("roomservice.xml", rendered)
+        self.assertIn(ROOMSERVICE_DIGEST, rendered)
+
+        for name, digest in (("../escape.xml", ROOMSERVICE_DIGEST), ("roomservice.txt", ROOMSERVICE_DIGEST), ("roomservice.xml", "bad")):
+            document = accepted_incremental_release()
+            document["source"]["local_manifests"] = {name: digest}
+            with self.subTest(name=name, digest=digest), self.assertRaisesRegex(ValueError, "local manifest"):
+                render_receipt(document)
 
     def test_success_requires_tested_and_merged_patch_equivalence(self) -> None:
         document = accepted_incremental_release()

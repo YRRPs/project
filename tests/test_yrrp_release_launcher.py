@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import contextlib
 import fcntl
+import hashlib
 import io
 import json
 import runpy
@@ -411,35 +412,45 @@ class RemotePrepareContractTest(unittest.TestCase):
             self.assertIn("M default.xml", stderr.getvalue())
             self.assertEqual([], repo_calls)
 
-    def test_nonempty_local_manifests_are_forbidden_with_paths(self) -> None:
+    def test_local_manifest_xml_is_validated_and_captured_by_digest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             android = Path(directory)
-            (android / ".repo/manifests").mkdir(parents=True)
             local = android / ".repo/local_manifests"
-            local.mkdir()
-            override = local / "private.xml"
-            override.write_text("<manifest/>\n")
-            repo_calls = []
+            local.mkdir(parents=True)
+            override = local / "roomservice.xml"
+            content = "<manifest/>\n"
+            override.write_text(content)
             namespace = load_embedded_functions(
                 REMOTE_LAUNCH_WORKER_SCRIPT,
-                {"validate_all_repositories_clean"},
-                {
-                    "ANDROID": android,
-                    "REPO": "repo",
-                    "output": lambda *_args, **_kwargs: "",
-                    "subprocess": types.SimpleNamespace(
-                        run=lambda *args, **kwargs: repo_calls.append((args, kwargs))
-                    ),
-                    "sys": sys,
-                },
+                {"local_manifest_hashes"},
+                {"ANDROID": android, "hashlib": hashlib},
             )
-            stderr = io.StringIO()
-            with contextlib.redirect_stderr(stderr), self.assertRaisesRegex(
-                SystemExit, "local_manifests is forbidden"
-            ):
-                namespace["validate_all_repositories_clean"]()
-            self.assertIn(str(override), stderr.getvalue())
-            self.assertEqual([], repo_calls)
+
+            self.assertEqual(
+                {"roomservice.xml": hashlib.sha256(content.encode()).hexdigest()},
+                namespace["local_manifest_hashes"](),
+            )
+
+    def test_local_manifest_rejects_symlinks_and_non_xml_entries(self) -> None:
+        for name in ("private.txt", "linked.xml"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as directory:
+                android = Path(directory)
+                local = android / ".repo/local_manifests"
+                local.mkdir(parents=True)
+                candidate = local / name
+                if name.endswith(".xml"):
+                    target = android / "outside.xml"
+                    target.write_text("<manifest/>\n")
+                    candidate.symlink_to(target)
+                else:
+                    candidate.write_text("not reviewed\n")
+                namespace = load_embedded_functions(
+                    REMOTE_LAUNCH_WORKER_SCRIPT,
+                    {"local_manifest_hashes"},
+                    {"ANDROID": android, "hashlib": hashlib},
+                )
+                with self.assertRaisesRegex(SystemExit, "local manifest"):
+                    namespace["local_manifest_hashes"]()
 
     def test_unlisted_dirty_repo_fails_prepare_and_launch_cleanliness(self) -> None:
         for label, script in (
@@ -458,8 +469,9 @@ class RemotePrepareContractTest(unittest.TestCase):
                 fake_repo.chmod(0o755)
                 namespace = load_embedded_functions(
                     script,
-                    {"validate_all_repositories_clean"},
+                    {"local_manifest_hashes", "validate_all_repositories_clean"},
                     {
+                        "hashlib": hashlib,
                         "subprocess": subprocess,
                         "sys": sys,
                         "REPO": str(fake_repo),

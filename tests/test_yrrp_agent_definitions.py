@@ -97,7 +97,7 @@ RELEASE_DUTIES = (
     "Before each merge, compute a stable patch ID for the tested PR diff. Merge only the selected PRs, capture each actual merged default-branch SHA, compute the merged diff patch ID, and require both patch IDs to match; otherwise return the PR for retesting.",
     "Fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA.",
     "Run the fixed `prepare` command from that release checkout with the project SHA and every selected repository SHA.",
-    "Present the returned project, repository, and manifest evidence through `AskUserQuestion` with the exact approval option `Build and release`.",
+    "Present the returned project, repository, local-manifest filename/hash, and revision-locked manifest evidence through `AskUserQuestion` with the exact approval option `Build and release`.",
     "Only after that approval, run the fixed `launch` command with the same SHAs and exact returned manifest SHA-256.",
     "Monitor the approved build, then verify checksums, signatures, container health, public endpoints, and device behavior.",
     "Coordinate every proof claim serially and assign exactly one verdict.",
