@@ -9,7 +9,7 @@ The YRRPs page in LineageOS Settings controls Pulse and the screen-off animation
   - **Audio** → **Pulse** (On/Off), opening `YrrpPulseSettings`.
   - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`.
   - Category headers are `searchable="false"`.
-- Pulse page (`yrrp_pulse_settings_screen`): intro, **Use Pulse** main switch, **Pulse color** (RGB plus opacity picker), **Pulse height** slider, privacy footer. Color and height stay visible but are disabled while Pulse is off.
+- Pulse page (`yrrp_pulse_settings_screen`): intro, **Use Pulse** main switch, **Color mode** category (non-searchable) with **Solid** and **Match theme** radio rows, **Pulse color** (RGB picker), **Pulse opacity** slider, **Pulse height** slider, privacy footer. Every control below the switch stays visible but is disabled while Pulse is off. **Pulse color** is also disabled outside Solid; opacity applies in every mode.
 - Screen-off animation page (`yrrp_screen_off_animation_settings_screen`): **Stock** and **CRT** radio rows.
 
 All three fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
@@ -24,9 +24,12 @@ Private per-user `Settings.Secure` keys, shared with SystemUI:
 | `lineage_pulse_color` | `0xFFFFFF` | low 24 bits | low 24 bits |
 | `lineage_pulse_alpha` | 217 (85%) | clamp 26–255 | clamp 26–255 |
 | `lineage_pulse_height_dp` | 48 | clamp 8–96 | clamp, then snap to 8 + 4n |
+| `lineage_pulse_color_mode` | 0 (Solid) | only 1 is Match theme | 0 or 1, other values rejected |
 | `lineage_screen_off_animation` | 0 | only 1 is CRT | 0 or 1, other values rejected |
 
-Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The color row and picker always show `#AARRGGBB`. Confirming the picker writes the color, then the opacity only if the color write succeeded, then re-reads both. The two writes are not atomic.
+Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The color row and picker show `#RRGGBB`; confirming the picker writes only the color, then re-reads it. The opacity slider covers 26–255 in steps of 1 and shows a rounded percentage of 255.
+
+Match theme draws white bars when the system dark theme is on and black bars when it is off. SystemUI reads the `UI_MODE_NIGHT` bit of the global configuration, so manual and scheduled dark theme both apply live; app content behind the bars is not sampled. A later color mode (for example Rainbow, issue #3) takes value 2 or higher; until then SystemUI and Settings both read such a value as Solid.
 
 The default alpha of 217 matches the fixed alpha SystemUI used before the setting existed. CRT requires Always-on display; see `crt-screen-off-animation.md`.
 
@@ -87,6 +90,8 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-07 — Choice widgets:** finite choices use radio pages, not `ListPreference`.
 - **2026-10-07 — Pulse opacity:** separate key, default 217, preserves old appearance.
 - **2026-10-07 — Height display:** exact stored text with an on-grid slider thumb.
+- **2026-10-08 — Pulse color mode:** inline radio rows on the Pulse page, no third level. Solid stays the default.
+- **2026-10-08 — Opacity row:** opacity moved out of the color picker into its own slider, because it applies in every color mode while the RGB color applies only in Solid.
 - **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
 
 ## Release
