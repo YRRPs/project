@@ -4,7 +4,7 @@ YRRP is a personal LineageOS 23.2 derivative for OnePlus 11 (`salami`). This rep
 
 ## Workflow
 
-- Feature owners work only in fresh `.workdirs/` clones/worktrees, test locally, open PRs, and hand `FEATURE_READY` plus proof plans to `yrrp-release-manager`.
+- Feature owners reuse one clean canonical clone per repository under `.workdirs/repos/`, create isolated per-feature worktrees under `.workdirs/features/`, test locally, open PRs, and hand `FEATURE_READY` plus proof plans to `yrrp-release-manager`.
 - The release manager reviews and merges selected PRs, records actual merged SHAs, runs `python3 scripts/yrrp-release.py prepare`, presents exact project/repository/manifest evidence, and launches only after **Build and release** approval with the returned `--manifest-sha256`.
 - The shared builder lock protects exact source sync and the full signed build. Completion requires checksums, signatures, healthy container/public endpoints, serial device proof, and a private immutable `.claude/releases/<build-id>.md` receipt.
 - `.claude/build-campaigns/` is an ignored legacy read-only archive, not active state.
