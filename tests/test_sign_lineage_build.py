@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
 
+from tests.fixtures.make_release_fixture import SOURCE_BUILD_ID
+from tests.fixtures.release_commands import write_executable, write_release_command_stubs
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/sign-lineage-build.sh"
 BUILD_ID = "20990101-000000"
+INCREMENTAL = f"lineage-23.2-salami-{SOURCE_BUILD_ID}-to-{BUILD_ID}-signed-incremental-ota.zip"
+FAKE_LIVE_DOCKER = ROOT / "tests/fixtures/fake_live_docker.py"
 
 
 class SignLineageBuildTest(unittest.TestCase):
@@ -24,6 +32,7 @@ class SignLineageBuildTest(unittest.TestCase):
         self.deploy_log = self.root / "deploy.log"
         self.build_log = self.root / "build.log"
         self.password_log = self.root / "password.log"
+        self.incremental_log = self.root / "incremental.log"
         self._create_build_tree()
         self._create_keys()
         self._create_commands()
@@ -71,31 +80,38 @@ class SignLineageBuildTest(unittest.TestCase):
 
     def _create_commands(self) -> None:
         self.bin.mkdir()
-        openssl = self.bin / "openssl"
-        openssl.write_text("#!/bin/sh\nprintf synthetic-der\n")
-        openssl.chmod(0o755)
-        docker = self.bin / "docker"
-        docker.write_text("#!/bin/sh\nexit 0\n")
-        docker.chmod(0o755)
-        unzip = self.bin / "unzip"
-        unzip.write_text(
-            "#!/usr/bin/env python3\n"
-            "import sys, zipfile\n"
-            "args = sys.argv[1:]\n"
-            "if args[0] == '-tq': sys.exit(0)\n"
-            "if args[0] == '-Z1':\n"
-            "    print('\\n'.join(zipfile.ZipFile(args[1]).namelist()))\n"
-            "elif args[0] == '-p':\n"
-            "    sys.stdout.buffer.write(zipfile.ZipFile(args[1]).read(args[2]))\n"
-            "else: sys.exit(2)\n"
+        write_release_command_stubs(self.bin)
+        shutil.copy2(FAKE_LIVE_DOCKER, self.bin / "docker")
+        (self.bin / "docker").chmod(0o755)
+
+    def _create_live_source(self, content: bytes = b"source") -> None:
+        signed = self.build / "out/signed"
+        signed.mkdir(parents=True, exist_ok=True)
+        (signed / f"lineage-23.2-salami-{SOURCE_BUILD_ID}-signed-target_files.zip").write_bytes(content)
+
+    def _incremental_stub(self, exit_code: int, unreadable_output: bool = False) -> Path:
+        signed = self.build / "out/signed"
+        lock_output = f"chmod 000 {signed}/{INCREMENTAL}\n" if unreadable_output else ""
+        return write_executable(
+            self.root / "generate-incremental.sh",
+            "#!/bin/sh\n"
+            f"printf '%s %s\\n' \"$YRRP_BUILD_LOCK_HELD\" \"$*\" > {self.incremental_log}\n"
+            f"[ {exit_code} -eq 0 ] || exit {exit_code}\n"
+            f"printf incremental > {signed}/{INCREMENTAL}\n"
+            + lock_output,
         )
-        unzip.chmod(0o755)
 
     def run_script(
         self,
         deploy_exit: int = 0,
         *,
         include_ota_environment: bool = True,
+        include_campaign_claim: bool = True,
+        live_build: str | None = None,
+        live_device: str = "salami",
+        incremental_exit: int = 0,
+        unreadable_incremental: bool = False,
+        inspect_fail: str = "",
     ) -> subprocess.CompletedProcess[str]:
         deploy = self.root / "deploy.sh"
         deploy.write_text(
@@ -104,6 +120,19 @@ class SignLineageBuildTest(unittest.TestCase):
             f"exit {deploy_exit}\n"
         )
         deploy.chmod(0o755)
+        claim = self.root / "campaign-claim.json"
+        if include_campaign_claim:
+            claim.write_text(
+                json.dumps(
+                    {
+                        "campaign_id": "test-campaign",
+                        "source_snapshot_sha256": "a" * 64,
+                        "expires_at": int(time.time()) + 300,
+                    }
+                )
+                + "\n"
+            )
+            claim.chmod(0o600)
         env = os.environ | {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
             "YRRP_BUILD_ROOT": str(self.build),
@@ -117,11 +146,24 @@ class SignLineageBuildTest(unittest.TestCase):
             "YRRP_RUNTIME_PASSWORD_FILE": str(self.root / "runtime-passwords"),
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
             "OTA_BASE_IMAGE_REF": "ghcr.io/yrrp/ota:main",
+            "YRRP_CAMPAIGN_CLAIM_FILE": str(claim),
+            "YRRP_INCREMENTAL_SCRIPT": str(
+                self._incremental_stub(incremental_exit, unreadable_incremental)
+            ),
+            "FAKE_LIVE_BUILD": live_build or "",
+            "FAKE_LIVE_DEVICE": live_device,
+            "FAKE_INSPECT_FAIL": inspect_fail,
         }
         if not include_ota_environment:
             env.pop("OTA_PUBLIC_BASE_URL")
             env.pop("OTA_BASE_IMAGE_REF")
         return subprocess.run([str(SCRIPT)], capture_output=True, text=True, env=env)
+
+    def test_requires_valid_campaign_claim(self) -> None:
+        result = self.run_script(include_campaign_claim=False)
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("Campaign claim file is required", result.stderr)
 
     def test_uses_yrrp_ota_defaults(self) -> None:
         result = self.run_script(include_ota_environment=False)
@@ -147,6 +189,81 @@ class SignLineageBuildTest(unittest.TestCase):
         signed = self.build / "out/signed"
         self.assertTrue((signed / f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip").is_file())
         self.assertTrue((signed / f"lineage-23.2-salami-{BUILD_ID}-signed-target_files.zip").is_file())
+
+    def test_live_release_source_generates_and_deploys_incremental(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            f"1 --source-build {SOURCE_BUILD_ID} --target-build {BUILD_ID}",
+            self.incremental_log.read_text().strip(),
+        )
+        signed = self.build / "out/signed"
+        self.assertIn(f"--incremental {signed}/{INCREMENTAL}", self.deploy_log.read_text())
+        sums = (signed / f"lineage-23.2-salami-{BUILD_ID}-SHA256SUMS.txt").read_text()
+        self.assertIn(INCREMENTAL, sums)
+
+    def test_without_live_container_deploys_full_only(self) -> None:
+        result = self.run_script()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("incremental-skipped: no live OTA container", result.stderr)
+        self.assertNotIn("--incremental", self.deploy_log.read_text())
+        self.assertFalse(self.incremental_log.exists())
+
+    def test_live_build_without_signed_target_files_deploys_full_only(self) -> None:
+        result = self.run_script(live_build=SOURCE_BUILD_ID)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(f"incremental-skipped: no signed target-files for live build {SOURCE_BUILD_ID}", result.stderr)
+        self.assertNotIn("--incremental", self.deploy_log.read_text())
+
+    def test_other_device_container_deploys_full_only(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, live_device="other")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("incremental-skipped: live container serves device other", result.stderr)
+
+    def test_incremental_failure_has_distinct_status_and_skips_deploy(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, incremental_exit=31)
+        self.assertNotEqual(0, result.returncode)
+        self.assertEqual("incremental-failed:31", self.status.read_text().strip())
+        self.assertFalse(self.deploy_log.exists())
+        signed = self.build / "out/signed"
+        self.assertTrue((signed / f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip").is_file())
+
+    def test_empty_live_source_still_runs_incremental_generation(self) -> None:
+        self._create_live_source(content=b"")
+        result = self.run_script(live_build=SOURCE_BUILD_ID, incremental_exit=41)
+        self.assertNotIn("incremental-skipped", result.stderr)
+        self.assertEqual(
+            f"1 --source-build {SOURCE_BUILD_ID} --target-build {BUILD_ID}",
+            self.incremental_log.read_text().strip(),
+        )
+        self.assertEqual("incremental-failed:41", self.status.read_text().strip())
+        self.assertFalse(self.deploy_log.exists())
+
+    def test_failing_label_inspect_fails_incremental_without_deploy(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, inspect_fail="io.yrrp.ota.device")
+        self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("incremental-skipped", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("incremental-failed:"))
+        self.assertFalse(self.deploy_log.exists())
+        self.assertFalse(self.incremental_log.exists())
+
+    def test_failing_build_id_inspect_fails_incremental_without_deploy(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, inspect_fail="io.yrrp.ota.build-id")
+        self.assertNotEqual(0, result.returncode)
+        self.assertTrue(self.status.read_text().startswith("incremental-failed:"))
+        self.assertFalse(self.deploy_log.exists())
+
+    def test_unreadable_incremental_checksum_stops_before_deploy(self) -> None:
+        self._create_live_source()
+        result = self.run_script(live_build=SOURCE_BUILD_ID, unreadable_incremental=True)
+        self.assertNotEqual(0, result.returncode)
+        self.assertFalse(self.deploy_log.exists())
+        self.assertNotEqual("complete", self.status.read_text().strip())
 
 
 if __name__ == "__main__":

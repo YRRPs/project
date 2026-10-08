@@ -28,6 +28,18 @@ Do not build, sync, or edit source on the TrueNAS host. Only `sudo docker` is pa
 
 Anything outside these mounts lives in the container layer and is lost on recreate. Signing keys were lost exactly that way once.
 
+## Checkout mutation lock
+
+The campaign build holds `/home/android/.yrrp-build-launch.lock` for the full signed build. Every command that can mutate `/opt/android` or `/opt/yrrp/project` must use the same lock, including `repo sync`, `git checkout`, `git switch`, `git reset`, `git pull`, cherry-pick, patch application, and scripted source edits.
+
+Use this shape and stop if lock is busy:
+
+```bash
+ssh AndroidBuilder "flock -n /home/android/.yrrp-build-launch.lock bash -lc '<mutation command>'"
+```
+
+Never bypass, remove, or replace the lock file. Read-only inspection does not need the lock. Feature implementation must finish mutations before campaign freeze; no source mutation is allowed while a build screen exists.
+
 ## Long jobs run in screen with a status file
 
 Never run `brunch`, `repo sync`, extraction, or signing in the foreground of an SSH call. Use this shape:

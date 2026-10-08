@@ -4,13 +4,16 @@ set -Eeo pipefail
 umask 077
 
 readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+source "${script_dir}/yrrp-release-lib.sh"
 readonly build_root=${YRRP_BUILD_ROOT:-/opt/android}
 readonly cert_dir=${YRRP_CERT_DIR:-/opt/yrrp/signing}
-readonly stored_password_file=${cert_dir}/passwords
 readonly password_file=${YRRP_RUNTIME_PASSWORD_FILE:-/home/android/.android-signing-passwords}
 readonly status_file=${YRRP_STATUS_FILE:-/home/android/signed-build.status}
+readonly campaign_claim_file=${YRRP_CAMPAIGN_CLAIM_FILE:-}
 readonly output_dir=${build_root}/out/signed
 readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh}
+readonly incremental_script=${YRRP_INCREMENTAL_SCRIPT:-${script_dir}/generate-incremental-ota.sh}
+readonly ota_container=${OTA_CONTAINER_NAME:-yrrp-ota-server}
 failure_domain=signing
 
 : "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
@@ -56,6 +59,64 @@ require_file() {
     fi
 }
 
+# Print the live release build ID when it can be an incremental source.
+# Print a skip reason to stderr and nothing to stdout when it cannot.
+resolve_incremental_source() {
+    local device build_id
+    if ! docker container inspect "${ota_container}" >/dev/null 2>&1; then
+        printf 'incremental-skipped: no live OTA container\n' >&2
+        return 0
+    fi
+    # Command substitution does not inherit errexit; a failed inspect must not look like a skip.
+    device=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.device" }}' "${ota_container}") || return 1
+    if [[ ${device} != salami ]]; then
+        printf 'incremental-skipped: live container serves device %s\n' "${device:-unknown}" >&2
+        return 0
+    fi
+    build_id=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.build-id" }}' "${ota_container}") || return 1
+    if [[ ! ${build_id} =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
+        printf 'Live OTA container has invalid build-id label: %s\n' "${build_id}" >&2
+        return 1
+    fi
+    # Skip only when the source is absent; generate-incremental-ota.sh rejects an empty or corrupt one.
+    if [[ ! -e "${output_dir}/lineage-23.2-salami-${build_id}-signed-target_files.zip" ]]; then
+        printf 'incremental-skipped: no signed target-files for live build %s\n' "${build_id}" >&2
+        return 0
+    fi
+    printf '%s\n' "${build_id}"
+}
+
+[[ -n "${campaign_claim_file}" && -f "${campaign_claim_file}" ]] || {
+    printf 'Campaign claim file is required\n' >&2
+    exit 1
+}
+[[ $(stat -c '%a' "${campaign_claim_file}") == 600 ]] || {
+    printf 'Campaign claim file must have mode 600\n' >&2
+    exit 1
+}
+[[ $(stat -c '%u' "${campaign_claim_file}") == $(id -u) ]] || {
+    printf 'Campaign claim file must be owned by current user\n' >&2
+    exit 1
+}
+python3 - "${campaign_claim_file}" <<'PY'
+import json
+import re
+import sys
+import time
+from pathlib import Path
+
+claim = json.loads(Path(sys.argv[1]).read_text())
+if set(claim) != {"campaign_id", "source_snapshot_sha256", "expires_at"}:
+    raise SystemExit("Campaign claim schema is invalid")
+if not re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", str(claim["campaign_id"])):
+    raise SystemExit("Campaign claim ID is invalid")
+if not re.fullmatch(r"[0-9a-f]{64}", str(claim["source_snapshot_sha256"])):
+    raise SystemExit("Campaign claim source digest is invalid")
+if int(claim["expires_at"]) < int(time.time()):
+    raise SystemExit("Campaign claim has expired")
+PY
+rm -f "${campaign_claim_file}"
+
 require_file "${deploy_script}"
 [[ -x "${deploy_script}" ]] || {
     printf 'Deployment script is not executable: %s\n' "${deploy_script}" >&2
@@ -88,11 +149,7 @@ breakfast salami
 printf 'building-target-files\n' > "${status_file}"
 mka target-files-package otatools
 
-require_file "${stored_password_file}"
-sed "s|/home/android/.android-certs|${cert_dir}|g" \
-    "${stored_password_file}" > "${password_file}"
-chmod 0600 "${password_file}"
-export ANDROID_PW_FILE="${password_file}"
+yrrp_load_signing_passwords "${cert_dir}" "${password_file}"
 require_file "${cert_dir}/releasekey.pk8"
 require_file "${cert_dir}/releasekey.x509.pem"
 
@@ -156,18 +213,8 @@ unzip -tq "${signed_ota}" >/dev/null
 verify_dir=$(mktemp -d)
 unzip -p "${signed_ota}" META-INF/com/android/otacert \
     > "${verify_dir}/otacert.x509.pem"
-release_fingerprint=$(
-    openssl x509 -in "${cert_dir}/releasekey.x509.pem" \
-        -outform DER \
-        | sha256sum \
-        | awk '{print $1}'
-)
-ota_fingerprint=$(
-    openssl x509 -in "${verify_dir}/otacert.x509.pem" \
-        -outform DER \
-        | sha256sum \
-        | awk '{print $1}'
-)
+release_fingerprint=$(yrrp_cert_sha256 "${cert_dir}/releasekey.x509.pem")
+ota_fingerprint=$(yrrp_cert_sha256 "${verify_dir}/otacert.x509.pem")
 if [[ "${release_fingerprint}" != "${ota_fingerprint}" ]]; then
     printf 'OTA certificate does not match release key\n' >&2
     exit 1
@@ -180,12 +227,7 @@ if [[ -z "${systemui_path}" ]]; then
 fi
 unzip -p "${signed_target_files}" "${systemui_path}" \
     > "${verify_dir}/SystemUI.apk"
-platform_fingerprint=$(
-    openssl x509 -in "${cert_dir}/platform.x509.pem" \
-        -outform DER \
-        | sha256sum \
-        | awk '{print $1}'
-)
+platform_fingerprint=$(yrrp_cert_sha256 "${cert_dir}/platform.x509.pem")
 export PATH="${build_root}/prebuilts/jdk/jdk21/linux-x86/bin:${PATH}"
 systemui_fingerprint=$(
     "${build_root}/out/host/linux-x86/bin/apksigner" \
@@ -200,24 +242,46 @@ fi
 rm -rf "${verify_dir}"
 verify_dir=
 
+printf 'generating-incremental-ota\n' > "${status_file}"
+failure_domain=incremental
+incremental_ota=
+incremental_source=$(resolve_incremental_source)
+if [[ -n ${incremental_source} ]]; then
+    YRRP_BUILD_LOCK_HELD=1 "${incremental_script}" \
+        --source-build "${incremental_source}" \
+        --target-build "${build_date}"
+    incremental_ota="${output_dir}/lineage-23.2-salami-${incremental_source}-to-${build_date}-signed-incremental-ota.zip"
+    require_file "${incremental_ota}"
+fi
+failure_domain=signing
+
 readonly target_files_sha256=$(sha256sum "${signed_target_files}" | awk '{print $1}')
 readonly ota_sha256=$(sha256sum "${signed_ota}" | awk '{print $1}')
 readonly summary="${output_dir}/lineage-23.2-salami-${build_date}-SHA256SUMS.txt"
+incremental_sha256=
+if [[ -n ${incremental_ota} ]]; then
+    incremental_sha256=$(sha256sum "${incremental_ota}" | awk '{print $1}')
+fi
 
 {
     printf '%s  %s\n' "${target_files_sha256}" "$(basename "${signed_target_files}")"
     printf '%s  %s\n' "${ota_sha256}" "$(basename "${signed_ota}")"
+    if [[ -n ${incremental_ota} ]]; then
+        printf '%s  %s\n' "${incremental_sha256}" "$(basename "${incremental_ota}")"
+    fi
 } > "${summary}"
 
 printf 'preparing-ota-release\n' > "${status_file}"
 failure_domain=deployment
-OTA_STATUS_FILE="${status_file}" "${deploy_script}" \
-    --ota "${signed_ota}" \
-    --target-files "${signed_target_files}" \
-    --build-id "${build_date}"
+deploy_args=(--ota "${signed_ota}" --target-files "${signed_target_files}" --build-id "${build_date}")
+if [[ -n ${incremental_ota} ]]; then
+    deploy_args+=(--incremental "${incremental_ota}")
+fi
+OTA_STATUS_FILE="${status_file}" YRRP_BUILD_LOCK_HELD=1 "${deploy_script}" "${deploy_args[@]}"
 failure_domain=signing
 
 printf 'complete\n' > "${status_file}"
 printf 'Signed target files: %s\n' "${signed_target_files}"
 printf 'Signed OTA: %s\n' "${signed_ota}"
+[[ -z ${incremental_ota} ]] || printf 'Signed incremental OTA: %s\n' "${incremental_ota}"
 printf 'Checksums: %s\n' "${summary}"

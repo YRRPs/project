@@ -8,7 +8,16 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tests.fixtures.make_release_fixture import BUILD_ID, IMAGES, OTA_NAME, create_fixture
+from tests.fixtures.make_release_fixture import (
+    BUILD_ID,
+    IMAGES,
+    INCREMENTAL_NAME,
+    OTA_NAME,
+    SOURCE_INCREMENTAL,
+    create_fixture,
+    create_incremental_fixture,
+    write_incremental_meta,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts/prepare-ota-release.py"
@@ -121,6 +130,72 @@ class PrepareOtaReleaseTest(unittest.TestCase):
             Path("rootfs/install/salami") / BUILD_ID / "SHA256SUMS.txt",
         ):
             self.assertEqual((first / relative).read_bytes(), (second / relative).read_bytes())
+
+
+    def make_incremental(self, **overrides) -> Path:
+        meta_overrides = {k: overrides.pop(k) for k in ("source_incremental", "digest") if k in overrides}
+        incremental = create_incremental_fixture(self.root / "input", **overrides)
+        write_incremental_meta(incremental, **meta_overrides)
+        return incremental
+
+    def test_full_release_records_schema_two_without_incremental(self) -> None:
+        output = self.prepare()
+        release = json.loads((output / "rootfs/install/salami" / BUILD_ID / "release.json").read_text())
+        self.assertEqual(2, release["schema"])
+        self.assertIsNone(release["incremental"])
+
+    def test_incremental_release_tree_and_updater_contract(self) -> None:
+        output = self.prepare(incremental=self.make_incremental())
+        install = Path("rootfs/install/salami") / BUILD_ID
+        expected = {
+            Path("rootfs/updates/salami.json"),
+            Path(f"rootfs/updates/salami/{SOURCE_INCREMENTAL}.json"),
+            *(install / name for name in (OTA_NAME, INCREMENTAL_NAME, *IMAGES, "SHA256SUMS.txt", "release.json")),
+        }
+        actual = {path.relative_to(output) for path in output.rglob("*") if path.is_file()}
+        self.assertEqual(expected, actual)
+
+        full = json.loads((output / "rootfs/updates/salami.json").read_text())
+        self.assertEqual(OTA_NAME, full[0]["files"][0]["filename"])
+        entry = json.loads((output / f"rootfs/updates/salami/{SOURCE_INCREMENTAL}.json").read_text())
+        self.assertEqual(1, len(entry))
+        file = entry[0]["files"][0]
+        self.assertEqual(INCREMENTAL_NAME, file["filename"])
+        self.assertEqual(f"https://ota.example.invalid/install/salami/{BUILD_ID}/{INCREMENTAL_NAME}", file["url"])
+        self.assertEqual("payload.bin:5:6,metadata:7:8", file["ota_property_files"])
+        self.assertEqual(4070908800, entry[0]["datetime"])
+
+        release = json.loads((output / install / "release.json").read_text())
+        self.assertEqual(SOURCE_INCREMENTAL, release["incremental"]["source_incremental"])
+        self.assertEqual(INCREMENTAL_NAME, release["incremental"]["filename"])
+        self.assertIn(INCREMENTAL_NAME, (output / install / "SHA256SUMS.txt").read_text())
+
+    def test_rejects_incremental_pre_build_mismatch(self) -> None:
+        incremental = self.make_incremental(pre_incremental="1")
+        with self.assertRaisesRegex(ValueError, "pre-build-incremental"):
+            self.prepare(incremental=incremental)
+
+    def test_rejects_incremental_for_other_post_build(self) -> None:
+        incremental = self.make_incremental(post_build="other/release-keys")
+        with self.assertRaisesRegex(ValueError, "post-build does not match full OTA"):
+            self.prepare(incremental=incremental)
+
+    def test_rejects_incremental_meta_digest_mismatch(self) -> None:
+        incremental = self.make_incremental(digest="0" * 64)
+        with self.assertRaisesRegex(ValueError, "SHA-256 or size does not match meta"):
+            self.prepare(incremental=incremental)
+
+    def test_rejects_incremental_for_other_target_build(self) -> None:
+        incremental = self.make_incremental(
+            name="lineage-23.2-salami-20981231-000000-to-20990102-000000-signed-incremental-ota.zip"
+        )
+        with self.assertRaisesRegex(ValueError, "filename does not match"):
+            self.prepare(incremental=incremental)
+
+    def test_rejects_non_numeric_meta_incremental(self) -> None:
+        incremental = self.make_incremental(source_incremental="../x")
+        with self.assertRaisesRegex(ValueError, "numeric"):
+            self.prepare(incremental=incremental)
 
 
 if __name__ == "__main__":

@@ -104,7 +104,7 @@ Verification:
 - Matching signed installation images were extracted to `out/signed/install-images-20261003-121141/`.
 - Recovery OTA trust certificate matches generated `releasekey`.
 
-`zucchini` and `lz4diff` were unavailable for this OTA generation. These are payload delta/compression optimizations, not ROM compilation or runtime features. Their absence can increase OTA size or generation/application time, especially for future incrementals, without changing installed partition contents.
+`zucchini` and `lz4diff` were disabled for this OTA because it is a full OTA. Both tools are present on the builder (`out/host/linux-x86/bin/zucchini` and `delta_generator`), but `ota_from_target_files` enables them only for an incremental OTA with a source build (`-i`). Each release also publishes an incremental OTA from the live release, generated with both tools enabled; see `docs/design/ota-hosting.md`.
 
 ## Clean installation
 

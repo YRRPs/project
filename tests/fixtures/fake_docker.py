@@ -68,7 +68,10 @@ elif args[:1] == ["rename"]:
 elif args[:1] == ["start"]:
     state_path.write_text("restored\n", encoding="utf-8")
 elif args[:1] == ["exec"]:
-    if mode == "metadata_fail" and "/updates/salami.json" in " ".join(args):
+    joined = " ".join(args)
+    if mode == "metadata_fail" and "/updates/salami.json" in joined:
+        sys.exit(8)
+    if mode == "route_missing" and "/updates/salami/1.json" in joined:
         sys.exit(8)
 elif args[:1] == ["rm"]:
     if mode == "cleanup_signal" and args[-1].endswith(".previous"):

@@ -18,8 +18,10 @@ Each release image contains exactly one signed build:
 ```text
 /srv/ota/
 ├── updates/salami.json
+├── updates/salami/<source incr>.json
 └── install/salami/<build-id>/
     ├── lineage-23.2-salami-<build-id>-signed-ota.zip
+    ├── lineage-23.2-salami-<source>-to-<build-id>-signed-incremental-ota.zip
     ├── boot.img
     ├── dtbo.img
     ├── init_boot.img
@@ -30,7 +32,7 @@ Each release image contains exactly one signed build:
     └── release.json
 ```
 
-OTA exists once. Updater JSON points directly into versioned install directory. Signed target-files remain private for incrementals and recovery. GApps, unsigned builds, previous releases, and signing material never enter image.
+Each OTA zip exists once. Updater JSON points directly into versioned install directory. Signed target-files remain private for incrementals and recovery. GApps, unsigned builds, previous releases, and signing material never enter image.
 
 ## LineageOS 23.2 contract
 
@@ -40,8 +42,10 @@ Metadata endpoint must begin with HTTPS and return HTTP 200 without redirect. St
 
 ```makefile
 PRODUCT_SYSTEM_PROPERTIES += \
-    lineage.updater.uri=https://ota.example.com/updates/salami.json
+    lineage.updater.uri=https://ota.example.com/updates/{device}/{incr}.json
 ```
+
+The Updater replaces `{incr}` with `ro.build.version.incremental` and refuses redirects, so the incremental route falls back internally.
 
 ## Nginx policy
 
@@ -49,6 +53,7 @@ PRODUCT_SYSTEM_PROPERTIES += \
 - GET and HEAD only
 - `/healthz` returns 200
 - `/updates/salami.json` exact JSON, no-cache, no listing
+- `/updates/salami/<digits>.json` serves the incremental for that source build, or the full OTA JSON through an internal `try_files` fallback.
 - `/install/salami/` scoped autoindex
 - Versioned release files immutable with byte-range support
 - Every other path returns 404
@@ -62,20 +67,25 @@ Nginx autoindex defaults off. YRRP enables it only under `/install/salami/`; roo
 
 1. Generate release-key-signed target-files and full OTA.
 2. Verify ZIP integrity, OTA certificate, and SystemUI platform certificate.
-3. Parse signed OTA metadata and target-files build properties.
-4. Require A/B, `release-keys`, `salami`, `UNOFFICIAL`, and LineageOS 23.2.
-5. Extract exact six `IMAGES/*.img` members.
-6. Generate deterministic checksums, release manifest, and one-entry updater JSON.
-7. Pull OTA base and pin release build to immutable image digest.
-8. Build local `yrrp-ota-release:<build-id>` image; never push it.
-9. Replace labeled production container, wait for health, and verify metadata/range serving.
-10. Remove previous local release image on success or restore previous healthy container on failure.
+3. Generate the signed incremental from the live release's signed target-files in `out/signed/`. If no live release exists, the live container's `io.yrrp.ota.device` label names another device, or the live release's target-files do not exist, publish full-only and log `incremental-skipped: <reason>`. A failed label read, or a source file that exists but is empty or corrupt, is a hard failure and never a skip.
+4. Parse signed OTA metadata and target-files build properties.
+5. Require A/B, `release-keys`, `salami`, `UNOFFICIAL`, and LineageOS 23.2.
+6. Extract exact six `IMAGES/*.img` members.
+7. Generate deterministic checksums, release manifest, and one-entry updater JSON.
+8. Pull OTA base and pin release build to immutable image digest.
+9. Build local `yrrp-ota-release:<build-id>` image; never push it.
+10. Replace labeled production container, wait for health, and verify metadata/range serving.
+11. Remove previous local release image on success or restore previous healthy container on failure.
 
 Signing reports complete only after deployment becomes healthy. Stale signed pre-Pulse baseline must never deploy.
 
 ## Full versus incremental OTA
 
-Start with full OTAs only. Retain every signed target-files archive privately. Incremental generation later requires previous and current target-files and stricter source-version testing.
+Each release publishes the full OTA and, when the live release's signed target-files exist in `out/signed/`, one incremental OTA from that live release. `generate-incremental-ota.sh` enables `zucchini` and `lz4diff` and fails if either is disabled. A generation failure stops the release as `incremental-failed:<code>`. The build campaign then reruns generation and deployment through `authorize-recovery`, with no rebuild.
+
+Sources live in `out/`, so `rm -rf out` turns the next release into a full-only release. Retention outside `out/` and its backup are follow-up work.
+
+A device on a build from before the `{incr}` URI can opt in once as root: `adb root` and `adb shell setprop lineage.updater.uri 'https://ota.yimura.dev/updates/{device}/{incr}.json'`. The value lasts until the next reboot.
 
 ## Security
 
