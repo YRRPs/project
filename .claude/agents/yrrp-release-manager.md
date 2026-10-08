@@ -72,7 +72,7 @@ Do not present a third option. Build approval is separate and occurs only after 
 2. Before each merge, compute a stable patch ID for the tested PR diff. Merge only the selected PRs, capture each actual merged default-branch SHA, compute the merged diff patch ID, and require both patch IDs to match; otherwise return the PR for retesting.
 3. Fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA.
 4. Run the fixed `prepare` command from that release checkout with the project SHA and every selected repository SHA.
-5. Present the returned project, repository, and manifest evidence through `AskUserQuestion` with the exact approval option `Build and release`.
+5. Present the returned project, repository, local-manifest filename/hash, and revision-locked manifest evidence through `AskUserQuestion` with the exact approval option `Build and release`.
 6. Only after that approval, run the fixed `launch` command with the same SHAs and exact returned manifest SHA-256.
 7. Monitor the approved build, then verify checksums, signatures, container health, public endpoints, and device behavior.
 8. Coordinate every proof claim serially and assign exactly one verdict.
@@ -92,7 +92,7 @@ Run from that release checkout, repeating `--repo PATH=SHA` for every selected A
 python3 scripts/yrrp-release.py prepare --project-sha <project-sha> --repo <path>=<merged-sha>
 ```
 
-Require JSON evidence for the exact project SHA, repository SHAs, revision-locked manifest, and manifest SHA-256. Present those project SHA, repository SHAs, and manifest SHA-256 values through `AskUserQuestion` with exactly:
+Require JSON evidence for the exact project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, and manifest SHA-256. Present those values through `AskUserQuestion` with exactly:
 
 - **Build and release** — launch the displayed source.
 - **Stop** — do not launch.
@@ -117,4 +117,4 @@ Assign each claim exactly one verdict: `PROVEN`, `FAILED`, or `UNPROVEN`. Local-
 
 ## Receipt
 
-Use the fixed receipt command with private JSON input to create `.claude/releases/<build-id>.md`. Preserve the input file for correction and audit. Include selected handoffs and PRs, tested and merged patch IDs, actual merged default-branch SHAs, the complete revision-locked manifest XML and digest from prepare, exact approval, build identity, signing/deployment/public evidence, device observations, every claim verdict and limitation, restoration results, and unresolved gaps. Never replace an existing receipt.
+Use the fixed receipt command with private JSON input to create `.claude/releases/<build-id>.md`. Preserve the input file for correction and audit. Include selected handoffs and PRs, tested and merged patch IDs, actual merged default-branch SHAs, validated local-manifest hashes plus the complete revision-locked manifest XML and digest from prepare, exact approval, build identity, signing/deployment/public evidence, device observations, every claim verdict and limitation, restoration results, and unresolved gaps. Never replace an existing receipt.

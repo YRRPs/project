@@ -12,7 +12,7 @@ One `yrrp-release-manager` session owns review, merge, exact source, build appro
 
 1. Merge selected PRs and record each actual merged default-branch SHA.
 2. Run `python3 scripts/yrrp-release.py prepare --project-sha <sha> --repo <path>=<sha>`.
-3. Inspect returned project SHA, repository SHAs, revision-locked manifest, and manifest SHA-256.
+3. Inspect returned project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, and manifest SHA-256.
 4. Ask through `AskUserQuestion` with **Build and release** and **Stop**.
 5. Only after **Build and release**, run `python3 scripts/yrrp-release.py launch --approval 'Build and release'` with the same SHA arguments and exact `--manifest-sha256` from prepare.
 6. Monitor the detached status/log, verify artifacts and service, run device proof plans serially, and write `.claude/releases/<build-id>.md` through the fixed receipt command. Preserve the input JSON, tested/merged patch-ID evidence, and complete revision-locked manifest XML.
