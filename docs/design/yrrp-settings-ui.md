@@ -144,9 +144,17 @@ All results below are from builds `20261006-145431`, `20261006-171251`, `2026100
 - Pulse with playback: turning it off releases capture and removes the overlay; changing alpha 141 → 64 → 200 → 255 keeps `captureEpoch` unchanged.
 - SystemUI dump `alpha=` follows 26, 128 and 255, and shows 217 when unset.
 - CRT: each screen-off uses the current setting; a change during a transition applies to the next one.
-- Color picker: Cancel, back and outside tap write nothing; OK writes both values; rotation keeps an unconfirmed color; a double tap opens one picker; landscape scrolls to every slider.
+- Color picker (before #4, when it also held opacity): Cancel, back and outside tap write nothing; OK writes both values; rotation keeps an unconfirmed color; a double tap opens one picker; landscape scrolls to every slider.
 - Height: a fast drag writes only 8 + 4n values, with 0 janky frames.
 - A temporary secondary user (user 10) saw only its own values; it was removed afterwards.
+
+### Pending device verification for #4 (Match theme, opacity row)
+
+- Picker OK writes only `lineage_pulse_color`; the swatch and row show `#RRGGBB`.
+- Search for "color mode", "Match theme" and "Pulse opacity" opens the Pulse page.
+- **Pulse color** is disabled in Match theme and re-enables in Solid; **Pulse opacity** stays enabled in both while Pulse is on.
+- `adb shell cmd uimode night yes` and `no` recolor the bars live, and the dump keeps `captureEpoch` unchanged.
+- Scheduled dark theme recolors the bars at the transition.
 
 Evidence for Tasks 7 and 9 is in `docs/superpowers/evidence/` (not tracked).
 
