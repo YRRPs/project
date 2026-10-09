@@ -161,6 +161,7 @@ All results below are from builds `20261006-145431`, `20261006-171251`, `2026100
 - Search for "rainbow" opens the Pulse page; the **Rainbow gradient** and **Rainbow cycle** rows check and write 2 and 3.
 - **Pulse color** is disabled in both Rainbow modes; **Pulse opacity** applies in both.
 - Switching between modes while Pulse shows keeps `captureEpoch` unchanged.
+- Hiding Pulse in a Rainbow mode (pause playback or lock) stops SystemUI frames: `dumpsys gfxinfo com.android.systemui` stops counting and the dump shows `colorAnimating=false`.
 
 Evidence for Tasks 7 and 9 is in `docs/superpowers/evidence/` (not tracked).
 
