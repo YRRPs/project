@@ -2,6 +2,13 @@
 
 You can play custom screen-off effects (CRT today) at 0.5×, 0.75×, 1×, 1.5×, or 2× speed from **Settings → YRRPs → Screen-off animation → Speed**. Stock ignores the speed and keeps its own timing. This answers YRRPs/project#7.
 
+## Status
+
+- Issue: YRRPs/project#7.
+- Framework: https://github.com/YRRPs/android_frameworks_base/pull/9 (draft).
+- Settings: https://github.com/YRRPs/android_packages_apps_Settings/pull/5 (draft).
+- Device acceptance: pending the first release with both PRs.
+
 ## Source of record
 
 - `YRRPs/android_frameworks_base` branch `feat/screen-off-animation-speed`, base `5b8babad443e42708d777a07e778e27279296cb5`.
