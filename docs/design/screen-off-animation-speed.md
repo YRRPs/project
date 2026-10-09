@@ -1,6 +1,6 @@
 # Screen-off animation speed
 
-You can play custom screen-off effects (CRT today) at 0.5×, 0.75×, 1×, 1.5×, or 2× speed from **Settings → YRRPs → Screen-off animation → Speed**. Stock keeps its own timing whatever the speed. This answers YRRPs/project#7.
+You can play custom screen-off effects (CRT today) at 0.5×, 0.75×, 1×, 1.5×, or 2× speed from **Settings → YRRPs → Screen-off animation → Speed**. Stock ignores the speed and keeps its own timing. This answers YRRPs/project#7.
 
 ## Source of record
 
@@ -32,7 +32,7 @@ To the animator duration of the whole effect. CRT's progress mapping inside the 
 
 ### 3. Per-feature or shared?
 
-One speed for every custom screen-off effect. Stock never reads it. A future effect declares its own 1× base duration and calls `ScreenOffAnimationSpeed.scaledDurationMillis`. Pulse Rainbow (#3) keeps its own 6 s cycle. A YRRP-wide animation speed is out of scope.
+One speed for every custom screen-off effect. Stock ignores it. A future effect declares its own 1× base duration and calls `ScreenOffAnimationSpeed.scaledDurationMillis`. Pulse Rainbow (#3) keeps its own 6 s cycle. A YRRP-wide animation speed is out of scope.
 
 ### 4. Range
 
@@ -58,7 +58,7 @@ Each CRT start log line carries the effective speed and duration, and `dumpsys d
 
 ```bash
 adb logcat -s CrtScreenOffAnimation
-adb shell dumpsys display | grep -A16 'CrtScreenOffAnimation:'
+adb shell dumpsys display | grep -A18 'CrtScreenOffAnimation:'
 ```
 
 Expect, for example, `start path=OFF setting=1 speed=50 durationMs=1000`, and `lastSpeedPercent=50` and `lastDurationMs=1000` in the dump.
