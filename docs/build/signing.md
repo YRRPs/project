@@ -35,6 +35,31 @@ Required completion evidence:
 
 Skip TalkBack and accessibility acceptance for this personal ROM.
 
+## Signing profile
+
+Every release signs through the `YRRPs/android_build` fork. That fork records where `sign_target_files_apks` spends its time, and writes the results to `/opt/android/out/signed/profile/<build-id>/`:
+
+| File | Contents |
+|---|---|
+| `timeline.jsonl` | One line per step: `load-keys`, `process-target-files`, `zip-close`, `add-img-to-target-files`. Each line gives wall time, own CPU, child-process CPU, peak RSS, page faults, bytes read and written, and context switches. |
+| `samples.jsonl` | One line per second: RSS, swap, used bytes on the temp filesystem, and page-fault totals. |
+| `signing.prof` | The raw `cProfile` dump. |
+| `signing-top.txt` | The top 40 functions by self time, then the top 40 by cumulative time. |
+| `summary.json` | Core count, Python version, total wall time, all steps, and peak RSS, swap, and temp usage. |
+
+To read the results:
+
+- Compare `wall_s`, `cpu_self_s`, and `cpu_children_s` in each step. When wall time sits well above CPU time, the step waits on disk or something else.
+- Read `signing-top.txt` first. For a deeper look, run `python3 -m pstats signing.prof`, then `sort tottime` and `stats 40`.
+- Check `samples.jsonl` for swap above zero, or for RSS close to the container's memory limit.
+
+Limits:
+
+- `read_bytes` and `write_bytes` cover only the signing process. Child tools such as `mkfs.erofs` are not included.
+- `tmp_used_bytes` counts every writer on the temp filesystem, not only signing.
+- `cProfile` slows Python code. Compare against the unprofiled 848 s signing phase of release `20261009-092107` (issue #25) to see the overhead.
+- Profiling never fails a release. If the profiler cannot write, it prints `YRRP signing profile disabled:` to stderr and signing continues.
+
 ## Recovery
 
 An incremental or deployment retry does not require rebuilding. The release manager directly invokes the fixed incremental generator or deployer against existing `/opt/android/out/signed/` artifacts. The invoked script non-blockingly acquires and holds `/home/android/.yrrp-build-launch.lock` for the entire operation and refuses if the lock is busy. Prior read-only inspection may diagnose an active release, but it is not the locking mechanism and never authorizes a retry. Run the script detached with captured exit/output and repeat the affected verification. An OTA-server-only change must not rebuild or re-sign.

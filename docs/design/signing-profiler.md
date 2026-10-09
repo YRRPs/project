@@ -54,8 +54,12 @@ When the environment has no `YRRP_SIGNING_PROFILE_DIR` set, `start()` returns a 
 
 When the variable is set, `start()` creates the directory, enables `cProfile`, and starts a sampler thread. It returns a profile object with two methods:
 
-- `step(name)`: a context manager. It writes one JSON line to `timeline.jsonl` when the step ends, whether the step succeeds or raises.
-- `finish()`: stops the sampler, disables `cProfile`, and writes the dump and summaries. It is safe to call twice.
+- `mark(name)`: ends the running step as `ok` and starts the step called `name`. Each ended step writes one JSON line to `timeline.jsonl`.
+- `finish(ok)`: ends the running step with `ok`, stops the sampler, disables `cProfile`, and writes the dump and summaries. Later calls do nothing.
+
+`start()` also remembers the profile it returns. `finish_active()` finishes that profile, and marks the last step not `ok` while an exception is unwinding.
+
+The hooks use `mark()` rather than a context manager on purpose. A context manager would re-indent about 40 upstream lines in `main()`, and every Lineage rebase would then conflict. With `mark()`, the patch only adds lines.
 
 Each `timeline.jsonl` line holds:
 
@@ -82,7 +86,7 @@ The sampler writes one line to `samples.jsonl` every 1 s. Each line holds:
 
 ### Hooks in `sign_target_files_apks.py` (fork)
 
-`main()` starts the profile after argument parsing and calls `finish()` in a `finally` block. It wraps four steps:
+`main()` starts the profile after argument parsing and marks four steps. The `__main__` block calls `finish_active()` in its existing `finally` block:
 
 | Step | Covers |
 |---|---|
@@ -121,12 +125,12 @@ Local, test-driven:
 
 - Unit tests for `yrrp_signing_profile.py` in the fork, runnable with `python3 -m unittest` from `tools/releasetools`:
   - an unset variable gives a no-op profile that writes nothing
-  - a step writes one timeline line with every field, on success and on an exception
+  - each mark writes one timeline line with every field, and a failed finish marks the last step not `ok`
   - child CPU shows up in `cpu_children_s` after a `subprocess.run` of a busy child
   - the sampler writes samples and stops on `finish()`
   - `finish()` writes `signing.prof`, `signing-top.txt`, and `summary.json`, and a second call does nothing
   - an unwritable directory gives one warning and a no-op profile
-- A hook test in the fork that runs `sign_target_files_apks.main` against a minimal target-files zip with the steps stubbed, if the releasetools tests run outside a full tree. Otherwise, a source check that the four step names wrap the listed calls.
+- A hook test in the fork, `test_yrrp_signing_hooks.py`, that runs `sign_target_files_apks.main` against an empty zip with the heavy calls patched. Outside a full tree it stubs only the modules that fail to import: `avbtool`, `google.protobuf`, `ota_metadata_pb2`, `apex_manifest`, and `update_payload`. It checks the four steps in order, and that a failure inside `ProcessTargetFiles` marks that step not `ok`.
 - A case in `tests/test_sign_lineage_build.py` asserting that the stub `sign_target_files_apks` sees `YRRP_SIGNING_PROFILE_DIR` set to the expected path.
 
 Local tests cannot prove that the hooks run inside the built `sign_target_files_apks` binary, or the overhead on real target files. The release proof covers both.

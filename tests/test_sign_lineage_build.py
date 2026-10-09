@@ -32,6 +32,7 @@ class SignLineageBuildTest(unittest.TestCase):
         self.build_log = self.root / "build.log"
         self.password_log = self.root / "password.log"
         self.incremental_log = self.root / "incremental.log"
+        self.profile_log = self.root / "profile.log"
         self._create_build_tree()
         self._create_keys()
         self._create_commands()
@@ -53,7 +54,9 @@ class SignLineageBuildTest(unittest.TestCase):
             f"OUT={self.build}/out/target/product/salami\n"
             "breakfast() { :; }\n"
             "mka() { printf '%s\\n' \"$*\" > \"${YRRP_BUILD_LOG}\"; }\n"
-            "sign_target_files_apks() { cp \"${ANDROID_PW_FILE}\" \"${YRRP_PASSWORD_LOG}\"; cp \"${@: -2:1}\" \"${@: -1}\"; }\n"
+            "sign_target_files_apks() { cp \"${ANDROID_PW_FILE}\" \"${YRRP_PASSWORD_LOG}\"; "
+            "printf '%s' \"${YRRP_SIGNING_PROFILE_DIR:-unset}\" > \"${YRRP_PROFILE_LOG}\"; "
+            "cp \"${@: -2:1}\" \"${@: -1}\"; }\n"
             "ota_from_target_files() { cp \"${FAKE_OTA_SOURCE}\" \"${@: -1}\"; }\n"
         )
         apksigner = self.build / "out/host/linux-x86/bin/apksigner"
@@ -141,6 +144,7 @@ class SignLineageBuildTest(unittest.TestCase):
             "FAKE_OTA_SOURCE": str(self.fake_ota),
             "YRRP_BUILD_LOG": str(self.build_log),
             "YRRP_PASSWORD_LOG": str(self.password_log),
+            "YRRP_PROFILE_LOG": str(self.profile_log),
             "YRRP_RUNTIME_PASSWORD_FILE": str(self.root / "runtime-passwords"),
             "OTA_PUBLIC_BASE_URL": "https://ota.example.invalid",
             "OTA_BASE_IMAGE_REF": "ghcr.io/yrrp/ota:main",
@@ -194,6 +198,13 @@ class SignLineageBuildTest(unittest.TestCase):
         finally:
             for handle in handles:
                 handle.close()
+
+    def test_signing_runs_with_profile_directory_for_build(self) -> None:
+        result = self.run_script()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        expected = self.build / "out/signed/profile" / BUILD_ID
+        self.assertEqual(self.profile_log.read_text(), str(expected))
+        self.assertIn(f"Signing profile: {expected}", result.stdout)
 
     def test_fake_lock_marker_without_inherited_fd_cannot_start(self) -> None:
         result = self.run_script(lock_mode="missing")
