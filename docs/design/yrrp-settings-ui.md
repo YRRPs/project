@@ -9,7 +9,27 @@ The YRRPs page in LineageOS Settings controls Pulse and the screen-off animation
   - **Audio** → **Pulse** (On/Off), opening `YrrpPulseSettings`.
   - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`.
   - Category headers are `searchable="false"`.
-- Pulse page (`yrrp_pulse_settings_screen`): intro, **Use Pulse** main switch, **Color mode** category (non-searchable) with **Solid**, **Match theme**, **Rainbow gradient** and **Rainbow cycle** radio rows, **Pulse color** (RGB picker), **Pulse opacity** slider, **Pulse height** slider, privacy footer. Every control below the switch stays visible but is disabled while Pulse is off. **Pulse color** is also disabled outside Solid; opacity applies in every mode.
+- Pulse page (`yrrp_pulse_settings_screen`), laid out like **System > Gestures > Navigation mode**:
+
+  ```text
+  Pulse
+  ├ intro
+  ├ Use Pulse                          main switch
+  ├ [Color mode]                       non-searchable category
+  │ ├ Solid  #RRGGBB          | gear → Pulse color picker dialog
+  │ ├ Match theme
+  │ ├ Rainbow gradient
+  │ └ Rainbow cycle
+  ├ [Appearance]                       non-searchable category
+  │ ├ Pulse opacity
+  │ ├ Pulse height
+  │ ├ Bar count
+  │ ├ Bar gap
+  │ └ Low-level boost                  "Makes quiet sounds move the bars more · 20", ends Linear / Lifted
+  └ privacy footer
+  ```
+
+  Every control below the switch stays visible but is disabled while Pulse is off, the Solid gear included. The gear works in every color mode, because the color applies only in Solid but may be chosen before switching; confirming writes only `lineage_pulse_color` and keeps the mode. Every Appearance slider applies in every color mode. No group collapses.
 - Screen-off animation page (`yrrp_screen_off_animation_settings_screen`): **Stock** and **CRT** radio rows.
 
 All three fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
@@ -25,9 +45,12 @@ Private per-user `Settings.Secure` keys, shared with SystemUI:
 | `lineage_pulse_alpha` | 217 (85%) | clamp 26–255 | clamp 26–255 |
 | `lineage_pulse_height_dp` | 48 | clamp 8–96 | clamp, then snap to 8 + 4n |
 | `lineage_pulse_color_mode` | 0 (Solid) | 1 Match theme, 2 Rainbow gradient, 3 Rainbow cycle; other values Solid | 0-3, other values rejected |
+| `lineage_pulse_log_boost` | 20 | clamp 0–100 (0 is Off) | clamp 0–100 |
+| `lineage_pulse_bar_count` | 32 | clamp 16–64 | clamp, then snap to 16 + 4n |
+| `lineage_pulse_bar_gap_percent` | 30 | clamp 0–80 | clamp, then snap to 5n |
 | `lineage_screen_off_animation` | 0 | only 1 is CRT | 0 or 1, other values rejected |
 
-Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The color row and picker show `#RRGGBB`; confirming the picker writes only the color, then re-reads it. The opacity slider covers 26–255 in steps of 1 and shows a rounded percentage of 255.
+Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The Solid row summary and the picker show `#RRGGBB`; confirming the picker writes only the color, then re-reads it. The boost summary explains the effect before the value; the slider label and state description show the value alone. The opacity slider covers 26–255 in steps of 1 and shows a rounded percentage of 255.
 
 Match theme draws white bars when the system dark theme is on and black bars when it is off. SystemUI reads the `UI_MODE_NIGHT` bit of the global configuration, so manual and scheduled dark theme both apply live; app content behind the bars is not sampled. Rainbow gradient gives each bar its own hue and drifts the hues one full turn every 12 s. Rainbow cycle colors every bar with one hue that cycles every 6 s. A later color mode takes value 4 or higher; until then SystemUI and Settings both read such a value as Solid.
 
@@ -92,6 +115,9 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-07 — Height display:** exact stored text with an on-grid slider thumb.
 - **2026-10-08 — Pulse color mode:** inline radio rows on the Pulse page, no third level. Solid stays the default.
 - **2026-10-08 — Opacity row:** opacity moved out of the color picker into its own slider, because it applies in every color mode while the RGB color applies only in Solid.
+- **2026-10-09 — Navigation-mode layout:** a setting that applies to one choice sits behind that choice row's gear; the separate greyed-out **Pulse color** row is removed. The gear works in every mode and writes only the color.
+- **2026-10-09 — Appearance category:** settings that apply to every choice sit under one titled category below the choices. Collapsing groups are forbidden; the Advanced group around Low-level boost is removed, and the checker rejects `initialExpandedChildrenCount`.
+- **2026-10-09 — Boost explanation:** the boost summary explains the effect, and the slider ends read Linear and Lifted.
 - **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
 
 ## Release
@@ -150,18 +176,26 @@ All results below are from builds `20261006-145431`, `20261006-171251`, `2026100
 
 ### Pending device verification for #4 (Match theme, opacity row)
 
-- Picker OK writes only `lineage_pulse_color`; the swatch and row show `#RRGGBB`.
+- Picker OK writes only `lineage_pulse_color`; the Solid row summary shows `#RRGGBB`.
 - Search for "color mode", "Match theme" and "Pulse opacity" opens the Pulse page.
-- **Pulse color** is disabled in Match theme and re-enables in Solid; **Pulse opacity** stays enabled in both while Pulse is on.
+- **Pulse opacity** stays enabled in every mode while Pulse is on. The separate **Pulse color** row, once disabled outside Solid, became the Solid gear on 2026-10-09.
 - `adb shell cmd uimode night yes` and `no` recolor the bars live, and the dump keeps `captureEpoch` unchanged.
 - Scheduled dark theme recolors the bars at the transition.
 
 ### Pending device verification for #3 (Rainbow modes)
 
 - Search for "rainbow" opens the Pulse page; the **Rainbow gradient** and **Rainbow cycle** rows check and write 2 and 3.
-- **Pulse color** is disabled in both Rainbow modes; **Pulse opacity** applies in both.
+- **Pulse opacity** applies in both Rainbow modes.
 - Switching between modes while Pulse shows keeps `captureEpoch` unchanged.
 - Hiding Pulse in a Rainbow mode (pause playback or lock) stops SystemUI frames: `dumpsys gfxinfo com.android.systemui` stops counting and the dump shows `colorAnimating=false`.
+
+### Pending device verification for the Navigation-mode layout
+
+- The page matches the layout above; Appearance has a header and no row collapses.
+- The Solid gear opens the picker in all four color modes; OK writes only `lineage_pulse_color`, and the mode stays.
+- With Pulse off, the Solid row and gear are disabled.
+- The boost row shows the explanation summary and the Linear / Lifted end labels.
+- Search for "Pulse color", "Bar gap" and "boost" opens the Pulse page.
 
 Evidence for Tasks 7 and 9 is in `docs/superpowers/evidence/` (not tracked).
 
