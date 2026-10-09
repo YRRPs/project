@@ -9,7 +9,7 @@ The YRRPs page in LineageOS Settings controls Pulse and the screen-off animation
   - **Audio** → **Pulse** (On/Off), opening `YrrpPulseSettings`.
   - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`.
   - Category headers are `searchable="false"`.
-- Pulse page (`yrrp_pulse_settings_screen`): intro, **Use Pulse** main switch, **Color mode** category (non-searchable) with **Solid** and **Match theme** radio rows, **Pulse color** (RGB picker), **Pulse opacity** slider, **Pulse height** slider, privacy footer. Every control below the switch stays visible but is disabled while Pulse is off. **Pulse color** is also disabled outside Solid; opacity applies in every mode.
+- Pulse page (`yrrp_pulse_settings_screen`): intro, **Use Pulse** main switch, **Color mode** category (non-searchable) with **Solid**, **Match theme**, **Rainbow gradient** and **Rainbow cycle** radio rows, **Pulse color** (RGB picker), **Pulse opacity** slider, **Pulse height** slider, privacy footer. Every control below the switch stays visible but is disabled while Pulse is off. **Pulse color** is also disabled outside Solid; opacity applies in every mode.
 - Screen-off animation page (`yrrp_screen_off_animation_settings_screen`): **Stock** and **CRT** radio rows.
 
 All three fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
@@ -24,12 +24,12 @@ Private per-user `Settings.Secure` keys, shared with SystemUI:
 | `lineage_pulse_color` | `0xFFFFFF` | low 24 bits | low 24 bits |
 | `lineage_pulse_alpha` | 217 (85%) | clamp 26–255 | clamp 26–255 |
 | `lineage_pulse_height_dp` | 48 | clamp 8–96 | clamp, then snap to 8 + 4n |
-| `lineage_pulse_color_mode` | 0 (Solid) | only 1 is Match theme | 0 or 1, other values rejected |
+| `lineage_pulse_color_mode` | 0 (Solid) | 1 Match theme, 2 Rainbow gradient, 3 Rainbow cycle; other values Solid | 0-3, other values rejected |
 | `lineage_screen_off_animation` | 0 | only 1 is CRT | 0 or 1, other values rejected |
 
 Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The color row and picker show `#RRGGBB`; confirming the picker writes only the color, then re-reads it. The opacity slider covers 26–255 in steps of 1 and shows a rounded percentage of 255.
 
-Match theme draws white bars when the system dark theme is on and black bars when it is off. SystemUI reads the `UI_MODE_NIGHT` bit of the global configuration, so manual and scheduled dark theme both apply live; app content behind the bars is not sampled. A later color mode (for example Rainbow, issue #3) takes value 2 or higher; until then SystemUI and Settings both read such a value as Solid.
+Match theme draws white bars when the system dark theme is on and black bars when it is off. SystemUI reads the `UI_MODE_NIGHT` bit of the global configuration, so manual and scheduled dark theme both apply live; app content behind the bars is not sampled. Rainbow gradient gives each bar its own hue and drifts the hues one full turn every 12 s. Rainbow cycle colors every bar with one hue that cycles every 6 s. A later color mode takes value 4 or higher; until then SystemUI and Settings both read such a value as Solid.
 
 The default alpha of 217 matches the fixed alpha SystemUI used before the setting existed. CRT requires Always-on display; see `crt-screen-off-animation.md`.
 
@@ -155,6 +155,13 @@ All results below are from builds `20261006-145431`, `20261006-171251`, `2026100
 - **Pulse color** is disabled in Match theme and re-enables in Solid; **Pulse opacity** stays enabled in both while Pulse is on.
 - `adb shell cmd uimode night yes` and `no` recolor the bars live, and the dump keeps `captureEpoch` unchanged.
 - Scheduled dark theme recolors the bars at the transition.
+
+### Pending device verification for #3 (Rainbow modes)
+
+- Search for "rainbow" opens the Pulse page; the **Rainbow gradient** and **Rainbow cycle** rows check and write 2 and 3.
+- **Pulse color** is disabled in both Rainbow modes; **Pulse opacity** applies in both.
+- Switching between modes while Pulse shows keeps `captureEpoch` unchanged.
+- Hiding Pulse in a Rainbow mode (pause playback or lock) stops SystemUI frames: `dumpsys gfxinfo com.android.systemui` stops counting and the dump shows `colorAnimating=false`.
 
 Evidence for Tasks 7 and 9 is in `docs/superpowers/evidence/` (not tracked).
 

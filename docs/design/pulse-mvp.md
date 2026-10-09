@@ -110,9 +110,9 @@ attached
 
 Every false transition releases capture and removes window. Activation errors latch until eligibility resets, preventing retry loops.
 
-## Color modes (issue #4)
+## Color modes (issues #4 and #3)
 
-`lineage_pulse_color_mode` selects how `PulseController` colors the bars. `0` or any unknown value is Solid: the stored RGB. `1` is Match theme: white with the system dark theme on, black with it off. `lineage_pulse_alpha` applies in both modes.
+`lineage_pulse_color_mode` selects how `PulseController` colors the bars. `0` or any unknown value is Solid: the stored RGB. `1` is Match theme: white with the system dark theme on, black with it off. `2` is Rainbow gradient: each bar its own hue, spread over the wheel and drifting one full turn every 12 s. `3` is Rainbow cycle: one shared hue that cycles every 6 s. `lineage_pulse_alpha` applies in every mode.
 
 `PulseThemeRepository` maps the `UI_MODE_NIGHT` bit from the `@Main` `ConfigurationInteractor.configurationValues` flow, which emits the current configuration on collection and then every change. Night mode is appearance only: it is not an eligibility input, so a theme change calls `setColor` on the shown overlay and leaves `captureEpoch` unchanged. The dump adds `colorMode=`, `nightMode=` and `effectiveColor=#AARRGGBB`; `PulseLog` records `colorMode=` and `nightMode=` transitions.
 
@@ -121,6 +121,14 @@ adb shell settings put secure lineage_pulse_color_mode 1   # Match theme
 adb shell cmd uimode night yes                             # bars turn white
 adb shell cmd uimode night no                              # bars turn black
 adb shell settings delete secure lineage_pulse_color_mode  # back to Solid
+```
+
+The Rainbow modes are animated. `PulseView.onDraw` colors each bar from the frame's `drawingTime` through `PulseRainbow`, a 360-entry hue table built once, so drawing still allocates nothing. It then calls `postInvalidateOnAnimation()`, which redraws at the display refresh rate while the overlay is attached. Removing the window detaches the view, and a detached view gets no frames, so the color clock stops whenever Pulse hides. A mode change calls `setColorMode` on the shown overlay and leaves `captureEpoch` unchanged. The dump adds `colorAnimating=`, true only while the overlay is shown in a Rainbow mode.
+
+```bash
+adb shell settings put secure lineage_pulse_color_mode 2   # Rainbow gradient
+adb shell settings put secure lineage_pulse_color_mode 3   # Rainbow cycle
+adb shell dumpsys gfxinfo com.android.systemui framestats  # jank while Rainbow animates
 ```
 
 ## Controls
