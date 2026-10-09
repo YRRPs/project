@@ -174,6 +174,7 @@ mkdir -p "${output_dir}"
 readonly build_date=${YRRP_BUILD_DATE:-$(date +%Y%m%d-%H%M%S)}
 readonly signed_target_files="${output_dir}/lineage-23.2-salami-${build_date}-signed-target_files.zip"
 readonly signed_ota="${output_dir}/lineage-23.2-salami-${build_date}-signed-ota.zip"
+readonly signing_profile_dir="${output_dir}/profile/${build_date}"
 
 sign_args=(-o -d "${cert_dir}")
 for apk in "${release_apks[@]}"; do
@@ -188,7 +189,8 @@ for apex in "${apex_payload_keys[@]}"; do
 done
 
 printf 'signing-target-files\n' > "${status_file}"
-sign_target_files_apks \
+# The YRRPs build/make fork records where signing time goes; see docs/build/signing.md.
+YRRP_SIGNING_PROFILE_DIR="${signing_profile_dir}" sign_target_files_apks \
     "${sign_args[@]}" \
     "${target_files[0]}" \
     "${signed_target_files}"
@@ -280,3 +282,4 @@ printf 'Signed target files: %s\n' "${signed_target_files}"
 printf 'Signed OTA: %s\n' "${signed_ota}"
 [[ -z ${incremental_ota} ]] || printf 'Signed incremental OTA: %s\n' "${incremental_ota}"
 printf 'Checksums: %s\n' "${summary}"
+printf 'Signing profile: %s\n' "${signing_profile_dir}"
