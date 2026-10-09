@@ -211,6 +211,18 @@ def _check_no_yrrp_arrays(root: Path) -> CheckResult:
     )
 
 
+def _check_no_collapsing_groups(root: Path) -> CheckResult:
+    failures = []
+    for path, screen in _yrrp_screens(root):
+        for element in screen.iter():
+            if element.get(f"{SETTINGS}initialExpandedChildrenCount") is None:
+                continue
+            key = element.get(f"{ANDROID}key", "<no key>")
+            failures.append(f"{path.name}: collapsing group {key}")
+    detail = "; ".join(failures) if failures else "no collapsing groups"
+    return CheckResult("no-collapsing-groups", not failures, detail)
+
+
 def check_settings_tree(root: Path) -> list[CheckResult]:
     """Return every structural check in deterministic order."""
     return [
@@ -223,6 +235,7 @@ def check_settings_tree(root: Path) -> list[CheckResult]:
         _check_yrrp_prefixes(root),
         _check_no_list_preference(root),
         _check_no_yrrp_arrays(root),
+        _check_no_collapsing_groups(root),
     ]
 
 
