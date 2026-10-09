@@ -1,6 +1,6 @@
 # CRT screen-off animation
 
-> **Current architecture.** Since framework PRs #5 (`bcdaaafc`) and #6 (`df2a6179`), `DisplayPowerController` plays CRT as a `ColorFade` in `MODE_CRT`, and SystemUI runs no reveal for it. The SystemUI sections below describe the first version. For speed and timing, see `screen-off-animation-speed.md`.
+> **Current architecture.** Since framework PRs #5 (`bcdaaafc`) and #6 (`df2a6179`), `DisplayPowerController` plays CRT as a `ColorFade` in `MODE_CRT`, and SystemUI runs no reveal for it. The SystemUI sections below describe the first version. For speed and timing, see `screen-off-animation-speed.md`. The glitch effects (Tear, Corrupt, Signal loss) share these paths; see `glitch-screen-off.md`.
 
 Design: `docs/superpowers/specs/2026-10-06-crt-screen-off-animation-design.md`.
 Plan: `docs/superpowers/plans/2026-10-06-crt-screen-off-animation.md`.
