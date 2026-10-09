@@ -48,6 +48,8 @@ adb shell settings put secure lineage_screen_off_animation 0   # back to Stock
 - `GlitchSchedule` turns `(effect, level)` into a `GlitchFrame` of uniforms. Each frame depends
   only on the level, so a level always draws the same frame. Pixel sizes are authored for a
   720 px wide screen and scaled to the panel in the shader.
+- Glitch geometry follows the panel's natural (portrait) orientation, like CRT. In landscape,
+  Tear slices and Signal loss bands run along the panel's rows, so they look vertical.
 - SystemUI reports `CRT_OWNED_BY_DISPLAY` for every non-Stock value and runs no reveal of its own.
 
 ## Security
