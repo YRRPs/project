@@ -30,7 +30,12 @@ Do not copy the current layout or key table into this skill. The design document
 3. Write a contract diff for every setting: key, namespace, user scope, owner, consumer, default, read normalization, allowed writes, failure behavior, observability, and migration. Use private per-user `Settings.Secure` keys through `YrrpSettingsStore`; normalize reads without rewriting and constrain typed writes. Keep runtime-owner defaults and clamps identical. Use a new key for a new dimension.
 4. Write an impact matrix covering Settings, runtime owner, search, tests, observability, and device acceptance. If runtime behavior changes, invoke `rom-feature-observability` before implementation.
 5. Read `references/search-indexing.md` completely. Search the live current source for precedent; do not infer APIs or signatures. Apply every navigation and indexing requirement from the reference.
-6. Read `references/controller-pitfalls.md` completely. Select widgets: main switch for page ownership, switch for a boolean row, `SliderPreference` for a numeric range, YRRPs color preference/dialog for color or opacity, and a focused radio page for finite choices. Never add a YRRPs `ListPreference`. Keep dependent controls visible and update their enabled state live.
+6. Read `references/controller-pitfalls.md` completely. Select widgets: main switch for page ownership, switch for a boolean row, `SliderPreference` for a numeric range, the YRRPs color picker dialog for an RGB color, and `SelectorWithWidgetPreference` radio rows (inline under a category, or on a focused radio page) for finite choices. Never add a YRRPs `ListPreference`. Lay the page out like **System > Gestures > Navigation mode**:
+   - A setting that applies to only one choice sits behind that choice row's gear (`setExtraWidgetOnClickListener`), never in a separate row that is greyed out for the other choices.
+   - Settings that apply to every choice sit below the choices under a titled, non-searchable `PreferenceCategory`.
+   - Never collapse a group (`initialExpandedChildrenCount`); the structural checker rejects it.
+   - When a row's title does not say what it changes on screen, put a short explanation in its summary, and label slider ends with `setTextStart`/`setTextEnd`.
+   - Keep controls that depend on the main switch visible, and update their enabled state live.
 7. Implement a device-first vertical slice. Settings owns UI, validation, observation, and writes; it never restarts SystemUI or drives runtime lifecycle.
 8. Run the structural checker and quote its complete output in review evidence:
 

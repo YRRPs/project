@@ -231,6 +231,24 @@ class CheckYrrpSettingsTest(unittest.TestCase):
         self.assertFalse(result.passed)
         self.assertIn("yrrp_arrays.xml", result.detail)
 
+    def test_collapsing_group_is_rejected(self) -> None:
+        path = self.root / "res/xml/yrrp_feature_settings.xml"
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "</PreferenceScreen>",
+                '<PreferenceCategory android:key="yrrp_bad_group" '
+                'settings:initialExpandedChildrenCount="0" settings:searchable="false"/>'
+                "</PreferenceScreen>",
+            ),
+            encoding="utf-8",
+        )
+
+        result = self.result_named("no-collapsing-groups")
+
+        self.assertFalse(result.passed)
+        self.assertIn("yrrp_feature_settings.xml", result.detail)
+        self.assertIn("yrrp_bad_group", result.detail)
+
     def test_main_returns_zero_and_prints_summary_for_valid_tree(self) -> None:
         output = io.StringIO()
         with redirect_stdout(output):
@@ -301,11 +319,12 @@ class CheckYrrpSettingsTest(unittest.TestCase):
                 "yrrp-prefixes",
                 "no-list-preference",
                 "no-yrrp-arrays",
+                "no-collapsing-groups",
             ],
             [result.name for result in results],
         )
         self.assertEqual(3, sum(not result.passed for result in results))
-        self.assertTrue(output.endswith("SUMMARY 6 passed, 3 failed"), output)
+        self.assertTrue(output.endswith("SUMMARY 7 passed, 3 failed"), output)
 
     def result_named(self, name: str):
         return next(
