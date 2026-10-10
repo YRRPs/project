@@ -35,6 +35,6 @@ Before a path-scoped `--force-sync`, prove unique work is published, create and 
 
 Local checks document what they cannot prove. Proof plans name claim, trigger/setup, observable evidence, expected outcome, cheapest proving layer, limitations, post-release device check, and restoration. Device-only boundaries remain unproven until observed on the target device. Skip TalkBack and accessibility acceptance for this personal ROM.
 
-Receipts live at ignored `.claude/releases/<build-id>.md`; they preserve exact SHAs, approval, artifacts, verification, and `PROVEN`/`FAILED`/`UNPROVEN` claim verdicts. `/.claude/build-campaigns/` remains ignored only as a legacy read-only archive; active tooling never reads or writes it.
+Each release covers one channel. Receipts live at ignored `.claude/releases/<build-id>.md` for `vanilla` and `.claude/releases/<type>-<build-id>.md` for other types; they preserve exact SHAs, approval, artifacts, verification, and `PROVEN`/`FAILED`/`UNPROVEN` claim verdicts. `/.claude/build-campaigns/` remains ignored only as a legacy read-only archive; active tooling never reads or writes it.
 
 Durable state is published source, manifests, keys/backups, signed target-files, release metadata, and receipts. Main checkout, `out/`, ccache, and extraction directories are disposable only after required evidence is backed up.

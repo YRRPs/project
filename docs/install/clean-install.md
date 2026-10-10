@@ -6,7 +6,7 @@ Quick reference for clean-installing personal signed LineageOS 23.2 build on `sa
 
 ## Files
 
-Use artifacts from same signed build:
+Use artifacts from same signed build. The examples below show a `vanilla` build. `gapps` file names insert `-gapps` after `salami`, for example `lineage-23.2-salami-gapps-20261003-121141-signed-ota.zip`. See [3. Choose your type](#3-choose-your-type).
 
 ```text
 lineage-23.2-salami-20261003-121141-signed-ota.zip
@@ -64,7 +64,20 @@ fastboot flashing unlock
 
 Confirm unlock on device. Device erases all data. Re-enable USB debugging afterward if needed.
 
-## 3. Flash matching signed images
+## 3. Choose your type
+
+Pick one build type before you flash. Every file in the following steps must come from the same type and build.
+
+| Type | Contents | Install directory |
+|---|---|---|
+| `vanilla` | No Google apps | `https://ota.yimura.dev/install/salami/<build_id>/` |
+| `gapps` | MindTheGapps built in | `https://ota.yimura.dev/install/salami/gapps/<build_id>/` |
+
+Each install directory holds the full OTA, the six install images, `SHA256SUMS.txt`, and `release.json`. The device's Updater follows the type you install. To change type later, see [`gapps.md`](gapps.md#switch-types).
+
+Do not sideload a separate GApps package. It does not survive incremental OTAs.
+
+## 4. Flash matching signed images
 
 From `install-images-20261003-121141/`:
 
@@ -80,13 +93,13 @@ fastboot flash recovery recovery.img
 
 Use these signed images, not images from earlier test-key build.
 
-## 4. Boot recovery
+## 5. Boot recovery
 
 Choose **Recovery** from bootloader menu. Confirm LineageOS recovery appears.
 
 If another recovery appears, stop and reflash matching `recovery.img`.
 
-## 5. Format data
+## 6. Format data
 
 In recovery:
 
@@ -95,7 +108,7 @@ In recovery:
 3. Confirm formatting.
 4. Return to main menu.
 
-## 6. Sideload signed ROM
+## 7. Sideload signed ROM
 
 In recovery, select **Apply update → Apply from ADB**.
 
@@ -109,19 +122,13 @@ Matching recovery trusts this personal release key. If ROM signature verificatio
 
 `adb sideload` may stop near 47% while recovery reports success. Recovery result is authoritative.
 
-## 7. Optional: install Google Apps
-
-If Google Apps are wanted, install them **now**, before first Android boot. Follow [`gapps.md`](gapps.md).
-
-Do not format data again between ROM and Google Apps.
-
 ## 8. First boot
 
-If no add-ons remain, select **Reboot system now**. First boot may take up to 15 minutes.
+Select **Reboot system now**. First boot may take up to 15 minutes.
 
 ## Future updates
 
-Future full OTAs signed with same keys can update this installation without wiping. Preserve release keys and signed target-files archives.
+Future full and incremental OTAs of the same type, signed with same keys, update this installation without wiping. Preserve release keys and signed target-files archives.
 
 ## Sources
 
