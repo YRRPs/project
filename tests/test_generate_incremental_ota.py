@@ -63,7 +63,16 @@ class GenerateIncrementalOtaTest(unittest.TestCase):
     def write_release_json(self, digest: str) -> None:
         self.release_json.write_text(json.dumps({"schema": 1, "target_files": {"sha256": digest}}))
 
-    def run_script(self, **overrides: str) -> subprocess.CompletedProcess[str]:
+    def stage_channel_target_files(self, build_type: str) -> None:
+        _, source = create_fixture(
+            self.signed, build_id=SOURCE_BUILD_ID, target_timestamp=int(SOURCE_INCREMENTAL), build_type=build_type
+        )
+        self.write_release_json(hashlib.sha256(source.read_bytes()).hexdigest())
+        create_fixture(self.signed, build_type=build_type)
+
+    def run_script(
+        self, channel: str | None = None, env_extra: dict[str, str] | None = None, **overrides: str
+    ) -> subprocess.CompletedProcess[str]:
         inherited = {k: v for k, v in os.environ.items() if k not in {"ANDROID_PW_FILE", "YRRP_BUILD_LOCK_HELD"}}
         env = inherited | {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
@@ -78,9 +87,10 @@ class GenerateIncrementalOtaTest(unittest.TestCase):
             "FAKE_POST_BUILD": POST_BUILD,
             "FAKE_POST_TIMESTAMP": "4070908800",
             "FAKE_PRE_INCREMENTAL": SOURCE_INCREMENTAL,
-        } | overrides
+        } | overrides | (env_extra or {})
+        channel_args = ["--channel", channel] if channel else []
         return subprocess.run(
-            [str(SCRIPT), "--source-build", SOURCE_BUILD_ID, "--target-build", BUILD_ID],
+            [str(SCRIPT), "--source-build", SOURCE_BUILD_ID, "--target-build", BUILD_ID, *channel_args],
             capture_output=True,
             text=True,
             env=env,
@@ -143,6 +153,48 @@ class GenerateIncrementalOtaTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("inherited", (self.root / "ota-passwords.txt").read_text())
         self.assertTrue(inherited.exists())
+
+    def test_gapps_channel_uses_gapps_label_and_install_path(self) -> None:
+        labels = {
+            "io.yrrp.ota.channel.salami.gapps.build-id": SOURCE_BUILD_ID,
+            "io.yrrp.ota.channel.salami.vanilla.build-id": "20200101-000000",
+        }
+        exec_log = self.root / "exec.log"
+        self.stage_channel_target_files("gapps")
+        result = self.run_script(
+            channel="salami/gapps",
+            env_extra={"FAKE_LIVE_LABELS": json.dumps(labels), "FAKE_EXEC_LOG": str(exec_log)},
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(f"/srv/ota/install/salami/gapps/{SOURCE_BUILD_ID}/release.json", exec_log.read_text())
+        name = f"lineage-23.2-salami-gapps-{SOURCE_BUILD_ID}-to-{BUILD_ID}-signed-incremental-ota.zip"
+        self.assertTrue((self.signed / name).exists())
+
+    def test_rejects_source_that_is_not_the_channels_live_build(self) -> None:
+        labels = {
+            "io.yrrp.ota.channel.salami.gapps.build-id": "20200101-000000",
+            "io.yrrp.ota.channel.salami.vanilla.build-id": SOURCE_BUILD_ID,
+        }
+        self.stage_channel_target_files("gapps")
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_LIVE_LABELS": json.dumps(labels)})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("is not the live salami/gapps release", result.stderr)
+
+    def test_channel_without_live_build_reports_none(self) -> None:
+        labels = {"io.yrrp.ota.channel.salami.vanilla.build-id": SOURCE_BUILD_ID}
+        self.stage_channel_target_files("gapps")
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_LIVE_LABELS": json.dumps(labels)})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("is not the live salami/gapps release (none)", result.stderr)
+
+    def test_unreadable_live_labels_fail(self) -> None:
+        result = self.run_script(env_extra={"FAKE_LIVE_LABELS": "not json"})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("cannot read live channel labels", result.stderr)
+
+    def test_rejects_unknown_channel(self) -> None:
+        result = self.run_script(channel="salami/nonsense")
+        self.assertEqual(64, result.returncode)
 
     def test_rejects_invalid_build_ids(self) -> None:
         result = subprocess.run(
