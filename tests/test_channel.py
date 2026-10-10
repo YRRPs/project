@@ -141,6 +141,12 @@ class ChannelTest(unittest.TestCase):
             channel = Channel(device, channel_type)
             self.assertEqual({channel: BUILD}, live_channels({channel.label: BUILD}))
 
+    def test_non_string_inputs_raise_value_error(self) -> None:
+        with self.assertRaises(ValueError):
+            channel_module.require_build_id(5, "build ID")  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            GAPPS.updates_incremental_path(7)  # type: ignore[arg-type]
+
     def test_allowlist_validation_rejects_unsafe_values(self) -> None:
         for bad in ({("salami", "gap.ps")}, {("Salami", "gapps")}, {("salami", "")}, {("sal/ami", "x")}):
             with self.subTest(bad=bad):
@@ -175,6 +181,24 @@ class ChannelCliTest(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual(expected, result.stdout.strip(), args)
 
+    def test_prints_vanilla_names_and_paths(self) -> None:
+        cases = {
+            ("type",): "vanilla",
+            ("device",): "salami",
+            ("label",): VANILLA.label,
+            ("target-files", BUILD): VANILLA.target_files_name(BUILD),
+            ("ota", BUILD): VANILLA.full_ota_name(BUILD),
+            ("incremental", SOURCE, BUILD): VANILLA.incremental_ota_name(SOURCE, BUILD),
+            ("checksums", BUILD): VANILLA.checksums_name(BUILD),
+            ("install-dir", BUILD): VANILLA.install_dir(BUILD),
+            ("updates-full",): VANILLA.updates_full_path,
+            ("updates-incremental", "7"): VANILLA.updates_incremental_path("7"),
+        }
+        for args, expected in cases.items():
+            result = channel_cli("--channel", "salami/vanilla", *args)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(expected, result.stdout.strip(), args)
+
     def test_rejects_unknown_channel(self) -> None:
         result = channel_cli("--channel", "salami/kernelsu", "type")
         self.assertEqual(2, result.returncode)
@@ -183,6 +207,10 @@ class ChannelCliTest(unittest.TestCase):
     def test_rejects_bad_values_without_traceback(self) -> None:
         bad_calls = (
             ("ota", "latest"),
+            ("target-files", "latest"),
+            ("checksums", "latest"),
+            ("install-dir", "../x"),
+            ("incremental", "latest", BUILD),
             ("incremental", SOURCE, "../x"),
             ("updates-incremental", "../7"),
             ("ota",),
@@ -202,7 +230,8 @@ class ChannelCliTest(unittest.TestCase):
         self.assertEqual(BUILD, channel_cli("--channel", "salami/gapps", "live-build", labels).stdout.strip())
 
     def test_live_build_rejects_malformed_or_partial_labels(self) -> None:
-        for labels in ("not json", "[]", json.dumps({"io.yrrp.ota.device": "salami"})):
+        non_string_build = json.dumps({GAPPS.label: 5})
+        for labels in ("not json", "[]", json.dumps({"io.yrrp.ota.device": "salami"}), non_string_build):
             result = channel_cli("--channel", "salami/vanilla", "live-build", labels)
             self.assertEqual(2, result.returncode, labels)
             self.assertIn("ota-channel:", result.stderr, labels)

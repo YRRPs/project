@@ -28,7 +28,7 @@ validate_allowlist(ALLOWED)
 
 
 def require_build_id(value: str, what: str) -> str:
-    if not BUILD_ID_PATTERN.fullmatch(value):
+    if not isinstance(value, str) or not BUILD_ID_PATTERN.fullmatch(value):
         raise ValueError(f"{what} has invalid build ID: {value!r}")
     return value
 
@@ -95,7 +95,7 @@ class Channel:
 
     def updates_incremental_path(self, source_incremental: str) -> str:
         """source_incremental is the source build's numeric ro.build.version.incremental."""
-        if not INCREMENTAL_PATTERN.fullmatch(source_incremental):
+        if not isinstance(source_incremental, str) or not INCREMENTAL_PATTERN.fullmatch(source_incremental):
             raise ValueError(f"invalid source incremental: {source_incremental!r}")
         return f"{self.updates_incremental_dir}/{source_incremental}.json"
 
