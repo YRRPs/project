@@ -433,7 +433,8 @@ class SignLineageBuildTest(unittest.TestCase):
         self.assertIn(["pull", "ghcr.io/yrrp/ota:main"], calls)
         grep = [call for call in calls if call[:1] == ["run"]]
         self.assertEqual(1, len(grep), calls)
-        self.assertIn("location = /updates/salami/gapps.json {", grep[0])
+        self.assertEqual(["--network", "none"], grep[0][2:4], grep[0])
+        self.assertIn("^[[:space:]]*location = /updates/salami/gapps\\.json \\{", grep[0])
         self.assertEqual("gapps", self.build_type_log.read_text().strip())
 
     def test_gapps_refused_before_build_when_base_image_pull_fails(self) -> None:
@@ -447,7 +448,22 @@ class SignLineageBuildTest(unittest.TestCase):
         result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_RUN_EXIT": "125"})
         self.assertNotEqual(0, result.returncode)
         self.assertIn("cannot read nginx config of base OTA image ghcr.io/yrrp/ota:main", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
         self.assertFalse(self.build_type_log.exists())
+
+    def test_gapps_refused_when_base_image_route_is_only_commented_out(self) -> None:
+        conf = "location = /updates/salami.json {\n# location = /updates/salami/gapps.json {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not serve /updates/salami/gapps.json", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
+        self.assertFalse(self.build_type_log.exists())
+
+    def test_gapps_route_check_does_not_treat_dot_as_wildcard(self) -> None:
+        conf = "location = /updates/salami/gappsXjson {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not serve /updates/salami/gapps.json", result.stderr)
 
     def test_vanilla_skips_base_image_route_check(self) -> None:
         result = self.run_script(env_extra={"FAKE_BASE_NGINX_CONF": ""})

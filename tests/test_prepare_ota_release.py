@@ -320,6 +320,18 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "salami/vanilla .*contains Phonesky"):
             self.prepare("system-out", ota=ota, target_files=target)
 
+    def test_gapps_matcher_ignores_near_miss_names(self) -> None:
+        near_misses = [
+            "PRODUCT/priv-app/GmsCoreFoo/x.apk",
+            "PRODUCT/priv-app/GmsCore/oat/arm64/GmsCore.odex",
+            "PRODUCT/priv-app/GmsCore/",
+            "PRODUCT/app/GmsCore/GmsCore.apk",
+        ]
+        for name in near_misses:
+            with self.subTest(name=name):
+                self.assertEqual(set(), self.module.present_gapps_components([name]))
+        self.assertEqual({"GmsCore"}, self.module.present_gapps_components(["SYSTEM/priv-app/GmsCore/GmsCore.apk"]))
+
     def test_vanilla_release_without_gapps_apps_passes(self) -> None:
         output = self.prepare("vanilla-out")
         self.assertTrue((output / "rootfs/updates/salami.json").is_file())

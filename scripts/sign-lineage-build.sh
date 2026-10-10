@@ -108,14 +108,18 @@ resolve_incremental_source() {
 
 # A non-vanilla release built against a base image without its routes would only fail at deploy, hours later.
 require_base_image_serves_channel() {
-    local route grep_status=0
+    local route route_pattern grep_status=0
     route=$(channel_field updates-full) || return 1
+    # The channel allowlist limits routes to [a-z0-9] tokens, '/', and '.', so escaping dots
+    # escapes every ERE metacharacter a route can hold today; widen this if the allowlist grows.
+    route_pattern=${route//./\\.}
     docker pull "${OTA_BASE_IMAGE_REF}" >&2 || {
         printf 'cannot pull base OTA image %s\n' "${OTA_BASE_IMAGE_REF}" >&2
         return 1
     }
-    docker run --rm --entrypoint grep "${OTA_BASE_IMAGE_REF}" \
-        -F -q -- "location = /${route} {" /etc/nginx/nginx.conf || grep_status=$?
+    # Anchored so a commented-out location cannot count; no network for a throwaway container.
+    docker run --rm --network none --entrypoint grep "${OTA_BASE_IMAGE_REF}" \
+        -E -q -- "^[[:space:]]*location = /${route_pattern} \\{" /etc/nginx/nginx.conf || grep_status=$?
     case ${grep_status} in
         0) return 0 ;;
         1) printf 'base OTA image %s does not serve /%s; publish ota_server first\n' \
