@@ -18,6 +18,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from yrrp_ota.channel import Channel
 from yrrp_release.receipt import render_receipt, write_receipt
 
 BUILD_ID = "20261008-123456"
@@ -29,12 +30,19 @@ MANIFEST_XML = '<manifest><project name="YRRPs/android_vendor_extra" path="vendo
 MANIFEST_DIGEST = hashlib.sha256(MANIFEST_XML.encode()).hexdigest()
 ROOMSERVICE_XML = '<manifest><project name="LineageOS/android_device_oneplus_salami" path="device/oneplus/salami" /></manifest>\n'
 ROOMSERVICE_DIGEST = hashlib.sha256(ROOMSERVICE_XML.encode()).hexdigest()
+SOURCE_BUILD_ID = "20261001-123456"
 
 
-def accepted_incremental_release() -> dict:
+def accepted_incremental_release(channel: str = "salami/vanilla") -> dict:
+    parsed = Channel.parse(channel)
+    target_files = parsed.target_files_name(BUILD_ID)
+    full_ota = parsed.full_ota_name(BUILD_ID)
+    incremental = parsed.incremental_ota_name(SOURCE_BUILD_ID, BUILD_ID)
+    install = f"https://ota.yimura.dev/{parsed.install_dir(BUILD_ID)}"
     return {
         "release_identity": {
             "build_id": BUILD_ID,
+            "channel": channel,
             "completion": "2026-10-08T14:00:00Z",
             "overall_result": "SUCCESS",
             "approval": "Build and release",
@@ -75,32 +83,32 @@ def accepted_incremental_release() -> dict:
             "signing_verified": True,
             "evidence": "OTA and target-files signatures verified.",
             "checksum_verification_output": [
-                f"lineage-23.2-salami-{BUILD_ID}-signed-target_files.zip: OK",
-                f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip: OK",
-                f"lineage-23.2-salami-20261001-123456-to-{BUILD_ID}-signed-incremental-ota.zip: OK",
+                f"{target_files}: OK",
+                f"{full_ota}: OK",
+                f"{incremental}: OK",
             ],
         },
         "artifacts": [
             {
-                "name": f"lineage-23.2-salami-{BUILD_ID}-signed-target_files.zip",
+                "name": target_files,
                 "size": 223456789,
                 "sha256": DIGEST_A,
                 "checksum_verified": True,
             },
             {
-                "name": f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip",
+                "name": full_ota,
                 "size": 123456789,
                 "sha256": DIGEST_B,
                 "checksum_verified": True,
             },
             {
-                "name": f"lineage-23.2-salami-{BUILD_ID}-SHA256SUMS.txt",
+                "name": parsed.checksums_name(BUILD_ID),
                 "size": 512,
                 "sha256": "c" * 64,
                 "checksum_verified": True,
             },
             {
-                "name": f"lineage-23.2-salami-20261001-123456-to-{BUILD_ID}-signed-incremental-ota.zip",
+                "name": incremental,
                 "size": 23456789,
                 "sha256": "d" * 64,
                 "checksum_verified": True,
@@ -114,6 +122,7 @@ def accepted_incremental_release() -> dict:
                 "build_id_label": BUILD_ID,
                 "image_label": "true",
             },
+            "carried_channels": [],
             "checks": [
                 {
                     "name": "healthz",
@@ -123,39 +132,39 @@ def accepted_incremental_release() -> dict:
                 },
                 {
                     "name": "updates metadata",
-                    "url": "https://ota.yimura.dev/updates/salami.json",
+                    "url": f"https://ota.yimura.dev/{parsed.updates_full_path}",
                     "status": 200,
                     "build_id": BUILD_ID,
                     "evidence": "Metadata identifies the installed build.",
                 },
                 {
                     "name": "stale fallback",
-                    "url": "https://ota.yimura.dev/updates/salami/1.json",
+                    "url": f"https://ota.yimura.dev/{parsed.updates_incremental_path('1')}",
                     "status": 200,
                     "redirected": False,
-                    "artifact_name": f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip",
+                    "artifact_name": full_ota,
                     "build_id": BUILD_ID,
                     "evidence": "Legacy route returned the current full artifact directly.",
                 },
                 {
                     "name": "install listing",
-                    "url": f"https://ota.yimura.dev/install/salami/{BUILD_ID}/",
+                    "url": f"{install}/",
                     "status": 200,
                     "build_id": BUILD_ID,
                     "evidence": "Install listing returned all release files.",
                 },
                 {
                     "name": "full OTA range",
-                    "url": f"https://ota.yimura.dev/install/salami/{BUILD_ID}/lineage-23.2-salami-{BUILD_ID}-signed-ota.zip",
+                    "url": f"{install}/{full_ota}",
                     "status": 206,
-                    "artifact_name": f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip",
+                    "artifact_name": full_ota,
                     "evidence": "Byte range returned partial content.",
                 },
                 {
                     "name": "incremental OTA range",
-                    "url": f"https://ota.yimura.dev/install/salami/{BUILD_ID}/lineage-23.2-salami-20261001-123456-to-{BUILD_ID}-signed-incremental-ota.zip",
+                    "url": f"{install}/{incremental}",
                     "status": 206,
-                    "artifact_name": f"lineage-23.2-salami-20261001-123456-to-{BUILD_ID}-signed-incremental-ota.zip",
+                    "artifact_name": incremental,
                     "evidence": "Incremental byte range returned partial content.",
                 },
             ],
@@ -741,6 +750,97 @@ class ReceiptRenderingTest(unittest.TestCase):
         self.assertNotIn("Missing proof", rendered)
 
 
+    def test_vanilla_fixture_keeps_legacy_names_and_routes(self) -> None:
+        document = accepted_incremental_release()
+        names = {artifact["name"] for artifact in document["artifacts"]}
+        self.assertIn(f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip", names)
+        urls = {check["url"] for check in document["deployment_public_checks"]["checks"]}
+        self.assertIn("https://ota.yimura.dev/updates/salami.json", urls)
+        self.assertIn("https://ota.yimura.dev/updates/salami/1.json", urls)
+        self.assertIn(f"https://ota.yimura.dev/install/salami/{BUILD_ID}/", urls)
+
+    def test_gapps_success_receipt_uses_gapps_names_and_routes(self) -> None:
+        rendered = render_receipt(accepted_incremental_release(channel="salami/gapps"))
+        self.assertIn("- Channel: salami/gapps", rendered)
+        self.assertIn(f"lineage-23.2-salami-gapps-{BUILD_ID}-signed-ota.zip", rendered)
+        self.assertIn("/updates/salami/gapps.json", rendered)
+        self.assertIn("/updates/salami/gapps/1.json", rendered)
+        self.assertIn(f"/install/salami/gapps/{BUILD_ID}/", rendered)
+
+    def test_gapps_success_rejects_vanilla_names_and_routes(self) -> None:
+        vanilla = accepted_incremental_release()
+        mutations = (
+            ("artifacts", "artifact"),
+            ("deployment_public_checks", "public check"),
+        )
+        for section, message in mutations:
+            document = accepted_incremental_release(channel="salami/gapps")
+            document[section] = copy.deepcopy(vanilla[section])
+            if section == "artifacts":
+                document["build_and_signing"] = copy.deepcopy(vanilla["build_and_signing"])
+            with self.subTest(section=section), self.assertRaisesRegex(ValueError, message):
+                render_receipt(document)
+
+    def test_vanilla_success_rejects_gapps_incremental_name(self) -> None:
+        document = accepted_incremental_release()
+        gapps_name = Channel.parse("salami/gapps").incremental_ota_name(SOURCE_BUILD_ID, BUILD_ID)
+        document["artifacts"][-1]["name"] = gapps_name
+        document["build_and_signing"]["checksum_verification_output"][-1] = f"{gapps_name}: OK"
+        with self.assertRaisesRegex(ValueError, "incremental"):
+            render_receipt(document)
+
+    def test_missing_channel_defaults_to_vanilla(self) -> None:
+        document = accepted_incremental_release()
+        del document["release_identity"]["channel"]
+        del document["deployment_public_checks"]["carried_channels"]
+        self.assertIn("- Channel: salami/vanilla", render_receipt(document))
+
+    def test_rejects_invalid_release_channel(self) -> None:
+        for channel in ("salami/other", "salami", "", 7):
+            document = accepted_incremental_release()
+            document["release_identity"]["channel"] = channel
+            with self.subTest(channel=channel), self.assertRaises((TypeError, ValueError)):
+                render_receipt(document)
+
+    def test_records_carried_channels(self) -> None:
+        document = accepted_incremental_release(channel="salami/gapps")
+        document["deployment_public_checks"]["carried_channels"] = [
+            {"channel": "salami/vanilla", "build_id": "20261007-120000", "routes_unchanged": True}
+        ]
+        rendered = render_receipt(document)
+        self.assertIn("- Carried channels:", rendered)
+        self.assertIn("  - salami/vanilla: 20261007-120000, routes unchanged: True", rendered)
+
+    def test_carried_channel_with_changed_routes_is_rejected(self) -> None:
+        document = accepted_incremental_release(channel="salami/gapps")
+        document["deployment_public_checks"]["carried_channels"] = [
+            {"channel": "salami/vanilla", "build_id": "20261007-120000", "routes_unchanged": False}
+        ]
+        with self.assertRaisesRegex(ValueError, "carried channel.*routes changed"):
+            render_receipt(document)
+        document["release_identity"]["overall_result"] = "FAILED"
+        self.assertIn("routes unchanged: False", render_receipt(document))
+
+    def test_rejects_malformed_carried_channels(self) -> None:
+        carried = {"channel": "salami/vanilla", "build_id": "20261007-120000", "routes_unchanged": True}
+        mutations = (
+            ("not a list", {"channel": "salami/vanilla"}),
+            ("released channel", [dict(carried, channel="salami/gapps")]),
+            ("unknown channel", [dict(carried, channel="salami/other")]),
+            ("duplicate", [carried, dict(carried)]),
+            ("bad build ID", [dict(carried, build_id="2026")]),
+            ("non-boolean", [dict(carried, routes_unchanged="yes")]),
+            ("missing key", [{"channel": "salami/vanilla", "build_id": "20261007-120000"}]),
+            ("unknown key", [dict(carried, extra=1)]),
+        )
+        for label, value in mutations:
+            document = accepted_incremental_release(channel="salami/gapps")
+            document["release_identity"]["overall_result"] = "FAILED"
+            document["deployment_public_checks"]["carried_channels"] = value
+            with self.subTest(label=label), self.assertRaises((TypeError, ValueError)):
+                render_receipt(document)
+
+
 class ReceiptPersistenceTest(unittest.TestCase):
     def test_public_writer_has_no_root_or_output_override(self) -> None:
         with self.assertRaises(TypeError):
@@ -764,6 +864,21 @@ class ReceiptPersistenceTest(unittest.TestCase):
                 with patch("yrrp_release.receipt.PROJECT_ROOT", Path(directory)):
                     with self.assertRaisesRegex(ValueError, "build ID"):
                         write_receipt(document)
+
+    def test_gapps_receipt_path_carries_channel_type(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with patch("yrrp_release.receipt.PROJECT_ROOT", root):
+                vanilla = write_receipt(accepted_incremental_release())
+                gapps = write_receipt(accepted_incremental_release(channel="salami/gapps"))
+                with self.assertRaisesRegex(FileExistsError, "already exists"):
+                    write_receipt(accepted_incremental_release(channel="salami/gapps"))
+            releases = root / ".claude" / "releases"
+            self.assertEqual(releases / f"{BUILD_ID}.md", vanilla)
+            self.assertEqual(releases / f"gapps-{BUILD_ID}.md", gapps)
+            self.assertIn("salami/gapps", gapps.read_text())
+            self.assertIn("/updates/salami/gapps.json", gapps.read_text())
+            self.assertEqual(["20261008-123456.md", "gapps-20261008-123456.md"], sorted(os.listdir(releases)))
 
     def test_refuses_overwrite_without_changing_existing_receipt(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
