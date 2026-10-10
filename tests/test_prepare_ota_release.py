@@ -7,6 +7,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from tests.fixtures.make_release_fixture import (
@@ -20,6 +21,7 @@ from tests.fixtures.make_release_fixture import (
     create_incremental_fixture,
     write_incremental_meta,
 )
+from yrrp_ota.channel import GAPPS, VANILLA, Channel  # fixture import puts scripts/ on sys.path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts/prepare-ota-release.py"
@@ -199,14 +201,12 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "numeric"):
             self.prepare(incremental=incremental)
 
-    def ota_named_for(self, channel) -> Path:
+    def ota_named_for(self, channel: Channel) -> Path:
         renamed = self.ota.with_name(channel.full_ota_name(BUILD_ID))
         shutil.copyfile(self.ota, renamed)
         return renamed
 
     def test_gapps_channel_writes_gapps_tree_and_schema_3(self) -> None:
-        from yrrp_ota.channel import GAPPS
-
         ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
         output = self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
         rootfs = output / "rootfs"
@@ -225,8 +225,6 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         self.assertIn(f"/install/salami/gapps/{BUILD_ID}/", entry[0]["files"][0]["url"])
 
     def test_gapps_incremental_lands_under_gapps_updates(self) -> None:
-        from yrrp_ota.channel import GAPPS
-
         ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
         name = GAPPS.incremental_ota_name(SOURCE_BUILD_ID, BUILD_ID)
         incremental = create_incremental_fixture(self.root / "gapps-input", name=name)
@@ -238,8 +236,6 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         self.assertFalse((output / f"rootfs/updates/salami/{SOURCE_INCREMENTAL}.json").exists())
 
     def test_build_type_must_match_channel(self) -> None:
-        from yrrp_ota.channel import GAPPS
-
         with self.assertRaisesRegex(ValueError, "ro.yrrp.build.type"):
             self.prepare("mismatch", ota=self.ota_named_for(GAPPS), channel=GAPPS)
 
@@ -259,6 +255,41 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         self.assertEqual("salami/vanilla", release["channel"])
         self.assertTrue((output / "rootfs/updates/salami.json").is_file())
 
+
+    def target_with_device(self, device: str) -> Path:
+        """Copy the vanilla target-files with only ro.lineage.device changed."""
+        edited = self.root / "edited" / self.target.name
+        edited.parent.mkdir()
+        with zipfile.ZipFile(self.target) as source, zipfile.ZipFile(edited, "w") as target:
+            for info in source.infolist():
+                data = source.read(info)
+                if info.filename == "PRODUCT/etc/build.prop":
+                    data = data.replace(b"ro.lineage.device=salami", f"ro.lineage.device={device}".encode())
+                target.writestr(info, data)
+        return edited
+
+    def test_rejects_target_files_for_other_device(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ro.lineage.device must equal salami"):
+            self.prepare("other-device", target_files=self.target_with_device("other"))
+
+    def assert_planted_file_rejected(self, output: Path, channel: Channel, planted: str) -> None:
+        check = self.module.check_release_tree
+        ota_name = channel.full_ota_name(BUILD_ID)
+        check(output, BUILD_ID, ota_name, None, channel)
+        path = output / "rootfs" / planted
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]\n")
+        with self.assertRaisesRegex(ValueError, "release tree differs"):
+            check(output, BUILD_ID, ota_name, None, channel)
+
+    def test_gapps_tree_rejects_vanilla_updates_file(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        output = self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+        self.assert_planted_file_rejected(output, GAPPS, VANILLA.updates_full_path)
+
+    def test_vanilla_tree_rejects_gapps_updates_file(self) -> None:
+        output = self.prepare("vanilla-out")
+        self.assert_planted_file_rejected(output, VANILLA, GAPPS.updates_full_path)
 
 if __name__ == "__main__":
     unittest.main()
