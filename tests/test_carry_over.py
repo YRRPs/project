@@ -358,6 +358,61 @@ class CarryOverTest(unittest.TestCase):
         self.assertEqual(0, verify.returncode, verify.stderr)
         self.assertIn("carried routes unchanged: 2", verify.stderr)
 
+    def test_verify_routes_reports_each_unchanged_route_in_order(self) -> None:
+        write_release(self.live, VANILLA, VANILLA_BUILD, incremental="42")
+        result = self.run_carry({VANILLA.label: VANILLA_BUILD})
+        self.env["FAKE_CANDIDATE_ROOT"] = str(self.context / "rootfs")
+        lines: list[str] = []
+        verify_routes("yrrp-ota-server", result.snapshot, env=self.env, report=lines.append)
+        self.assertEqual(
+            [
+                f"carried route /{VANILLA.updates_full_path} unchanged",
+                f"carried route /{VANILLA.updates_incremental_path('42')} unchanged",
+            ],
+            lines,
+        )
+
+    def cli_carry_then_verify(self, change_route: str | None = None) -> subprocess.CompletedProcess[str]:
+        write_release(self.live, VANILLA, VANILLA_BUILD, incremental="42")
+        self.env["FAKE_LIVE_LABELS"] = json.dumps({VANILLA.label: VANILLA_BUILD})
+        self.context.mkdir()
+        carry = subprocess.run(
+            [sys.executable, str(CLI), "carry", "--container", "c", "--channel", "salami/gapps", "--context", str(self.context)],
+            capture_output=True, text=True, env=self.env,
+        )
+        self.assertEqual(0, carry.returncode, carry.stderr)
+        if change_route:
+            (self.context / "rootfs" / change_route).write_text("[]\n")
+        self.env["FAKE_CANDIDATE_ROOT"] = str(self.context / "rootfs")
+        return subprocess.run(
+            [sys.executable, str(CLI), "verify-routes", "--container", "c", "--snapshot", str(self.context / "carried.json")],
+            capture_output=True, text=True, env=self.env,
+        )
+
+    def test_cli_verify_routes_logs_each_route_and_the_count(self) -> None:
+        verify = self.cli_carry_then_verify()
+        self.assertEqual(0, verify.returncode, verify.stderr)
+        self.assertEqual(
+            [
+                f"carried route /{VANILLA.updates_full_path} unchanged",
+                f"carried route /{VANILLA.updates_incremental_path('42')} unchanged",
+                "carried routes unchanged: 2",
+            ],
+            verify.stderr.splitlines(),
+        )
+
+    def test_cli_verify_routes_logs_the_changed_route(self) -> None:
+        changed = VANILLA.updates_incremental_path("42")
+        verify = self.cli_carry_then_verify(change_route=changed)
+        self.assertEqual(1, verify.returncode)
+        self.assertEqual(
+            [
+                f"carried route /{VANILLA.updates_full_path} unchanged",
+                f"ota-carry-over: carried route /{changed} changed",
+            ],
+            verify.stderr.splitlines(),
+        )
+
     def test_cli_reports_failure_with_exit_1(self) -> None:
         self.env["FAKE_INSPECT_FAIL"] = "1"
         self.context.mkdir()

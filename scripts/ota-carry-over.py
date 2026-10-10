@@ -51,7 +51,7 @@ def load_snapshot(path: Path) -> dict:
 
 def verify(args: argparse.Namespace) -> None:
     snapshot = load_snapshot(args.snapshot)
-    verify_routes(args.container, snapshot["routes"])
+    verify_routes(args.container, snapshot["routes"], report=lambda line: print(line, file=sys.stderr, flush=True))
     print(f"carried routes unchanged: {len(snapshot['routes'])}", file=sys.stderr)
 
 

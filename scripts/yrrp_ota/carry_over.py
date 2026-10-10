@@ -13,7 +13,7 @@ import subprocess
 import urllib.parse
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .archive import sha256 as file_sha256
 from .channel import VANILLA, Channel, live_channels
@@ -233,11 +233,21 @@ def carry_over(
     return result
 
 
-def verify_routes(container: str, snapshot: Mapping[str, str], *, env: Mapping[str, str] | None = None) -> None:
-    """Fail unless the container serves every snapshot route with a byte-identical body."""
-    for route, expected in snapshot.items():
+def verify_routes(
+    container: str,
+    snapshot: Mapping[str, str],
+    *,
+    env: Mapping[str, str] | None = None,
+    report: Callable[[str], None] = lambda line: None,
+) -> None:
+    """Fail unless the container serves every snapshot route, in route order, with a byte-identical body.
+
+    |report| receives one line per route proven unchanged; the first failing route raises instead.
+    """
+    for route in sorted(snapshot):
         result = _docker(["exec", container, "wget", "-q", "-O", "-", f"{INTERNAL_URL}/{route}"], env)
         if result.returncode != 0:
             raise CarryOverError(f"carried route /{route} is not served")
-        if hashlib.sha256(result.stdout).hexdigest() != expected:
+        if hashlib.sha256(result.stdout).hexdigest() != snapshot[route]:
             raise CarryOverError(f"carried route /{route} changed")
+        report(f"carried route /{route} unchanged")
