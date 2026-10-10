@@ -63,14 +63,12 @@ parse_arguments() {
 }
 
 fetch_live_release() {
-    local labels live_build install_dir release_label=release
+    local labels live_build install_dir
     labels=$(docker inspect --format '{{json .Config.Labels}}' "${ota_container}") \
         || fail "live OTA container ${ota_container} is unavailable"
     live_build=$(channel_field live-build "${labels}") || fail "cannot read live channel labels"
-    # The vanilla channel keeps the wording from before channels existed.
-    [[ ${channel} == salami/vanilla ]] || release_label="${channel} release"
     [[ ${live_build} == "${source_build}" ]] \
-        || fail "source build ${source_build} is not the live ${release_label} (${live_build:-none})"
+        || fail "source build ${source_build} is not the live ${channel} release (${live_build:-none})"
     install_dir=$(channel_field install-dir "${source_build}") || fail "cannot derive install directory"
     docker exec "${ota_container}" cat "/srv/ota/${install_dir}/release.json" \
         > "${work_dir}/source-release.json"

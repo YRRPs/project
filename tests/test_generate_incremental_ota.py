@@ -132,7 +132,7 @@ class GenerateIncrementalOtaTest(unittest.TestCase):
     def test_source_must_be_live_release(self) -> None:
         result = self.run_script(FAKE_LIVE_BUILD="20981230-000000")
         self.assertNotEqual(0, result.returncode)
-        self.assertIn("is not the live release", result.stderr)
+        self.assertIn("is not the live salami/vanilla release", result.stderr)
 
     def test_pre_build_mismatch_fails(self) -> None:
         result = self.run_script(FAKE_PRE_INCREMENTAL="1")
