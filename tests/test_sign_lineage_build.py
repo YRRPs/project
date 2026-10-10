@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -18,6 +19,7 @@ SCRIPT = ROOT / "scripts/sign-lineage-build.sh"
 BUILD_ID = "20990101-000000"
 INCREMENTAL = f"lineage-23.2-salami-{SOURCE_BUILD_ID}-to-{BUILD_ID}-signed-incremental-ota.zip"
 FAKE_LIVE_DOCKER = ROOT / "tests/fixtures/fake_live_docker.py"
+CHANNEL_TOOL = ROOT / "scripts/ota-channel.py"
 
 
 class SignLineageBuildTest(unittest.TestCase):
@@ -33,6 +35,9 @@ class SignLineageBuildTest(unittest.TestCase):
         self.password_log = self.root / "password.log"
         self.incremental_log = self.root / "incremental.log"
         self.profile_log = self.root / "profile.log"
+        self.build_type_log = self.root / "build-type.log"
+        self.docker_log = self.root / "docker.log"
+        self.signed = self.build / "out/signed"
         self._create_build_tree()
         self._create_keys()
         self._create_commands()
@@ -52,7 +57,7 @@ class SignLineageBuildTest(unittest.TestCase):
         (self.build / "build").mkdir()
         (self.build / "build/envsetup.sh").write_text(
             f"OUT={self.build}/out/target/product/salami\n"
-            "breakfast() { :; }\n"
+            "breakfast() { printf '%s\\n' \"$YRRP_BUILD_TYPE\" > \"${FAKE_BUILD_TYPE_LOG}\"; }\n"
             "mka() { printf '%s\\n' \"$*\" > \"${YRRP_BUILD_LOG}\"; }\n"
             "sign_target_files_apks() { cp \"${ANDROID_PW_FILE}\" \"${YRRP_PASSWORD_LOG}\"; "
             "printf '%s' \"${YRRP_SIGNING_PROFILE_DIR:-unset}\" > \"${YRRP_PROFILE_LOG}\"; "
@@ -104,14 +109,15 @@ class SignLineageBuildTest(unittest.TestCase):
         (signed / f"lineage-23.2-salami-{SOURCE_BUILD_ID}-signed-target_files.zip").write_bytes(content)
 
     def _incremental_stub(self, exit_code: int, unreadable_output: bool = False) -> Path:
-        signed = self.build / "out/signed"
-        lock_output = f"chmod 000 {signed}/{INCREMENTAL}\n" if unreadable_output else ""
+        # Expects: --channel C --source-build S --target-build T, and names the output like the real script.
+        lock_output = f"chmod 000 \"{self.signed}/$name\"\n" if unreadable_output else ""
         return write_executable(
             self.root / "generate-incremental.sh",
             "#!/bin/sh\n"
             f"printf '%s %s\\n' \"$YRRP_BUILD_LOCK_HELD\" \"$*\" > {self.incremental_log}\n"
             f"[ {exit_code} -eq 0 ] || exit {exit_code}\n"
-            f"printf incremental > {signed}/{INCREMENTAL}\n"
+            f"name=$(python3 {CHANNEL_TOOL} --channel \"$2\" incremental \"$4\" \"$6\") || exit 99\n"
+            f"printf incremental > \"{self.signed}/$name\"\n"
             + lock_output,
         )
 
@@ -126,6 +132,8 @@ class SignLineageBuildTest(unittest.TestCase):
         incremental_exit: int = 0,
         unreadable_incremental: bool = False,
         inspect_fail: str = "",
+        channel: str | None = None,
+        env_extra: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         deploy = self.root / "deploy.sh"
         deploy.write_text(
@@ -155,7 +163,9 @@ class SignLineageBuildTest(unittest.TestCase):
             "FAKE_LIVE_BUILD": live_build or "",
             "FAKE_LIVE_DEVICE": live_device,
             "FAKE_INSPECT_FAIL": inspect_fail,
-        }
+            "FAKE_BUILD_TYPE_LOG": str(self.build_type_log),
+            "FAKE_DOCKER_CALL_LOG": str(self.docker_log),
+        } | (env_extra or {})
         if not include_ota_environment:
             env.pop("OTA_PUBLIC_BASE_URL")
             env.pop("OTA_BASE_IMAGE_REF")
@@ -188,8 +198,9 @@ class SignLineageBuildTest(unittest.TestCase):
                 )
                 env["YRRP_BUILD_LOCK_FD"] = str(candidate.fileno())
                 pass_fds = (candidate.fileno(),)
+            channel_args = ["--channel", channel] if channel else []
             return subprocess.run(
-                [str(SCRIPT)],
+                [str(SCRIPT), *channel_args],
                 capture_output=True,
                 text=True,
                 env=env,
@@ -202,7 +213,7 @@ class SignLineageBuildTest(unittest.TestCase):
     def test_signing_runs_with_profile_directory_for_build(self) -> None:
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
-        expected = self.build / "out/signed/profile" / BUILD_ID
+        expected = self.build / "out/signed/profile" / f"vanilla-{BUILD_ID}"
         self.assertEqual(self.profile_log.read_text(), str(expected))
         self.assertIn(f"Signing profile: {expected}", result.stdout)
 
@@ -270,7 +281,7 @@ class SignLineageBuildTest(unittest.TestCase):
         result = self.run_script(live_build=SOURCE_BUILD_ID)
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
-            f"1 --source-build {SOURCE_BUILD_ID} --target-build {BUILD_ID}",
+            f"1 --channel salami/vanilla --source-build {SOURCE_BUILD_ID} --target-build {BUILD_ID}",
             self.incremental_log.read_text().strip(),
         )
         signed = self.build / "out/signed"
@@ -291,11 +302,13 @@ class SignLineageBuildTest(unittest.TestCase):
         self.assertIn(f"incremental-skipped: no signed target-files for live build {SOURCE_BUILD_ID}", result.stderr)
         self.assertNotIn("--incremental", self.deploy_log.read_text())
 
-    def test_other_device_container_deploys_full_only(self) -> None:
+    def test_other_device_container_fails_incremental_without_deploy(self) -> None:
         self._create_live_source()
         result = self.run_script(live_build=SOURCE_BUILD_ID, live_device="other")
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("incremental-skipped: live container serves device other", result.stderr)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("unsupported device", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("incremental-failed:"))
+        self.assertFalse(self.deploy_log.exists())
 
     def test_incremental_failure_has_distinct_status_and_skips_deploy(self) -> None:
         self._create_live_source()
@@ -311,7 +324,7 @@ class SignLineageBuildTest(unittest.TestCase):
         result = self.run_script(live_build=SOURCE_BUILD_ID, incremental_exit=41)
         self.assertNotIn("incremental-skipped", result.stderr)
         self.assertEqual(
-            f"1 --source-build {SOURCE_BUILD_ID} --target-build {BUILD_ID}",
+            f"1 --channel salami/vanilla --source-build {SOURCE_BUILD_ID} --target-build {BUILD_ID}",
             self.incremental_log.read_text().strip(),
         )
         self.assertEqual("incremental-failed:41", self.status.read_text().strip())
@@ -319,19 +332,144 @@ class SignLineageBuildTest(unittest.TestCase):
 
     def test_failing_label_inspect_fails_incremental_without_deploy(self) -> None:
         self._create_live_source()
-        result = self.run_script(live_build=SOURCE_BUILD_ID, inspect_fail="io.yrrp.ota.device")
+        result = self.run_script(live_build=SOURCE_BUILD_ID, inspect_fail="{{json .Config.Labels}}")
         self.assertNotEqual(0, result.returncode)
         self.assertNotIn("incremental-skipped", result.stderr)
         self.assertTrue(self.status.read_text().startswith("incremental-failed:"))
         self.assertFalse(self.deploy_log.exists())
         self.assertFalse(self.incremental_log.exists())
 
-    def test_failing_build_id_inspect_fails_incremental_without_deploy(self) -> None:
+    def test_malformed_live_labels_fail_incremental_without_deploy(self) -> None:
         self._create_live_source()
-        result = self.run_script(live_build=SOURCE_BUILD_ID, inspect_fail="io.yrrp.ota.build-id")
+        result = self.run_script(live_build=SOURCE_BUILD_ID, env_extra={"FAKE_LIVE_LABELS": "not json"})
         self.assertNotEqual(0, result.returncode)
+        self.assertNotIn("incremental-skipped", result.stderr)
         self.assertTrue(self.status.read_text().startswith("incremental-failed:"))
         self.assertFalse(self.deploy_log.exists())
+        self.assertFalse(self.incremental_log.exists())
+
+    def test_live_container_without_channel_release_deploys_full_only(self) -> None:
+        labels = {"io.yrrp.ota.channel.salami.vanilla.build-id": SOURCE_BUILD_ID}
+        result = self.run_script(
+            channel="salami/gapps", live_build=SOURCE_BUILD_ID, env_extra={"FAKE_LIVE_LABELS": json.dumps(labels)}
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("incremental-skipped: live container serves no salami/gapps release", result.stderr)
+        self.assertNotIn("--incremental", self.deploy_log.read_text())
+
+    def test_unknown_channel_is_a_usage_error_before_anything_runs(self) -> None:
+        result = self.run_script(channel="salami/nonsense")
+        self.assertEqual(64, result.returncode)
+        self.assertFalse(self.status.exists())
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.build_type_log.exists())
+
+    def test_unknown_argument_is_a_usage_error(self) -> None:
+        result = subprocess.run([str(SCRIPT), "--bogus"], capture_output=True, text=True,
+                                env=os.environ | {"YRRP_STATUS_FILE": str(self.status)})
+        self.assertEqual(64, result.returncode)
+        self.assertIn("usage:", result.stderr)
+        self.assertFalse(self.status.exists())
+
+    def test_gapps_channel_exports_build_type_and_gapps_names(self) -> None:
+        result = self.run_script(channel="salami/gapps")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("gapps", self.build_type_log.read_text().strip())
+        self.assertTrue((self.signed / f"lineage-23.2-salami-gapps-{BUILD_ID}-signed-ota.zip").exists())
+        self.assertTrue((self.signed / f"lineage-23.2-salami-gapps-{BUILD_ID}-SHA256SUMS.txt").exists())
+        self.assertIn("--channel salami/gapps", self.deploy_log.read_text())
+        self.assertEqual(str(self.signed / "profile" / f"gapps-{BUILD_ID}"), self.profile_log.read_text())
+
+    def test_vanilla_is_the_default_channel(self) -> None:
+        result = self.run_script()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("vanilla", self.build_type_log.read_text().strip())
+        self.assertIn("--channel salami/vanilla", self.deploy_log.read_text())
+
+    def test_incremental_source_comes_from_the_channels_own_label(self) -> None:
+        labels = {"io.yrrp.ota.channel.salami.gapps.build-id": "20990101-000001",
+                  "io.yrrp.ota.channel.salami.vanilla.build-id": "20990101-000002"}
+        self.signed.mkdir(parents=True, exist_ok=True)
+        (self.signed / "lineage-23.2-salami-gapps-20990101-000001-signed-target_files.zip").write_bytes(b"src")
+        result = self.run_script(
+            channel="salami/gapps", live_build="20990101-000001", env_extra={"FAKE_LIVE_LABELS": json.dumps(labels)}
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("--channel salami/gapps --source-build 20990101-000001", self.incremental_log.read_text())
+        incremental = f"lineage-23.2-salami-gapps-20990101-000001-to-{BUILD_ID}-signed-incremental-ota.zip"
+        self.assertIn(f"--incremental {self.signed / incremental}", self.deploy_log.read_text())
+
+    def test_release_keeps_other_channels_target_files(self) -> None:
+        self.signed.mkdir(parents=True, exist_ok=True)
+        other = self.signed / "lineage-23.2-salami-20990101-000002-signed-target_files.zip"
+        other.write_bytes(b"vanilla-live")
+        result = self.run_script(channel="salami/gapps")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(b"vanilla-live", other.read_bytes())
+
+    def docker_calls(self) -> list[list[str]]:
+        if not self.docker_log.exists():
+            return []
+        return [json.loads(line) for line in self.docker_log.read_text().splitlines()]
+
+    def test_gapps_refused_before_build_when_base_image_lacks_route(self) -> None:
+        conf = "location = /updates/salami.json {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "base OTA image ghcr.io/yrrp/ota:main does not serve /updates/salami/gapps.json; publish ota_server first",
+            result.stderr,
+        )
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
+        self.assertFalse(self.build_type_log.exists())
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.deploy_log.exists())
+
+    def test_gapps_proceeds_when_base_image_serves_route(self) -> None:
+        conf = "location = /updates/salami.json {\nlocation = /updates/salami/gapps.json {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.docker_calls()
+        self.assertIn(["pull", "ghcr.io/yrrp/ota:main"], calls)
+        grep = [call for call in calls if call[:1] == ["run"]]
+        self.assertEqual(1, len(grep), calls)
+        self.assertEqual(["--network", "none"], grep[0][2:4], grep[0])
+        self.assertIn("^[[:space:]]*location = /updates/salami/gapps\\.json \\{", grep[0])
+        self.assertEqual("gapps", self.build_type_log.read_text().strip())
+
+    def test_gapps_refused_before_build_when_base_image_pull_fails(self) -> None:
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_PULL_FAIL": "1"})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("cannot pull base OTA image ghcr.io/yrrp/ota:main", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
+        self.assertFalse(self.build_type_log.exists())
+
+    def test_gapps_refused_when_base_image_config_cannot_be_read(self) -> None:
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_RUN_EXIT": "125"})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("cannot read nginx config of base OTA image ghcr.io/yrrp/ota:main", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
+        self.assertFalse(self.build_type_log.exists())
+
+    def test_gapps_refused_when_base_image_route_is_only_commented_out(self) -> None:
+        conf = "location = /updates/salami.json {\n# location = /updates/salami/gapps.json {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not serve /updates/salami/gapps.json", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
+        self.assertFalse(self.build_type_log.exists())
+
+    def test_gapps_route_check_does_not_treat_dot_as_wildcard(self) -> None:
+        conf = "location = /updates/salami/gappsXjson {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not serve /updates/salami/gapps.json", result.stderr)
+
+    def test_vanilla_skips_base_image_route_check(self) -> None:
+        result = self.run_script(env_extra={"FAKE_BASE_NGINX_CONF": ""})
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.docker_calls()
+        self.assertFalse([call for call in calls if call[:1] in (["pull"], ["run"])], calls)
 
     def test_unreadable_incremental_checksum_stops_before_deploy(self) -> None:
         self._create_live_source()

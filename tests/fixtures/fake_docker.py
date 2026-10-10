@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import sys
 from pathlib import Path
@@ -15,6 +16,42 @@ with log.open("a", encoding="utf-8") as stream:
 mode = os.environ.get("FAKE_DOCKER_MODE", "initial")
 state_path = Path(os.environ.get("FAKE_DOCKER_STATE", log.with_suffix(".state")))
 base_digest = "ghcr.io/yrrps/ota-server@sha256:" + "b" * 64
+run_labels_path = log.with_suffix(".run-labels")
+LEGACY_LIVE_LABELS = {
+    "io.yrrp.ota.release": "true",
+    "io.yrrp.ota.device": "salami",
+    "io.yrrp.ota.build-id": "20990101-000000",
+}
+
+
+def copy_from_live(source: str, destination: Path) -> None:
+    """Answer `docker cp` from FAKE_LIVE_ROOT, which stands in for the live /srv/ota."""
+    live_root = os.environ.get("FAKE_LIVE_ROOT")
+    origin = Path(live_root or "/nonexistent") / source.split(":", 1)[1].removeprefix("/srv/ota/")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if live_root and origin.is_file() and not origin.is_symlink():
+        shutil.copyfile(origin, destination)
+        return
+    print(f"no such file: {source}", file=sys.stderr)
+    sys.exit(1)
+
+
+def serve_from_candidate(url: str) -> None:
+    """Answer `docker exec NAME wget -q -O - URL` from FAKE_CANDIDATE_ROOT."""
+    if mode == "carried_route_changed":
+        print("[]")
+        return
+    candidate_root = os.environ.get("FAKE_CANDIDATE_ROOT")
+    target = Path(candidate_root or "/nonexistent") / url.split("://", 1)[1].split("/", 1)[1]
+    if not candidate_root or not target.is_file():
+        sys.exit(8)
+    sys.stdout.buffer.write(target.read_bytes())
+
+
+def candidate_label(label: str) -> None:
+    """Print a label the last `docker run` set, as inspect of the candidate would."""
+    labels = json.loads(run_labels_path.read_text()) if run_labels_path.exists() else {}
+    print(labels.get(label, ""))
 
 if args[:1] == ["version"] or args[:2] in (["buildx", "version"], ["compose", "version"]):
     print("fake docker")
@@ -28,6 +65,14 @@ elif args[:2] == ["image", "inspect"] and "io.yrrp.ota.release" in " ".join(args
     print("true")
 elif args[:2] == ["image", "inspect"] and "{{.Id}}" in args:
     print("sha256:candidate-image")
+elif args[:1] == ["inspect"] and "{{json .Config.Labels}}" in args:
+    print(os.environ.get("FAKE_LIVE_LABELS", json.dumps(LEGACY_LIVE_LABELS)))
+elif args[:1] == ["inspect"] and "io.yrrp.ota.channel." in " ".join(args):
+    candidate_label(" ".join(args).split('"')[1])
+elif args[:1] == ["cp"]:
+    copy_from_live(args[1], Path(args[2]))
+elif args[:1] == ["exec"] and args[2:6] == ["wget", "-q", "-O", "-"]:
+    serve_from_candidate(args[-1])
 elif args[:2] == ["container", "inspect"]:
     if mode == "initial":
         sys.exit(1)
@@ -53,6 +98,8 @@ elif args[:1] == ["build"]:
 elif args[:1] == ["run"]:
     if mode == "run_fail":
         sys.exit(42)
+    labels = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == "--label"]
+    run_labels_path.write_text(json.dumps(dict(label.split("=", 1) for label in labels)))
     print("candidate-container")
 elif args[:1] == ["logs"]:
     print("synthetic candidate log")

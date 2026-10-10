@@ -13,6 +13,7 @@ readonly output_dir=${build_root}/out/signed
 readonly deploy_script=${YRRP_DEPLOY_SCRIPT:-${script_dir}/deploy-ota-release.sh}
 readonly incremental_script=${YRRP_INCREMENTAL_SCRIPT:-${script_dir}/generate-incremental-ota.sh}
 readonly ota_container=${OTA_CONTAINER_NAME:-yrrp-ota-server}
+readonly channel_tool=${script_dir}/ota-channel.py
 failure_domain=signing
 
 : "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
@@ -38,6 +39,28 @@ readonly -a release_apks=(
     WifiDialog.apk
 )
 
+usage() {
+    printf 'usage: %s [--channel DEVICE/TYPE]\n' "$0" >&2
+    exit 64
+}
+
+channel_field() {
+    python3 "${channel_tool}" --channel "${channel}" "$@"
+}
+
+# Parsed before the status trap is armed, so a usage error leaves no status behind.
+channel=salami/vanilla
+while (($#)); do
+    case $1 in
+        --channel) channel=${2:-}; shift 2 || usage ;;
+        *) usage ;;
+    esac
+done
+readonly channel
+build_type=$(channel_field type) || usage
+device=$(channel_field device) || usage
+readonly build_type device
+
 record_exit() {
     local exit_code=$?
     if [[ -n "${verify_dir:-}" && -d "${verify_dir}" ]]; then
@@ -58,31 +81,53 @@ require_file() {
     fi
 }
 
-# Print the live release build ID when it can be an incremental source.
+# Print the channel's live release build ID when it can be an incremental source.
 # Print a skip reason to stderr and nothing to stdout when it cannot.
 resolve_incremental_source() {
-    local device build_id
+    local labels build_id source_name
     if ! docker container inspect "${ota_container}" >/dev/null 2>&1; then
         printf 'incremental-skipped: no live OTA container\n' >&2
         return 0
     fi
     # Command substitution does not inherit errexit; a failed inspect must not look like a skip.
-    device=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.device" }}' "${ota_container}") || return 1
-    if [[ ${device} != salami ]]; then
-        printf 'incremental-skipped: live container serves device %s\n' "${device:-unknown}" >&2
+    labels=$(docker inspect --format '{{json .Config.Labels}}' "${ota_container}") || return 1
+    # ota-channel.py validates the labels and fails on malformed or foreign ones.
+    build_id=$(channel_field live-build "${labels}") || return 1
+    if [[ -z ${build_id} ]]; then
+        printf 'incremental-skipped: live container serves no %s release\n' "${channel}" >&2
         return 0
     fi
-    build_id=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.build-id" }}' "${ota_container}") || return 1
-    if [[ ! ${build_id} =~ ^[0-9]{8}-[0-9]{6}$ ]]; then
-        printf 'Live OTA container has invalid build-id label: %s\n' "${build_id}" >&2
-        return 1
-    fi
+    source_name=$(channel_field target-files "${build_id}") || return 1
     # Skip only when the source is absent; generate-incremental-ota.sh rejects an empty or corrupt one.
-    if [[ ! -e "${output_dir}/lineage-23.2-salami-${build_id}-signed-target_files.zip" ]]; then
-        printf 'incremental-skipped: no signed target-files for live build %s\n' "${build_id}" >&2
+    if [[ ! -e "${output_dir}/${source_name}" ]]; then
+        printf 'incremental-skipped: no signed target-files for live build %s of %s\n' "${build_id}" "${channel}" >&2
         return 0
     fi
     printf '%s\n' "${build_id}"
+}
+
+# A non-vanilla release built against a base image without its routes would only fail at deploy, hours later.
+require_base_image_serves_channel() {
+    local route route_pattern grep_status=0
+    route=$(channel_field updates-full) || return 1
+    # The channel allowlist limits routes to [a-z0-9] tokens, '/', and '.', so escaping dots
+    # escapes every ERE metacharacter a route can hold today; widen this if the allowlist grows.
+    route_pattern=${route//./\\.}
+    docker pull "${OTA_BASE_IMAGE_REF}" >&2 || {
+        printf 'cannot pull base OTA image %s\n' "${OTA_BASE_IMAGE_REF}" >&2
+        return 1
+    }
+    # Anchored so a commented-out location cannot count; no network for a throwaway container.
+    docker run --rm --network none --entrypoint grep "${OTA_BASE_IMAGE_REF}" \
+        -E -q -- "^[[:space:]]*location = /${route_pattern} \\{" /etc/nginx/nginx.conf || grep_status=$?
+    case ${grep_status} in
+        0) return 0 ;;
+        1) printf 'base OTA image %s does not serve /%s; publish ota_server first\n' \
+            "${OTA_BASE_IMAGE_REF}" "${route}" >&2 ;;
+        *) printf 'cannot read nginx config of base OTA image %s (exit %s)\n' \
+            "${OTA_BASE_IMAGE_REF}" "${grep_status}" >&2 ;;
+    esac
+    return 1
 }
 
 readonly build_lock_fd=${YRRP_BUILD_LOCK_FD:-}
@@ -137,10 +182,15 @@ docker version >/dev/null
 docker buildx version >/dev/null
 docker compose version >/dev/null
 docker network inspect "${OTA_NETWORK:-proxy-net}" >/dev/null
+if [[ ${build_type} != vanilla ]]; then
+    require_base_image_serves_channel || exit 1
+fi
 
 cd "${build_root}"
 source build/envsetup.sh
-breakfast salami
+printf 'channel %s, YRRP_BUILD_TYPE=%s\n' "${channel}" "${build_type}"
+export YRRP_BUILD_TYPE=${build_type}
+breakfast "${device}"
 printf 'building-target-files\n' > "${status_file}"
 mka target-files-package otatools
 
@@ -172,9 +222,11 @@ fi
 
 mkdir -p "${output_dir}"
 readonly build_date=${YRRP_BUILD_DATE:-$(date +%Y%m%d-%H%M%S)}
-readonly signed_target_files="${output_dir}/lineage-23.2-salami-${build_date}-signed-target_files.zip"
-readonly signed_ota="${output_dir}/lineage-23.2-salami-${build_date}-signed-ota.zip"
-readonly signing_profile_dir="${output_dir}/profile/${build_date}"
+signed_target_files="${output_dir}/$(channel_field target-files "${build_date}")" || exit 1
+signed_ota="${output_dir}/$(channel_field ota "${build_date}")" || exit 1
+summary="${output_dir}/$(channel_field checksums "${build_date}")" || exit 1
+readonly signed_target_files signed_ota summary
+readonly signing_profile_dir="${output_dir}/profile/${build_type}-${build_date}"
 
 sign_args=(-o -d "${cert_dir}")
 for apk in "${release_apks[@]}"; do
@@ -242,19 +294,19 @@ verify_dir=
 printf 'generating-incremental-ota\n' > "${status_file}"
 failure_domain=incremental
 incremental_ota=
-incremental_source=$(resolve_incremental_source)
+incremental_source=$(resolve_incremental_source) || exit 1
 if [[ -n ${incremental_source} ]]; then
     YRRP_BUILD_LOCK_HELD=1 "${incremental_script}" \
+        --channel "${channel}" \
         --source-build "${incremental_source}" \
         --target-build "${build_date}"
-    incremental_ota="${output_dir}/lineage-23.2-salami-${incremental_source}-to-${build_date}-signed-incremental-ota.zip"
+    incremental_ota="${output_dir}/$(channel_field incremental "${incremental_source}" "${build_date}")" || exit 1
     require_file "${incremental_ota}"
 fi
 failure_domain=signing
 
 readonly target_files_sha256=$(sha256sum "${signed_target_files}" | awk '{print $1}')
 readonly ota_sha256=$(sha256sum "${signed_ota}" | awk '{print $1}')
-readonly summary="${output_dir}/lineage-23.2-salami-${build_date}-SHA256SUMS.txt"
 incremental_sha256=
 if [[ -n ${incremental_ota} ]]; then
     incremental_sha256=$(sha256sum "${incremental_ota}" | awk '{print $1}')
@@ -270,7 +322,7 @@ fi
 
 printf 'preparing-ota-release\n' > "${status_file}"
 failure_domain=deployment
-deploy_args=(--ota "${signed_ota}" --target-files "${signed_target_files}" --build-id "${build_date}")
+deploy_args=(--channel "${channel}" --ota "${signed_ota}" --target-files "${signed_target_files}" --build-id "${build_date}")
 if [[ -n ${incremental_ota} ]]; then
     deploy_args+=(--incremental "${incremental_ota}")
 fi

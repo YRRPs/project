@@ -12,24 +12,30 @@ readonly cert_dir=${YRRP_CERT_DIR:-/opt/yrrp/signing}
 readonly signed_dir=${build_root}/out/signed
 readonly ota_container=${OTA_CONTAINER_NAME:-yrrp-ota-server}
 readonly incremental_tool=${script_dir}/incremental-ota.py
+readonly channel_tool=${script_dir}/ota-channel.py
 readonly password_file=${YRRP_INCREMENTAL_PASSWORD_FILE:-/home/android/.android-signing-passwords-incremental}
 readonly build_id_pattern='^[0-9]{8}-[0-9]{6}$'
 
 source "${script_dir}/yrrp-release-lib.sh"
 
+channel=salami/vanilla
 source_build=
 target_build=
 work_dir=
 owns_password_file=false
 
 usage() {
-    echo "usage: $0 --source-build YYYYMMDD-HHMMSS --target-build YYYYMMDD-HHMMSS" >&2
+    echo "usage: $0 --source-build YYYYMMDD-HHMMSS --target-build YYYYMMDD-HHMMSS [--channel DEVICE/TYPE]" >&2
     exit 64
 }
 
 fail() {
     printf '%s\n' "$*" >&2
     exit 1
+}
+
+channel_field() {
+    python3 "${channel_tool}" --channel "${channel}" "$@"
 }
 
 cleanup() {
@@ -47,20 +53,24 @@ parse_arguments() {
         case $1 in
             --source-build) source_build=${2:-}; shift 2 || usage ;;
             --target-build) target_build=${2:-}; shift 2 || usage ;;
+            --channel) channel=${2:-}; shift 2 || usage ;;
             *) usage ;;
         esac
     done
     [[ ${source_build} =~ ${build_id_pattern} && ${target_build} =~ ${build_id_pattern} ]] || usage
     [[ ${source_build} != "${target_build}" ]] || fail "source and target build must differ"
+    channel_field type >/dev/null || usage
 }
 
 fetch_live_release() {
-    local live_build
-    live_build=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.build-id" }}' "${ota_container}") \
+    local labels live_build install_dir
+    labels=$(docker inspect --format '{{json .Config.Labels}}' "${ota_container}") \
         || fail "live OTA container ${ota_container} is unavailable"
+    live_build=$(channel_field live-build "${labels}") || fail "cannot read live channel labels"
     [[ ${live_build} == "${source_build}" ]] \
-        || fail "source build ${source_build} is not the live release (${live_build})"
-    docker exec "${ota_container}" cat "/srv/ota/install/salami/${source_build}/release.json" \
+        || fail "source build ${source_build} is not the live ${channel} release (${live_build:-none})"
+    install_dir=$(channel_field install-dir "${source_build}") || fail "cannot derive install directory"
+    docker exec "${ota_container}" cat "/srv/ota/${install_dir}/release.json" \
         > "${work_dir}/source-release.json"
 }
 
@@ -76,9 +86,13 @@ verify_certificate() {
 parse_arguments "$@"
 yrrp_require_build_lock_free
 
-readonly source_target_files="${signed_dir}/lineage-23.2-salami-${source_build}-signed-target_files.zip"
-readonly target_target_files="${signed_dir}/lineage-23.2-salami-${target_build}-signed-target_files.zip"
-readonly incremental_ota="${signed_dir}/lineage-23.2-salami-${source_build}-to-${target_build}-signed-incremental-ota.zip"
+source_target_files="${signed_dir}/$(channel_field target-files "${source_build}")" \
+    || fail "cannot derive source target-files name"
+target_target_files="${signed_dir}/$(channel_field target-files "${target_build}")" \
+    || fail "cannot derive target target-files name"
+incremental_ota="${signed_dir}/$(channel_field incremental "${source_build}" "${target_build}")" \
+    || fail "cannot derive incremental OTA name"
+readonly source_target_files target_target_files incremental_ota
 readonly generation_log="${incremental_ota%.zip}.log"
 for file in "${source_target_files}" "${target_target_files}" \
     "${cert_dir}/releasekey.pk8" "${cert_dir}/releasekey.x509.pem"; do
@@ -115,6 +129,7 @@ fi
 unzip -tq "${incremental_ota}" >/dev/null
 verify_certificate
 python3 "${incremental_tool}" verify-output \
+    --channel "${channel}" \
     --incremental "${incremental_ota}" \
     --target-files "${target_target_files}" \
     --source-build "${source_build}" \

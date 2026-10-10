@@ -2,9 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 import warnings
 import zipfile
 from pathlib import Path
+
+SCRIPTS = Path(__file__).resolve().parents[2] / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+from yrrp_ota.channel import VANILLA, Channel  # noqa: E402
 
 BUILD_ID = "20990101-000000"
 OTA_NAME = f"lineage-23.2-salami-{BUILD_ID}-signed-ota.zip"
@@ -22,6 +29,7 @@ SOURCE_BUILD_ID = "20981231-000000"
 SOURCE_INCREMENTAL = "4070822400"
 POST_BUILD = "yrpp/salami/salami:16/TEST/4070908800:userdebug/release-keys"
 INCREMENTAL_NAME = f"lineage-23.2-salami-{SOURCE_BUILD_ID}-to-{BUILD_ID}-signed-incremental-ota.zip"
+GAPPS_APPS = ("GmsCore", "Phonesky")
 
 
 def create_fixture(
@@ -35,10 +43,18 @@ def create_fixture(
     system_prop_path: str = "SYSTEM/etc/build.prop",
     build_id: str = BUILD_ID,
     target_incremental: str | None = None,
+    build_type: str | None = None,
+    gapps_apps: tuple[str, ...] | None = None,
+    gapps_prefix: str = "PRODUCT",
 ) -> tuple[Path, Path]:
+    """build_type None writes no ro.yrrp.build.type, like builds made before channels (read as vanilla).
+
+    gapps_apps None means: a gapps build carries every GApps APK, any other build none.
+    """
     root.mkdir(parents=True, exist_ok=True)
-    ota = root / f"lineage-23.2-salami-{build_id}-signed-ota.zip"
-    target = root / f"lineage-23.2-salami-{build_id}-signed-target_files.zip"
+    channel = VANILLA if build_type is None else Channel(VANILLA.device, build_type)
+    ota = root / channel.full_ota_name(build_id)
+    target = root / channel.target_files_name(build_id)
     post_build = f"yrpp/salami/salami:16/TEST/4070908800:userdebug/{post_build_suffix}"
     target_fingerprint = target_fingerprint or post_build
     metadata = "\n".join(
@@ -67,13 +83,14 @@ def create_fixture(
             "ro.lineage.build.version=23.2",
         )
     )
-    system_build_prop = "\n".join(
-        (
-            f"ro.build.fingerprint={target_fingerprint}",
-            f"ro.build.date.utc={target_timestamp}",
-            f"ro.build.version.incremental={target_incremental or target_timestamp}",
-        )
-    )
+    system_lines = [
+        f"ro.build.fingerprint={target_fingerprint}",
+        f"ro.build.date.utc={target_timestamp}",
+        f"ro.build.version.incremental={target_incremental or target_timestamp}",
+    ]
+    if build_type is not None:
+        system_lines.append(f"ro.yrrp.build.type={build_type}")
+    system_build_prop = "\n".join(system_lines)
     with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_STORED) as archive:
         archive.writestr("PRODUCT/etc/build.prop", build_prop + "\n")
         archive.writestr(system_prop_path, system_build_prop + "\n")
@@ -81,6 +98,10 @@ def create_fixture(
             if image != missing_image:
                 archive.writestr(f"IMAGES/{image}", f"synthetic-{index}-{image}\n")
         archive.writestr("PREBUILT_IMAGES/dtbo.img", b"must-not-be-used")
+        if gapps_apps is None:
+            gapps_apps = GAPPS_APPS if build_type == "gapps" else ()
+        for app in gapps_apps:
+            archive.writestr(f"{gapps_prefix}/priv-app/{app}/{app}.apk", f"synthetic-{app}\n")
     return ota, target
 
 

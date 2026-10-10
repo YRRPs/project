@@ -3,9 +3,11 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import shutil
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from tests.fixtures.make_release_fixture import (
@@ -13,11 +15,13 @@ from tests.fixtures.make_release_fixture import (
     IMAGES,
     INCREMENTAL_NAME,
     OTA_NAME,
+    SOURCE_BUILD_ID,
     SOURCE_INCREMENTAL,
     create_fixture,
     create_incremental_fixture,
     write_incremental_meta,
 )
+from yrrp_ota.channel import GAPPS, VANILLA, Channel  # fixture import puts scripts/ on sys.path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts/prepare-ota-release.py"
@@ -138,10 +142,10 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         write_incremental_meta(incremental, **meta_overrides)
         return incremental
 
-    def test_full_release_records_schema_two_without_incremental(self) -> None:
+    def test_full_release_records_schema_three_without_incremental(self) -> None:
         output = self.prepare()
         release = json.loads((output / "rootfs/install/salami" / BUILD_ID / "release.json").read_text())
-        self.assertEqual(2, release["schema"])
+        self.assertEqual(3, release["schema"])
         self.assertIsNone(release["incremental"])
 
     def test_incremental_release_tree_and_updater_contract(self) -> None:
@@ -197,6 +201,140 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "numeric"):
             self.prepare(incremental=incremental)
 
+    def ota_named_for(self, channel: Channel) -> Path:
+        renamed = self.ota.with_name(channel.full_ota_name(BUILD_ID))
+        shutil.copyfile(self.ota, renamed)
+        return renamed
+
+    def test_gapps_channel_writes_gapps_tree_and_schema_3(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        output = self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+        rootfs = output / "rootfs"
+        install = Path("rootfs/install/salami/gapps") / BUILD_ID
+        expected = {
+            Path("rootfs/updates/salami/gapps.json"),
+            *(install / name for name in (GAPPS.full_ota_name(BUILD_ID), *IMAGES, "SHA256SUMS.txt", "release.json")),
+        }
+        self.assertEqual(expected, {path.relative_to(output) for path in output.rglob("*") if path.is_file()})
+        self.assertFalse((rootfs / "updates/salami.json").exists())
+        release = json.loads((output / install / "release.json").read_text())
+        self.assertEqual(3, release["schema"])
+        self.assertEqual("salami/gapps", release["channel"])
+        self.assertEqual("salami", release["device"])
+        entry = json.loads((rootfs / "updates/salami/gapps.json").read_text())
+        self.assertIn(f"/install/salami/gapps/{BUILD_ID}/", entry[0]["files"][0]["url"])
+
+    def test_gapps_incremental_lands_under_gapps_updates(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        name = GAPPS.incremental_ota_name(SOURCE_BUILD_ID, BUILD_ID)
+        incremental = create_incremental_fixture(self.root / "gapps-input", name=name)
+        write_incremental_meta(incremental)
+        output = self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS, incremental=incremental)
+        entry = json.loads((output / f"rootfs/updates/salami/gapps/{SOURCE_INCREMENTAL}.json").read_text())
+        self.assertEqual(name, entry[0]["files"][0]["filename"])
+        self.assertIn(f"/install/salami/gapps/{BUILD_ID}/{name}", entry[0]["files"][0]["url"])
+        self.assertFalse((output / f"rootfs/updates/salami/{SOURCE_INCREMENTAL}.json").exists())
+
+    def test_build_type_must_match_channel(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ro.yrrp.build.type"):
+            self.prepare("mismatch", ota=self.ota_named_for(GAPPS), channel=GAPPS)
+
+    def test_vanilla_channel_rejects_gapps_target_files(self) -> None:
+        _, gapps_target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        with self.assertRaisesRegex(ValueError, "ro.yrrp.build.type"):
+            self.prepare("mismatch", target_files=gapps_target)
+
+    def test_vanilla_channel_accepts_explicit_vanilla_build_type(self) -> None:
+        ota, target = create_fixture(self.root / "typed-input", build_type="vanilla")
+        output = self.prepare("typed-out", ota=ota, target_files=target)
+        self.assertTrue((output / "rootfs/updates/salami.json").is_file())
+
+    def test_vanilla_channel_keeps_todays_tree(self) -> None:
+        output = self.prepare("vanilla-out")
+        release = json.loads((output / f"rootfs/install/salami/{BUILD_ID}/release.json").read_text())
+        self.assertEqual("salami/vanilla", release["channel"])
+        self.assertTrue((output / "rootfs/updates/salami.json").is_file())
+
+
+    def target_with_device(self, device: str) -> Path:
+        """Copy the vanilla target-files with only ro.lineage.device changed."""
+        edited = self.root / "edited" / self.target.name
+        edited.parent.mkdir()
+        with zipfile.ZipFile(self.target) as source, zipfile.ZipFile(edited, "w") as target:
+            for info in source.infolist():
+                data = source.read(info)
+                if info.filename == "PRODUCT/etc/build.prop":
+                    data = data.replace(b"ro.lineage.device=salami", f"ro.lineage.device={device}".encode())
+                target.writestr(info, data)
+        return edited
+
+    def test_rejects_target_files_for_other_device(self) -> None:
+        with self.assertRaisesRegex(ValueError, "ro.lineage.device must equal salami"):
+            self.prepare("other-device", target_files=self.target_with_device("other"))
+
+    def assert_planted_file_rejected(self, output: Path, channel: Channel, planted: str) -> None:
+        check = self.module.check_release_tree
+        ota_name = channel.full_ota_name(BUILD_ID)
+        check(output, BUILD_ID, ota_name, None, channel)
+        path = output / "rootfs" / planted
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[]\n")
+        with self.assertRaisesRegex(ValueError, "release tree differs"):
+            check(output, BUILD_ID, ota_name, None, channel)
+
+    def test_gapps_tree_rejects_vanilla_updates_file(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        output = self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+        self.assert_planted_file_rejected(output, GAPPS, VANILLA.updates_full_path)
+
+    def test_vanilla_tree_rejects_gapps_updates_file(self) -> None:
+        output = self.prepare("vanilla-out")
+        self.assert_planted_file_rejected(output, VANILLA, GAPPS.updates_full_path)
+
+    def test_gapps_release_with_gapps_apps_passes(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        output = self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+        self.assertTrue((output / "rootfs/updates/salami/gapps.json").is_file())
+
+    def test_gapps_release_without_gmscore_is_rejected(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps", gapps_apps=("Phonesky",))
+        with self.assertRaisesRegex(ValueError, "salami/gapps .*missing GmsCore"):
+            self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+        self.assertFalse((self.root / "gapps-out").exists())
+
+    def test_gapps_release_without_phonesky_is_rejected(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps", gapps_apps=("GmsCore",))
+        with self.assertRaisesRegex(ValueError, "salami/gapps .*missing Phonesky"):
+            self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+
+    def test_vanilla_release_with_stale_gmscore_is_rejected(self) -> None:
+        ota, target = create_fixture(self.root / "stale-input", gapps_apps=("GmsCore",))
+        with self.assertRaisesRegex(ValueError, "salami/vanilla .*contains GmsCore"):
+            self.prepare("stale-out", ota=ota, target_files=target)
+        self.assertFalse((self.root / "stale-out").exists())
+
+    def test_gapps_apps_match_under_any_partition_prefix(self) -> None:
+        ota, target = create_fixture(
+            self.root / "system-input", gapps_apps=("Phonesky",), gapps_prefix="SYSTEM/system_ext"
+        )
+        with self.assertRaisesRegex(ValueError, "salami/vanilla .*contains Phonesky"):
+            self.prepare("system-out", ota=ota, target_files=target)
+
+    def test_gapps_matcher_ignores_near_miss_names(self) -> None:
+        near_misses = [
+            "PRODUCT/priv-app/GmsCoreFoo/x.apk",
+            "PRODUCT/priv-app/GmsCore/oat/arm64/GmsCore.odex",
+            "PRODUCT/priv-app/GmsCore/",
+            "PRODUCT/app/GmsCore/GmsCore.apk",
+        ]
+        for name in near_misses:
+            with self.subTest(name=name):
+                self.assertEqual(set(), self.module.present_gapps_components([name]))
+        self.assertEqual({"GmsCore"}, self.module.present_gapps_components(["SYSTEM/priv-app/GmsCore/GmsCore.apk"]))
+
+    def test_vanilla_release_without_gapps_apps_passes(self) -> None:
+        output = self.prepare("vanilla-out")
+        self.assertTrue((output / "rootfs/updates/salami.json").is_file())
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,7 @@ if str(SCRIPTS) not in sys.path:
 
 from yrrp_release import launcher
 from yrrp_release.launcher import (
+    APPROVAL,
     PROJECT_UPDATE_SCRIPT,
     REMOTE_LAUNCH_SCRIPT,
     REMOTE_LAUNCH_WORKER_SCRIPT,
@@ -42,6 +43,12 @@ from yrrp_release.launcher import (
 
 SHA_A = "a" * 40
 SHA_B = "b" * 40
+WORKER_EXPECTED = {
+    "project_sha": SHA_A,
+    "repositories": {},
+    "manifest_sha256": "c" * 64,
+    "channel": "salami/vanilla",
+}
 
 
 def load_embedded_functions(script: str, names: set[str], namespace: dict) -> dict:
@@ -213,7 +220,7 @@ class PublicLauncherTest(unittest.TestCase):
             with self.subTest(approval=approval), self.assertRaisesRegex(
                 ValueError, "exact approval"
             ):
-                launch_release(approval, SHA_A, {}, "c" * 64)
+                launch_release(approval, SHA_A, {}, "c" * 64, channel="salami/vanilla")
 
     @patch("yrrp_release.launcher.run_remote")
     @patch("yrrp_release.launcher.verify_local_project")
@@ -226,7 +233,11 @@ class PublicLauncherTest(unittest.TestCase):
         }
         remote.return_value = evidence
         result = launch_release(
-            "Build and release", SHA_A, {"frameworks/base": SHA_B}, "c" * 64
+            "Build and release",
+            SHA_A,
+            {"frameworks/base": SHA_B},
+            "c" * 64,
+            channel="salami/gapps",
         )
         verify.assert_called_once_with(SHA_A)
         remote.assert_called_once_with(
@@ -235,9 +246,21 @@ class PublicLauncherTest(unittest.TestCase):
                 "project_sha": SHA_A,
                 "repositories": {"frameworks/base": SHA_B},
                 "manifest_sha256": "c" * 64,
+                "channel": "salami/gapps",
             },
         )
         self.assertEqual(evidence, result)
+
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_launch_release_rejects_unknown_channel(self, verify, remote) -> None:
+        for channel in ("salami/kernelsu", "salami", "salami/gapps/x", ""):
+            with self.subTest(channel=channel), self.assertRaisesRegex(
+                ValueError, "channel"
+            ):
+                launch_release(APPROVAL, SHA_A, {}, "b" * 64, channel=channel)
+        verify.assert_not_called()
+        remote.assert_not_called()
 
 
 class CliContractTest(unittest.TestCase):
@@ -256,8 +279,41 @@ class CliContractTest(unittest.TestCase):
             "--project-sha", SHA_A,
             "--manifest-sha256", "c" * 64,
             "--repo", f"frameworks/base={SHA_B}",
+            "--channel", "salami/gapps",
         ])
         self.assertEqual("c" * 64, arguments.manifest_sha256)
+        self.assertEqual("salami/gapps", arguments.channel)
+
+    def test_cli_launch_requires_channel(self) -> None:
+        parse_args = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))["parse_args"]
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args([
+                "launch",
+                "--project-sha", SHA_A,
+                "--approval", "Build and release",
+                "--manifest-sha256", "b" * 64,
+            ])
+
+    def test_cli_launch_passes_channel_to_launcher(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        arguments = namespace["parse_args"]([
+            "launch",
+            "--project-sha", SHA_A,
+            "--approval", "Build and release",
+            "--manifest-sha256", "b" * 64,
+            "--channel", "salami/gapps",
+        ])
+        calls = []
+        namespace["run"].__globals__["launch_release"] = (
+            lambda *args, **kwargs: calls.append((args, kwargs)) or {}
+        )
+        namespace["run"](arguments)
+        self.assertEqual([((APPROVAL, SHA_A, {}, "b" * 64), {"channel": "salami/gapps"})], calls)
+
+    def test_cli_prepare_takes_no_channel(self) -> None:
+        parse_args = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))["parse_args"]
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            parse_args(["prepare", "--project-sha", SHA_A, "--channel", "salami/gapps"])
 
 
 class RemotePrepareContractTest(unittest.TestCase):
@@ -551,6 +607,7 @@ class RemoteLaunchContractTest(unittest.TestCase):
         "acquire_nonblocking_lock",
         "failure_reason",
         "launch_worker",
+        "require_channel",
         "write_launch_ack",
         "write_launch_status",
     }
@@ -561,6 +618,7 @@ class RemoteLaunchContractTest(unittest.TestCase):
             "fcntl": fcntl,
             "json": json,
             "os": __import__("os"),
+            "re": __import__("re"),
             "subprocess": subprocess,
             "Path": Path,
             "LOCK_PATH": root / "build.lock",
@@ -616,7 +674,7 @@ class RemoteLaunchContractTest(unittest.TestCase):
                 fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 with self.assertRaisesRegex(SystemExit, "another release operation holds"):
                     namespace["launch_worker"](
-                        {"project_sha": SHA_A, "repositories": {}, "manifest_sha256": "c" * 64},
+                        WORKER_EXPECTED,
                         ack_directory,
                         signer_spawn,
                     )
@@ -650,14 +708,19 @@ class RemoteLaunchContractTest(unittest.TestCase):
             def signer_spawn(argv, *, env, pass_fds):
                 nonlocal spawn_observed_before_success
                 self.assertEqual(
-                    ["/opt/yrrp/project/scripts/sign-lineage-build.sh"], argv
+                    [
+                        "/opt/yrrp/project/scripts/sign-lineage-build.sh",
+                        "--channel",
+                        "salami/vanilla",
+                    ],
+                    argv,
                 )
                 self.assertEqual("1", env["YRRP_BUILD_LOCK_HELD"])
                 self.assertEqual(1, len(pass_fds))
                 self.assertEqual(str(pass_fds[0]), env["YRRP_BUILD_LOCK_FD"])
                 self.assertFalse((ack_directory / "ack.json").exists())
                 self.assertEqual(
-                    "launch-starting-signer",
+                    "launch-starting-signer:salami/vanilla",
                     namespace["STATUS_PATH"].read_text().strip(),
                 )
                 namespace["STATUS_PATH"].write_text("building-target-files\n")
@@ -665,7 +728,7 @@ class RemoteLaunchContractTest(unittest.TestCase):
                 return FakeSigner()
 
             result = namespace["launch_worker"](
-                {"project_sha": SHA_A, "repositories": {}, "manifest_sha256": "c" * 64},
+                WORKER_EXPECTED,
                 ack_directory,
                 signer_spawn,
             )
@@ -698,7 +761,7 @@ class RemoteLaunchContractTest(unittest.TestCase):
             namespace = self.worker_namespace(directory, capture)
             with self.assertRaisesRegex(SystemExit, "manifest"):
                 namespace["launch_worker"](
-                    {"project_sha": SHA_A, "repositories": {}, "manifest_sha256": "c" * 64},
+                    WORKER_EXPECTED,
                     ack_directory,
                     signer_spawn,
                 )
@@ -721,13 +784,63 @@ class RemoteLaunchContractTest(unittest.TestCase):
 
             with self.assertRaisesRegex(OSError, "synthetic spawn failure"):
                 namespace["launch_worker"](
-                    {"project_sha": SHA_A, "repositories": {}, "manifest_sha256": "c" * 64},
+                    WORKER_EXPECTED,
                     ack_directory,
                     fail_spawn,
                 )
             acknowledgment = json.loads((ack_directory / "ack.json").read_text())
             self.assertFalse(acknowledgment["ok"])
             self.assertIn("synthetic spawn failure", acknowledgment["error"])
+
+    def run_worker_spawning(self, directory: str, expected: dict) -> tuple[list, Path]:
+        namespace = self.worker_namespace(
+            directory, lambda *_: {"manifest_sha256": "c" * 64}
+        )
+        ack_directory = Path(directory) / "ack"
+        ack_directory.mkdir(mode=0o700)
+        spawned = []
+
+        class FakeSigner:
+            def wait(self):
+                return 0
+
+        def signer_spawn(argv, *, env, pass_fds):
+            spawned.append(argv)
+            return FakeSigner()
+
+        namespace["launch_worker"](expected, ack_directory, signer_spawn)
+        return spawned, ack_directory
+
+    def test_launch_worker_passes_channel_to_signer(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            expected = {**WORKER_EXPECTED, "channel": "salami/gapps"}
+            spawned, ack_directory = self.run_worker_spawning(directory, expected)
+            self.assertEqual(
+                ["/opt/yrrp/project/scripts/sign-lineage-build.sh", "--channel", "salami/gapps"],
+                spawned[0],
+            )
+            acknowledgment = json.loads((ack_directory / "ack.json").read_text())
+            self.assertEqual("salami/gapps", acknowledgment["channel"])
+
+    def test_launch_worker_refuses_missing_or_malformed_channel(self) -> None:
+        payloads = [
+            {key: value for key, value in WORKER_EXPECTED.items() if key != "channel"},
+            {**WORKER_EXPECTED, "channel": "salami"},
+            {**WORKER_EXPECTED, "channel": "Salami/gapps"},
+            {**WORKER_EXPECTED, "channel": "salami/gapps --evil"},
+            {**WORKER_EXPECTED, "channel": "salami/gapps\n"},
+            {**WORKER_EXPECTED, "channel": ["salami/gapps"]},
+        ]
+        for expected in payloads:
+            with self.subTest(channel=expected.get("channel")), \
+                    tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(SystemExit, "channel"):
+                    self.run_worker_spawning(directory, expected)
+                acknowledgment = json.loads(
+                    (Path(directory) / "ack" / "ack.json").read_text()
+                )
+                self.assertFalse(acknowledgment["ok"])
+                self.assertIn("channel", acknowledgment["error"])
 
     def test_command_failures_propagate_bounded_output_tails(self) -> None:
         for label in ("repo", "docker", "checksum"):
@@ -754,12 +867,7 @@ class RemoteLaunchContractTest(unittest.TestCase):
                 expected_log = f"/opt/android/out/signed/{label}-screen.log"
                 with self.assertRaises(subprocess.CalledProcessError):
                     namespace["launch_worker"](
-                        {
-                            "project_sha": SHA_A,
-                            "repositories": {},
-                            "manifest_sha256": "c" * 64,
-                            "screen_log": expected_log,
-                        },
+                        {**WORKER_EXPECTED, "screen_log": expected_log},
                         ack_directory,
                         lambda *_args, **_kwargs: None,
                     )
@@ -913,6 +1021,7 @@ class RemoteLaunchContractTest(unittest.TestCase):
     def test_launch_returns_log_and_locked_source_evidence(self) -> None:
         self.assertIn('"log": str(log)', REMOTE_LAUNCH_SCRIPT)
         self.assertIn('"source": acknowledgment["source"]', REMOTE_LAUNCH_SCRIPT)
+        self.assertIn('"channel": acknowledgment["channel"]', REMOTE_LAUNCH_SCRIPT)
 
 
 class RemoteJsonChannelTest(unittest.TestCase):

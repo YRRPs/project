@@ -14,9 +14,20 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from .launcher import APPROVAL, PROJECT_ROOT, validate_repo_path, validate_sha, validate_sha256
+from yrrp_ota.channel import BUILD_ID_PATTERN, Channel
 
-BUILD_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}$")
+from .launcher import APPROVAL, PROJECT_ROOT, validate_repo_path, validate_sha, validate_sha256
+from .receipt_channel import (
+    INCREMENTAL_SUFFIX,
+    expected_routes,
+    incremental_source,
+    receipt_stem,
+    release_channel,
+    require_carried_routes_unchanged,
+    required_artifact_names,
+    validate_carried_channels,
+)
+
 MARKER_PATTERN = re.compile(r"\b(?:tbd|todo)\b", re.IGNORECASE)
 TEMPLATE_PATTERN = re.compile(
     r"(?:\{\{[^{}]+\}\}|\$\{[^{}]+\}|__[^_]+__|<[^<>]*(?:placeholder|insert|fill)[^<>]*>)",
@@ -88,15 +99,16 @@ def write_receipt(document: dict[str, Any]) -> Path:
 
 def _write_receipt(document: dict[str, Any], root: Path) -> Path:
     rendered = render_receipt(document)
-    build_id = document["release_identity"]["build_id"]
-    destination = root / ".claude" / "releases" / f"{build_id}.md"
+    identity = document["release_identity"]
+    stem = receipt_stem(release_channel(identity), identity["build_id"])
+    destination = root / ".claude" / "releases" / f"{stem}.md"
     root_fd, claude_fd, releases_fd = _open_release_directory(root)
     try:
         _publish_receipt(
             root_fd,
             claude_fd,
             releases_fd,
-            build_id,
+            stem,
             rendered.encode("utf-8"),
             destination,
         )
@@ -150,11 +162,11 @@ def _publish_receipt(
     root_fd: int,
     claude_fd: int,
     releases_fd: int,
-    build_id: str,
+    stem: str,
     content: bytes,
     destination: Path,
 ) -> None:
-    temporary_name, descriptor = _create_temporary(releases_fd, build_id)
+    temporary_name, descriptor = _create_temporary(releases_fd, stem)
     published = False
     temporary_exists = True
     preserve_final_on_error = False
@@ -170,7 +182,7 @@ def _publish_receipt(
         _require_held_directory(root_fd, claude_fd, releases_fd)
         os.link(
             temporary_name,
-            f"{build_id}.md",
+            f"{stem}.md",
             src_dir_fd=releases_fd,
             dst_dir_fd=releases_fd,
             follow_symlinks=False,
@@ -189,7 +201,7 @@ def _publish_receipt(
     except BaseException as error:
         if published and not preserve_final_on_error:
             try:
-                os.unlink(f"{build_id}.md", dir_fd=releases_fd)
+                os.unlink(f"{stem}.md", dir_fd=releases_fd)
             except OSError as cleanup_error:
                 error.add_note(f"could not remove failed final receipt: {cleanup_error}")
         raise
@@ -212,10 +224,10 @@ def _cleanup_temporary(
             raise
         active_error.add_note(f"receipt temporary cleanup failed: {cleanup_error}")
 
-def _create_temporary(releases_fd: int, build_id: str) -> tuple[str, int]:
+def _create_temporary(releases_fd: int, stem: str) -> tuple[str, int]:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
     for _ in range(10):
-        name = f".{build_id}.{secrets.token_hex(8)}.tmp"
+        name = f".{stem}.{secrets.token_hex(8)}.tmp"
         try:
             return name, os.open(name, flags, 0o600, dir_fd=releases_fd)
         except FileExistsError:
@@ -264,7 +276,9 @@ def _validate_identity(document: dict[str, Any]) -> None:
         identity,
         "release_identity",
         ("build_id", "completion", "overall_result", "approval"),
+        optional=("channel",),
     )
+    release_channel(identity)
     build_id = _text(identity, "build_id", "release_identity")
     if not BUILD_ID_PATTERN.fullmatch(build_id):
         raise ValueError("build ID must match YYYYMMDD-HHMMSS")
@@ -457,7 +471,7 @@ def _validate_deployment(document: dict[str, Any]) -> None:
         section,
         "deployment_public_checks",
         ("deployment_verified", "installed_build_id", "checks"),
-        optional=("container",),
+        optional=("container", "carried_channels"),
     )
     _boolean(section, "deployment_verified", "deployment_public_checks")
     installed = section.get("installed_build_id")
@@ -467,6 +481,9 @@ def _validate_deployment(document: dict[str, Any]) -> None:
         raise ValueError("installed build ID must match YYYYMMDD-HHMMSS")
     if "container" in section:
         _validate_container_schema(section["container"])
+    if "carried_channels" in section:
+        released = release_channel(document["release_identity"])
+        validate_carried_channels(section["carried_channels"], released)
     checks = _list(section["checks"], "deployment_public_checks.checks")
     names: set[str] = set()
     for index, raw in enumerate(checks):
@@ -570,6 +587,12 @@ def _validate_success_gate(document: dict[str, Any]) -> None:
     _validate_success_sources(document)
     incremental = _validate_success_artifacts(document)
     _validate_success_public_checks(document, incremental)
+    if "channel" in document["release_identity"] and "carried_channels" not in deployment:
+        raise ValueError(
+            "SUCCESS receipt with release_identity.channel requires "
+            "deployment_public_checks.carried_channels"
+        )
+    require_carried_routes_unchanged(deployment.get("carried_channels", []))
 
 def _validate_success_sources(document: dict[str, Any]) -> None:
     source = document["source"]
@@ -602,33 +625,27 @@ def _validate_success_sources(document: dict[str, Any]) -> None:
     if unrelated:
         raise ValueError("source contains unrelated repositories: " + ", ".join(sorted(unrelated)))
 
-def _validate_success_artifacts(document: dict[str, Any]) -> bool:
+def _validate_success_artifacts(document: dict[str, Any]) -> str | None:
+    """Validate the signed artifact set; return the incremental artifact name, if any."""
     build_id = document["release_identity"]["build_id"]
+    channel = release_channel(document["release_identity"])
     artifacts = {artifact["name"]: artifact for artifact in document["artifacts"]}
-    required = {
-        f"lineage-23.2-salami-{build_id}-signed-target_files.zip",
-        f"lineage-23.2-salami-{build_id}-signed-ota.zip",
-        f"lineage-23.2-salami-{build_id}-SHA256SUMS.txt",
-    }
-    if not required.issubset(artifacts):
+    if not required_artifact_names(channel, build_id).issubset(artifacts):
         raise ValueError("SUCCESS receipt is missing a required signed artifact")
     if any(
         artifact["size"] <= 0 or not artifact["checksum_verified"]
         for artifact in document["artifacts"]
     ):
         raise ValueError("SUCCESS artifact sizes and checksum verification must be complete")
-    incrementals = [
-        artifact for name, artifact in artifacts.items() if "-signed-incremental-ota.zip" in name
-    ]
+    incrementals = [name for name in artifacts if INCREMENTAL_SUFFIX in name]
     if len(incrementals) > 1:
         raise ValueError("SUCCESS receipt may list at most one incremental artifact")
     if incrementals:
-        _validate_incremental_name(incrementals[0]["name"], build_id)
-    _validate_checksum_output(document, build_id)
-    return bool(incrementals)
+        _validate_incremental_name(incrementals[0], build_id, channel)
+    _validate_checksum_output(document, channel.checksums_name(build_id))
+    return incrementals[0] if incrementals else None
 
-def _validate_checksum_output(document: dict[str, Any], build_id: str) -> None:
-    manifest_name = f"lineage-23.2-salami-{build_id}-SHA256SUMS.txt"
+def _validate_checksum_output(document: dict[str, Any], manifest_name: str) -> None:
     expected = {
         f"{artifact['name']}: OK"
         for artifact in document["artifacts"]
@@ -638,16 +655,10 @@ def _validate_checksum_output(document: dict[str, Any], build_id: str) -> None:
     if len(output) != len(set(output)) or set(output) != expected:
         raise ValueError("checksum verification output does not exactly match artifacts")
 
-def _validate_incremental_name(name: str, target_build_id: str) -> None:
-    match = re.fullmatch(
-        r"lineage-23\.2-salami-(?P<source>[0-9]{8}-[0-9]{6})-to-"
-        r"(?P<target>[0-9]{8}-[0-9]{6})-signed-incremental-ota\.zip",
-        name,
-    )
-    if not match or match["target"] != target_build_id or match["source"] == target_build_id:
-        raise ValueError("incremental artifact source/target relationship is invalid")
+def _validate_incremental_name(name: str, target_build_id: str, channel: Channel) -> None:
+    source = incremental_source(name, target_build_id, channel)
     try:
-        source_time = datetime.strptime(match["source"], "%Y%m%d-%H%M%S")
+        source_time = datetime.strptime(source, "%Y%m%d-%H%M%S")
         target_time = datetime.strptime(target_build_id, "%Y%m%d-%H%M%S")
     except ValueError as error:
         raise ValueError("incremental artifact source build ID is invalid") from error
@@ -655,7 +666,7 @@ def _validate_incremental_name(name: str, target_build_id: str) -> None:
         raise ValueError("incremental artifact source build must be strictly older than target")
 
 def _validate_success_public_checks(
-    document: dict[str, Any], incremental: bool
+    document: dict[str, Any], incremental: str | None
 ) -> None:
     deployment = document["deployment_public_checks"]
     checks = {check["name"]: check for check in deployment["checks"]}
@@ -671,7 +682,7 @@ def _validate_success_public_checks(
         parsed = urlsplit(checks[name]["url"])
         if parsed.netloc != "ota.yimura.dev" or parsed.path != path or parsed.query:
             raise ValueError(f"public check URL does not match required route: {name}")
-    full_name = f"lineage-23.2-salami-{build_id}-signed-ota.zip"
+    full_name = release_channel(document["release_identity"]).full_ota_name(build_id)
     if checks["updates metadata"].get("build_id") != build_id:
         raise ValueError("updates metadata public check does not identify the build")
     if checks["install listing"].get("build_id") != build_id:
@@ -691,10 +702,9 @@ def _validate_success_public_checks(
         raise ValueError("stale fallback must directly return the current full artifact")
 
 def _expected_public_checks(
-    document: dict[str, Any], incremental: bool
+    document: dict[str, Any], incremental: str | None
 ) -> tuple[dict[str, int], dict[str, str]]:
-    build_id = document["release_identity"]["build_id"]
-    full_name = f"lineage-23.2-salami-{build_id}-signed-ota.zip"
+    identity = document["release_identity"]
     statuses = {
         "healthz": 200,
         "updates metadata": 200,
@@ -702,21 +712,9 @@ def _expected_public_checks(
         "install listing": 200,
         "full OTA range": 206,
     }
-    paths = {
-        "healthz": "/healthz",
-        "updates metadata": "/updates/salami.json",
-        "stale fallback": "/updates/salami/1.json",
-        "install listing": f"/install/salami/{build_id}/",
-        "full OTA range": f"/install/salami/{build_id}/{full_name}",
-    }
-    if incremental:
-        name = next(
-            artifact["name"]
-            for artifact in document["artifacts"]
-            if "-signed-incremental-ota.zip" in artifact["name"]
-        )
+    if incremental is not None:
         statuses["incremental OTA range"] = 206
-        paths["incremental OTA range"] = f"/install/salami/{build_id}/{name}"
+    paths = expected_routes(release_channel(identity), identity["build_id"], incremental)
     return statuses, paths
 
 def _validate_success_container(value: Any, build_id: str) -> None:
@@ -837,6 +835,7 @@ def _release_identity(document: dict[str, Any]) -> str:
         "Release identity",
         (
             ("Build ID", value["build_id"]),
+            ("Channel", release_channel(value).name),
             ("Completion", value["completion"]),
             ("Overall result", value["overall_result"]),
             ("Exact approval", value["approval"]),
@@ -942,17 +941,8 @@ def _deployment(document: dict[str, Any]) -> str:
         f"- Deployment verified: {_md(value['deployment_verified'])}",
         f"- Installed build ID: {_md(value['installed_build_id'] or '(missing)')}",
     ]
-    container = value.get("container")
-    if container:
-        lines.extend(
-            (
-                f"- Container healthy: {_md(container['healthy'])}",
-                f"- Container build ID label: {_md(container['build_id_label'])}",
-                f"- Container image label: {_md(container['image_label'])}",
-            )
-        )
-    else:
-        lines.append("- Container evidence: Not captured.")
+    lines.extend(_container_lines(value.get("container"), document["release_identity"]))
+    lines.extend(_carried_channels(value.get("carried_channels")))
     if not value["checks"]:
         lines.append("- Public checks: Not run.")
     for check in sorted(value["checks"], key=lambda item: (item["name"], item["url"])):
@@ -971,6 +961,32 @@ def _deployment(document: dict[str, Any]) -> str:
         if "artifact_name" in check:
             lines.append(f"- Artifact: {_md(check['artifact_name'])}")
     return "\n".join(lines)
+
+def _container_lines(container: dict[str, Any] | None, identity: dict[str, Any]) -> list[str]:
+    if not container:
+        return ["- Container evidence: Not captured."]
+    build_id_label = _md(container["build_id_label"])
+    if "channel" in identity:
+        # Name the checked label; pre-channel receipts keep their original line.
+        build_id_label = f"{_md(release_channel(identity).label)} = {build_id_label}"
+    return [
+        f"- Container healthy: {_md(container['healthy'])}",
+        f"- Container build ID label: {build_id_label}",
+        f"- Container image label: {_md(container['image_label'])}",
+    ]
+
+def _carried_channels(entries: list[dict[str, Any]] | None) -> list[str]:
+    if entries is None:
+        return ["- Carried channels: Not recorded."]
+    if not entries:
+        return ["- Carried channels: None."]
+    lines = ["- Carried channels:"]
+    for entry in sorted(entries, key=lambda item: item["channel"]):
+        lines.append(
+            f"  - {_md(entry['channel'])}: {_md(entry['build_id'])}, "
+            f"routes unchanged: {_md(entry['routes_unchanged'])}"
+        )
+    return lines
 
 def _proof_outcomes(document: dict[str, Any]) -> str:
     lines = ["## Proof outcomes"]

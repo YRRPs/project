@@ -126,6 +126,32 @@ class IncrementalOtaTest(unittest.TestCase):
         self.assertEqual(1, bad.returncode)
         self.assertIn("incremental-ota:", bad.stderr)
 
+    def test_gapps_channel_requires_gapps_incremental_name(self) -> None:
+        from yrrp_ota.channel import GAPPS
+        from yrrp_ota.incremental import check_identity
+
+        sha = "a" * 64
+        good = Path(f"/x/{GAPPS.incremental_ota_name('20261009-120000', '20261010-120000')}")
+        check_identity(good, "20261009-120000", "20261010-120000", "7", sha, channel=GAPPS)
+        vanilla_name = Path("/x/lineage-23.2-salami-20261009-120000-to-20261010-120000-signed-incremental-ota.zip")
+        with self.assertRaises(ValueError):
+            check_identity(vanilla_name, "20261009-120000", "20261010-120000", "7", sha, channel=GAPPS)
+
+    def test_cli_verify_output_rejects_vanilla_zip_for_gapps_channel(self) -> None:
+        incremental = create_incremental_fixture(self.root / "signed")
+        result = subprocess.run(
+            [
+                sys.executable, str(CLI), "verify-output",
+                "--incremental", str(incremental), "--target-files", str(self.target),
+                "--source-build", SOURCE_BUILD_ID, "--target-build", BUILD_ID,
+                "--source-incremental", SOURCE_INCREMENTAL, "--source-sha256", self.source_sha,
+                "--channel", "salami/gapps",
+            ],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("does not match", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,11 +24,11 @@ from yrrp_ota.archive import (  # noqa: E402
     sha256,
     write_json,
 )
+from yrrp_ota.channel import BUILD_ID_PATTERN, LINEAGE_VERSION, VANILLA, Channel  # noqa: E402
 from yrrp_ota.incremental import load_meta  # noqa: E402
-from yrrp_ota.naming import BUILD_ID_PATTERN, DEVICE, LINEAGE_VERSION, full_ota_name  # noqa: E402
 
 RELEASE_TYPE = "UNOFFICIAL"
-RELEASE_SCHEMA = 2
+RELEASE_SCHEMA = 3
 DIGEST_PATTERN = re.compile(r"^.+@sha256:[0-9a-f]{64}$")
 IMAGE_NAMES = (
     "boot.img",
@@ -38,6 +38,8 @@ IMAGE_NAMES = (
     "vendor_boot.img",
     "recovery.img",
 )
+# GApps components a gapps build must carry and a vanilla build must not.
+GAPPS_COMPONENTS = ("GmsCore", "Phonesky")
 
 
 def validate_public_base_url(value: str) -> str:
@@ -87,9 +89,10 @@ def validate_build_properties(
     product_properties: dict[str, str],
     system_properties: dict[str, str],
     ota_metadata: dict[str, object],
+    channel: Channel,
 ) -> None:
     expected = {
-        "ro.lineage.device": DEVICE,
+        "ro.lineage.device": channel.device,
         "ro.lineage.releasetype": RELEASE_TYPE,
         "ro.lineage.build.version": LINEAGE_VERSION,
     }
@@ -105,6 +108,33 @@ def validate_build_properties(
         raise ValueError("target-files timestamp is not an integer") from error
     if target_timestamp != ota_metadata["timestamp"]:
         raise ValueError("target-files timestamp does not match OTA post-timestamp")
+    # Builds made before build types existed carry no property; they are vanilla.
+    build_type = system_properties.get("ro.yrrp.build.type", VANILLA.type)
+    if build_type != channel.type:
+        raise ValueError(f"target-files ro.yrrp.build.type is {build_type}, channel needs {channel.type}")
+
+
+def present_gapps_components(member_names: list[str]) -> set[str]:
+    """Return the GApps components with an APK under any partition's priv-app directory."""
+    return {
+        component
+        for component in GAPPS_COMPONENTS
+        for name in member_names
+        if f"/priv-app/{component}/" in name and name.endswith(".apk")
+    }
+
+
+def validate_gapps_presence(member_names: list[str], channel: Channel) -> None:
+    """vanilla and gapps share one out/; refuse a stale or missing GApps APK."""
+    present = present_gapps_components(member_names)
+    if channel.is_vanilla:
+        unexpected = sorted(present)
+        if unexpected:
+            raise ValueError(f"{channel.name} target-files contains {', '.join(unexpected)}; stale GApps in out/")
+        return
+    missing = [component for component in GAPPS_COMPONENTS if component not in present]
+    if missing:
+        raise ValueError(f"{channel.name} target-files is missing {', '.join(missing)} APK")
 
 
 def artifact_record(path: Path, role: str) -> dict[str, object]:
@@ -125,10 +155,13 @@ class Release:
     base_image_digest: str
     ota_metadata: dict[str, object]
     incremental: dict[str, Any] | None
+    channel: Channel
 
 
-def validate_incremental(incremental: Path, build_id: str, full: dict[str, object]) -> dict[str, Any]:
-    meta = load_meta(incremental, build_id)
+def validate_incremental(
+    incremental: Path, build_id: str, full: dict[str, object], channel: Channel
+) -> dict[str, Any]:
+    meta = load_meta(incremental, build_id, channel=channel)
     source = "incremental OTA metadata"
     with open_unique_zip(incremental) as archive:
         metadata = read_metadata(archive, source)
@@ -173,7 +206,8 @@ def release_manifest(release: Release, artifacts: list[dict[str, object]], ota_u
         "artifacts": artifacts,
         "base_image": release.base_image_digest,
         "build_id": release.build_id,
-        "device": DEVICE,
+        "channel": release.channel.name,
+        "device": release.channel.device,
         "incremental": incremental,
         "lineage_version": LINEAGE_VERSION,
         "ota_timestamp": release.ota_metadata["timestamp"],
@@ -187,35 +221,40 @@ def release_manifest(release: Release, artifacts: list[dict[str, object]], ota_u
     }
 
 
-def generate_metadata(release_dir: Path, release: Release) -> None:
-    base_url = f"{release.public_base_url}/install/{DEVICE}/{release.build_id}"
+def write_updater_entries(rootfs: Path, release: Release, ota_record: dict[str, object], base_url: str) -> str:
+    """Write the full and optional incremental updater JSON; return the full OTA URL."""
+    channel = release.channel
+    ota_url = f"{base_url}/{release.ota.name}"
+    full_entry = updater_entry(ota_record, ota_url, release.ota_metadata, str(release.ota_metadata["property_files"]))
+    write_json(rootfs / channel.updates_full_path, full_entry)
+    if release.incremental:
+        incremental = release.incremental
+        entry = updater_entry(
+            incremental, f"{base_url}/{incremental['filename']}", release.ota_metadata, incremental["property_files"]
+        )
+        write_json(rootfs / channel.updates_incremental_path(incremental["source_incremental"]), entry)
+    return ota_url
+
+
+def generate_metadata(staging: Path, release_dir: Path, release: Release) -> None:
+    base_url = f"{release.public_base_url}/{release.channel.install_dir(release.build_id)}"
     ota_record = artifact_record(release_dir / release.ota.name, "ota")
     artifacts = [ota_record]
     if release.incremental:
         artifacts.append(artifact_record(release_dir / release.incremental["filename"], "incremental-ota"))
     artifacts.extend(artifact_record(release_dir / name, name.removesuffix(".img")) for name in IMAGE_NAMES)
-    updates_dir = release_dir.parents[2] / "updates"
-    ota_url = f"{base_url}/{release.ota.name}"
-    full_entry = updater_entry(ota_record, ota_url, release.ota_metadata, str(release.ota_metadata["property_files"]))
-    write_json(updates_dir / f"{DEVICE}.json", full_entry)
-    if release.incremental:
-        incremental = release.incremental
-        (updates_dir / DEVICE).mkdir()
-        entry = updater_entry(
-            incremental, f"{base_url}/{incremental['filename']}", release.ota_metadata, incremental["property_files"]
-        )
-        write_json(updates_dir / DEVICE / f"{incremental['source_incremental']}.json", entry)
+    ota_url = write_updater_entries(staging / "rootfs", release, ota_record, base_url)
     write_json(release_dir / "release.json", release_manifest(release, artifacts, ota_url))
     with (release_dir / "SHA256SUMS.txt").open("w", encoding="utf-8") as output:
         for artifact in artifacts:
             output.write(f"{artifact['sha256']}  {artifact['filename']}\n")
 
 
-def validate_inputs(ota: Path, build_id: str, base_image_digest: str) -> None:
+def validate_inputs(ota: Path, build_id: str, base_image_digest: str, channel: Channel) -> None:
     if not BUILD_ID_PATTERN.fullmatch(build_id):
         raise ValueError("build ID must match YYYYMMDD-HHMMSS")
-    if ota.name != full_ota_name(build_id):
-        raise ValueError("signed OTA filename does not match device, version, and build ID")
+    if ota.name != channel.full_ota_name(build_id):
+        raise ValueError("signed OTA filename does not match channel, version, and build ID")
     if not DIGEST_PATTERN.fullmatch(base_image_digest):
         raise ValueError("base image must be pinned by sha256 digest")
 
@@ -227,26 +266,30 @@ def reset_output(output: Path) -> None:
         output.rmdir()
 
 
-def stage_full_release(ota: Path, target_files: Path, release_dir: Path) -> dict[str, object]:
+def stage_full_release(ota: Path, target_files: Path, release_dir: Path, channel: Channel) -> dict[str, object]:
     with open_unique_zip(ota) as ota_zip, open_unique_zip(target_files) as target_zip:
         metadata = validate_metadata(read_metadata(ota_zip, "OTA metadata"))
         product_properties = parse_properties(
             target_zip.read("PRODUCT/etc/build.prop"), "target-files PRODUCT build.prop"
         )
-        validate_build_properties(product_properties, read_system_properties(target_zip), metadata)
+        validate_build_properties(product_properties, read_system_properties(target_zip), metadata, channel)
+        validate_gapps_presence(target_zip.namelist(), channel)
         shutil.copyfile(ota, release_dir / ota.name)
         for image in IMAGE_NAMES:
             copy_member(target_zip, f"IMAGES/{image}", release_dir / image)
     return metadata
 
 
-def check_release_tree(staging: Path, build_id: str, ota_name: str, incremental: dict[str, Any] | None) -> None:
-    install = Path("rootfs/install") / DEVICE / build_id
+def check_release_tree(
+    staging: Path, build_id: str, ota_name: str, incremental: dict[str, Any] | None, channel: Channel
+) -> None:
+    rootfs = Path("rootfs")
+    install = rootfs / channel.install_dir(build_id)
     names = [ota_name, *IMAGE_NAMES, "SHA256SUMS.txt", "release.json"]
-    allowed = {Path("rootfs/updates") / f"{DEVICE}.json"}
+    allowed = {rootfs / channel.updates_full_path}
     if incremental:
         names.append(incremental["filename"])
-        allowed.add(Path("rootfs/updates") / DEVICE / f"{incremental['source_incremental']}.json")
+        allowed.add(rootfs / channel.updates_incremental_path(incremental["source_incremental"]))
     allowed.update(install / name for name in names)
     actual = {path.relative_to(staging) for path in staging.rglob("*") if path.is_file()}
     if actual != allowed:
@@ -262,25 +305,27 @@ def prepare_release(
     base_image_digest: str,
     output: Path,
     incremental: Path | None = None,
+    channel: Channel = VANILLA,
 ) -> Path:
     ota, target_files, output = Path(ota), Path(target_files), Path(output)
     incremental = Path(incremental) if incremental is not None else None
-    validate_inputs(ota, build_id, base_image_digest)
+    validate_inputs(ota, build_id, base_image_digest, channel)
     public_base_url = validate_public_base_url(public_base_url)
     reset_output(output)
     staging = output.parent / f".{output.name}.staging-{uuid.uuid4().hex}"
     try:
-        release_dir = staging / "rootfs" / "install" / DEVICE / build_id
+        release_dir = staging / "rootfs" / channel.install_dir(build_id)
         release_dir.mkdir(parents=True)
-        (staging / "rootfs" / "updates").mkdir(parents=True)
-        metadata = stage_full_release(ota, target_files, release_dir)
+        metadata = stage_full_release(ota, target_files, release_dir, channel)
         incremental_record = None
         if incremental is not None:
-            incremental_record = validate_incremental(incremental, build_id, metadata)
+            incremental_record = validate_incremental(incremental, build_id, metadata, channel)
             shutil.copyfile(incremental, release_dir / incremental.name)
-        release = Release(build_id, ota, target_files, public_base_url, base_image_digest, metadata, incremental_record)
-        generate_metadata(release_dir, release)
-        check_release_tree(staging, build_id, ota.name, incremental_record)
+        release = Release(
+            build_id, ota, target_files, public_base_url, base_image_digest, metadata, incremental_record, channel
+        )
+        generate_metadata(staging, release_dir, release)
+        check_release_tree(staging, build_id, ota.name, incremental_record, channel)
         staging.rename(output)
         return output
     except Exception:
@@ -297,6 +342,7 @@ def main() -> None:
     parser.add_argument("--base-image-digest", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--incremental", type=Path)
+    parser.add_argument("--channel", default=VANILLA.name)
     arguments = parser.parse_args()
     result = prepare_release(
         ota=arguments.ota,
@@ -306,6 +352,7 @@ def main() -> None:
         base_image_digest=arguments.base_image_digest,
         output=arguments.output,
         incremental=arguments.incremental,
+        channel=Channel.parse(arguments.channel),
     )
     print(result)
 

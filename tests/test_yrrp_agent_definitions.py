@@ -98,10 +98,10 @@ RELEASE_DUTIES = (
     "Fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA.",
     "Run the fixed `prepare` command from that release checkout with the project SHA and every selected repository SHA.",
     "Present the returned project, repository, local-manifest filename/hash, and revision-locked manifest evidence through `AskUserQuestion` with the exact approval option `Build and release`.",
-    "Only after that approval, run the fixed `launch` command with the same SHAs and exact returned manifest SHA-256.",
+    "Only after that approval, run the fixed `launch` command with the same SHAs, exact returned manifest SHA-256, and the approved `--channel`.",
     "Monitor the approved build, then verify checksums, signatures, container health, public endpoints, and device behavior.",
     "Coordinate every proof claim serially and assign exactly one verdict.",
-    "Create one immutable Markdown receipt under `.claude/releases/<build-id>.md` with no-overwrite semantics.",
+    "Create one immutable Markdown receipt per channel release under `.claude/releases/<build-id>.md` for vanilla or `.claude/releases/<type>-<build-id>.md` for other types, with no-overwrite semantics.",
 )
 OBSOLETE_RUNTIME_TOKENS = (
     "yrrp-build-" + "campaign",
@@ -442,6 +442,7 @@ class AgentDefinitionTest(unittest.TestCase):
             "Build and release",
             "python3 scripts/yrrp-release.py launch",
             "--manifest-sha256",
+            "--channel",
         ):
             self.assertIn(phrase, body)
         prepare = body.index("yrrp-release.py prepare")

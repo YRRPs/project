@@ -101,7 +101,7 @@ The sampler writes one line to `samples.jsonl` every 1 s. Each line holds:
 
 ### `sign-lineage-build.sh` (project)
 
-Before signing, the script exports `YRRP_SIGNING_PROFILE_DIR=${output_dir}/profile/${build_date}`. After signing, it prints that path. The deploy script receives explicit file arguments, so the profile directory never reaches the OTA server.
+Before signing, the script exports `YRRP_SIGNING_PROFILE_DIR=${output_dir}/profile/${build_type}-${build_date}`, so builds of different channels never share a directory. After signing, it prints that path. The deploy script receives explicit file arguments, so the profile directory never reaches the OTA server.
 
 ## Error handling
 
@@ -137,4 +137,4 @@ Local tests cannot prove that the hooks run inside the built `sign_target_files_
 
 ## Release proof
 
-After the next signed release, `out/signed/profile/<build_date>/` on the builder holds `timeline.jsonl`, `samples.jsonl`, `signing.prof`, `signing-top.txt`, and `summary.json`. The four steps add up to within 5 s of the `signing-target-files` phase duration, and the release still produces an OTA signed by the release key.
+After the next signed release, `out/signed/profile/<type>-<build_date>/` on the builder holds `timeline.jsonl`, `samples.jsonl`, `signing.prof`, `signing-top.txt`, and `summary.json`. The four steps add up to within 5 s of the `signing-target-files` phase duration, and the release still produces an OTA signed by the release key.
