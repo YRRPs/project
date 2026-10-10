@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -145,6 +147,66 @@ class ChannelTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     channel_module.validate_allowlist(frozenset(bad))
         channel_module.validate_allowlist(ALLOWED)
+
+
+CLI = Path(__file__).resolve().parents[1] / "scripts/ota-channel.py"
+
+
+def channel_cli(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run([sys.executable, str(CLI), *args], capture_output=True, text=True)
+
+
+class ChannelCliTest(unittest.TestCase):
+    def test_prints_names_and_paths(self) -> None:
+        cases = {
+            ("--channel", "salami/gapps", "type"): "gapps",
+            ("--channel", "salami/gapps", "device"): "salami",
+            ("--channel", "salami/gapps", "label"): GAPPS.label,
+            ("--channel", "salami/gapps", "target-files", BUILD): GAPPS.target_files_name(BUILD),
+            ("--channel", "salami/gapps", "ota", BUILD): GAPPS.full_ota_name(BUILD),
+            ("--channel", "salami/gapps", "incremental", SOURCE, BUILD): GAPPS.incremental_ota_name(SOURCE, BUILD),
+            ("--channel", "salami/gapps", "checksums", BUILD): GAPPS.checksums_name(BUILD),
+            ("--channel", "salami/gapps", "install-dir", BUILD): GAPPS.install_dir(BUILD),
+            ("--channel", "salami/gapps", "updates-full"): GAPPS.updates_full_path,
+            ("--channel", "salami/gapps", "updates-incremental", "7"): GAPPS.updates_incremental_path("7"),
+        }
+        for args, expected in cases.items():
+            result = channel_cli(*args)
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual(expected, result.stdout.strip(), args)
+
+    def test_rejects_unknown_channel(self) -> None:
+        result = channel_cli("--channel", "salami/kernelsu", "type")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("unknown channel", result.stderr)
+
+    def test_rejects_bad_values_without_traceback(self) -> None:
+        bad_calls = (
+            ("ota", "latest"),
+            ("incremental", SOURCE, "../x"),
+            ("updates-incremental", "../7"),
+            ("ota",),
+            ("ota", BUILD, BUILD),
+        )
+        for args in bad_calls:
+            result = channel_cli("--channel", "salami/gapps", *args)
+            self.assertEqual(2, result.returncode, args)
+            self.assertIn("ota-channel:", result.stderr, args)
+            self.assertNotIn("Traceback", result.stderr, args)
+
+    def test_live_build_reads_channel_and_legacy_labels(self) -> None:
+        legacy = json.dumps({"io.yrrp.ota.device": "salami", "io.yrrp.ota.build-id": SOURCE})
+        self.assertEqual(SOURCE, channel_cli("--channel", "salami/vanilla", "live-build", legacy).stdout.strip())
+        self.assertEqual("", channel_cli("--channel", "salami/gapps", "live-build", legacy).stdout.strip())
+        labels = json.dumps({GAPPS.label: BUILD})
+        self.assertEqual(BUILD, channel_cli("--channel", "salami/gapps", "live-build", labels).stdout.strip())
+
+    def test_live_build_rejects_malformed_or_partial_labels(self) -> None:
+        for labels in ("not json", "[]", json.dumps({"io.yrrp.ota.device": "salami"})):
+            result = channel_cli("--channel", "salami/vanilla", "live-build", labels)
+            self.assertEqual(2, result.returncode, labels)
+            self.assertIn("ota-channel:", result.stderr, labels)
+            self.assertNotIn("Traceback", result.stderr, labels)
 
 
 if __name__ == "__main__":
