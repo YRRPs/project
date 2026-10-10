@@ -29,6 +29,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         command.add_argument("--repo", action="append", default=[], metavar="PATH=SHA")
     launch.add_argument("--approval", required=True)
     launch.add_argument("--manifest-sha256", required=True)
+    launch.add_argument("--channel", required=True, metavar="DEVICE/TYPE")
     receipt = commands.add_parser("receipt")
     receipt.add_argument("--input", required=True, metavar="JSON-FILE-OR--")
     return parser.parse_args(argv)
@@ -44,7 +45,11 @@ def run(arguments: argparse.Namespace) -> dict:
         return prepare_release(project_sha, repositories)
     manifest_sha256 = validate_sha256(arguments.manifest_sha256, "manifest SHA-256")
     return launch_release(
-        arguments.approval, project_sha, repositories, manifest_sha256
+        arguments.approval,
+        project_sha,
+        repositories,
+        manifest_sha256,
+        channel=arguments.channel,
     )
 
 

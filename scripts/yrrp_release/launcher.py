@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from yrrp_ota.channel import Channel
 from yrrp_ota.naming import SHA256_PATTERN
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -247,6 +248,16 @@ def acquire_nonblocking_lock():
 '''
 
 REMOTE_LAUNCH_WORKER_SCRIPT = _REMOTE_COMMON + r'''
+import re
+
+
+def require_channel(expected):
+    channel = expected.get("channel")
+    if not isinstance(channel, str) or not re.fullmatch(r"[a-z0-9]+/[a-z0-9]+", channel):
+        raise SystemExit(f"launch payload has missing or malformed channel: {channel!r}")
+    return channel
+
+
 def write_launch_status(value):
     STATUS_PATH.write_text(value + "\n")
 
@@ -288,6 +299,7 @@ def validate_signer_entry():
 def launch_worker(expected, ack_directory, signer_spawn=subprocess.Popen):
     lock = None
     try:
+        channel = require_channel(expected)
         lock = acquire_nonblocking_lock()
         write_launch_status("launch-validating")
         reject_active_release(include_screen=False)
@@ -302,9 +314,9 @@ def launch_worker(expected, ack_directory, signer_spawn=subprocess.Popen):
         environment["YRRP_BUILD_LOCK_HELD"] = "1"
         environment["YRRP_BUILD_LOCK_FD"] = str(lock.fileno())
         signer = "/opt/yrrp/project/scripts/sign-lineage-build.sh"
-        write_launch_status("launch-starting-signer")
+        write_launch_status(f"launch-starting-signer:{channel}")
         process = signer_spawn(
-            [signer], env=environment, pass_fds=(lock.fileno(),)
+            [signer, "--channel", channel], env=environment, pass_fds=(lock.fileno(),)
         )
     except BaseException as error:
         reason = failure_reason(error)
@@ -317,7 +329,8 @@ def launch_worker(expected, ack_directory, signer_spawn=subprocess.Popen):
         if lock is not None:
             lock.close()
         raise
-    if not write_launch_ack(ack_directory, {"ok": True, "source": source}):
+    acknowledgment = {"ok": True, "channel": channel, "source": source}
+    if not write_launch_ack(ack_directory, acknowledgment):
         process.terminate()
         process.wait()
         write_launch_status("launch-failed:acknowledgment-channel-closed")
@@ -420,7 +433,14 @@ try:
     acknowledgment = wait_for_launch_ack(ack_directory, log_path=log)
 finally:
     shutil.rmtree(ack_directory, ignore_errors=True)
-print(json.dumps({"log": str(log), "source": acknowledgment["source"]}, sort_keys=True))
+print(json.dumps(
+    {
+        "channel": acknowledgment["channel"],
+        "log": str(log),
+        "source": acknowledgment["source"],
+    },
+    sort_keys=True,
+))
 '''
 )
 
@@ -553,9 +573,12 @@ def launch_release(
     project_sha: str,
     repositories: dict[str, str],
     manifest_sha256: str,
+    *,
+    channel: str,
 ) -> dict[str, Any]:
     if approval != APPROVAL:
         raise ValueError(f"launch requires exact approval {APPROVAL!r}")
+    channel = Channel.parse(channel).name
     project_sha, repositories = _validated_request(project_sha, repositories)
     manifest_sha256 = validate_sha256(manifest_sha256, "manifest SHA-256")
     verify_local_project(project_sha)
@@ -565,6 +588,7 @@ def launch_release(
             "project_sha": project_sha,
             "repositories": repositories,
             "manifest_sha256": manifest_sha256,
+            "channel": channel,
         },
     )
 
