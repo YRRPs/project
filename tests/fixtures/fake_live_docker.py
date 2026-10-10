@@ -14,9 +14,13 @@ from pathlib import Path
 
 args = sys.argv[1:]
 live_build = os.environ.get("FAKE_LIVE_BUILD", "")
+failing = os.environ.get("FAKE_INSPECT_FAIL", "")
+inspect_fails = bool(failing) and failing in " ".join(args)
 if args[:2] == ["container", "inspect"]:
     sys.exit(0 if live_build else 1)
 if args[:1] == ["inspect"] and "{{json .Config.Labels}}" in args:
+    if inspect_fails:
+        sys.exit(1)
     labels = os.environ.get("FAKE_LIVE_LABELS")
     if labels is None and live_build:
         labels = json.dumps({
@@ -29,8 +33,7 @@ if args[:1] == ["inspect"]:
     if not live_build:
         sys.exit(1)
     joined = " ".join(args)
-    failing = os.environ.get("FAKE_INSPECT_FAIL", "")
-    if failing and failing in joined:
+    if inspect_fails:
         sys.exit(1)
     if "io.yrrp.ota.device" in joined:
         print(os.environ.get("FAKE_LIVE_DEVICE", "salami"))

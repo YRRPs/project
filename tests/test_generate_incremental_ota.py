@@ -197,6 +197,11 @@ class GenerateIncrementalOtaTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("cannot read live channel labels", result.stderr)
 
+    def test_failing_label_inspect_fails(self) -> None:
+        result = self.run_script(FAKE_INSPECT_FAIL="{{json .Config.Labels}}")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("is unavailable", result.stderr)
+
     def test_rejects_unknown_channel(self) -> None:
         result = self.run_script(channel="salami/nonsense")
         self.assertEqual(64, result.returncode)
