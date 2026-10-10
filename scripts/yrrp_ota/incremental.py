@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .archive import open_unique_zip, read_metadata, read_system_properties, require, sha256
-from .channel import VANILLA, Channel
-from .naming import BUILD_ID_PATTERN, INCREMENTAL_PATTERN, SHA256_PATTERN
+from .channel import BUILD_ID_PATTERN, INCREMENTAL_PATTERN, VANILLA, Channel
+from .naming import SHA256_PATTERN
 
 METADATA = "incremental OTA metadata"
 
@@ -44,6 +44,7 @@ def check_identity(
     *,
     channel: Channel = VANILLA,
 ) -> None:
+    # Checked here, not left to channel naming, to keep the legacy "build ID must match YYYYMMDD-HHMMSS" message.
     for build_id in (source_build_id, target_build_id):
         if not BUILD_ID_PATTERN.fullmatch(build_id):
             raise ValueError(f"build ID must match YYYYMMDD-HHMMSS: {build_id}")

@@ -1,4 +1,4 @@
-"""Release identity shared by every channel: version, ID shapes, and vanilla names."""
+"""Release identity shared by every channel: version, device, and ID shapes."""
 from __future__ import annotations
 
 import re
