@@ -6,46 +6,20 @@ Quick reference for clean-installing personal signed LineageOS 23.2 build on `sa
 
 ## Files
 
-Use artifacts from same signed build. The examples below show a `vanilla` build. `gapps` file names insert `-gapps` after `salami`, for example `lineage-23.2-salami-gapps-20261003-121141-signed-ota.zip`. See [3. Choose your type](#3-choose-your-type).
+Every file comes from one HTTPS install directory on `ota.yimura.dev`. You choose the type and download the files in [3. Choose your type](#3-choose-your-type). The examples use `vanilla` build `20261003-121141`. `gapps` file names insert `-gapps` after `salami`, for example `lineage-23.2-salami-gapps-20261003-121141-signed-ota.zip`.
+
+An install directory holds:
 
 ```text
 lineage-23.2-salami-20261003-121141-signed-ota.zip
-install-images-20261003-121141/
-├── boot.img
-├── dtbo.img
-├── init_boot.img
-├── vbmeta.img
-├── vendor_boot.img
-├── recovery.img
-└── SHA256SUMS.txt
-```
-
-Remote locations:
-
-```text
-/opt/android/out/signed/lineage-23.2-salami-20261003-121141-signed-ota.zip
-/opt/android/out/signed/install-images-20261003-121141/
-```
-
-OTA SHA-256:
-
-```text
-0b3b708ea099a26adb710fd595eadd41286dc3e49606f4d01d66a80c6f3565d8
-```
-
-Download with:
-
-```bash
-scp AndroidBuilder:/opt/android/out/signed/lineage-23.2-salami-20261003-121141-signed-ota.zip .
-scp -r AndroidBuilder:/opt/android/out/signed/install-images-20261003-121141 .
-```
-
-Verify:
-
-```bash
-sha256sum lineage-23.2-salami-20261003-121141-signed-ota.zip
-cd install-images-20261003-121141
-sha256sum --check SHA256SUMS.txt
+boot.img
+dtbo.img
+init_boot.img
+vbmeta.img
+vendor_boot.img
+recovery.img
+SHA256SUMS.txt
+release.json
 ```
 
 ## 1. Confirm firmware
@@ -73,13 +47,31 @@ Pick one build type before you flash. Every file in the following steps must com
 | `vanilla` | No Google apps | `https://ota.yimura.dev/install/salami/<build_id>/` |
 | `gapps` | MindTheGapps built in | `https://ota.yimura.dev/install/salami/gapps/<build_id>/` |
 
-Each install directory holds the full OTA, the six install images, `SHA256SUMS.txt`, and `release.json`. The device's Updater follows the type you install. To change type later, see [`gapps.md`](gapps.md#switch-types).
+Each install directory holds the full OTA, the six install images, `SHA256SUMS.txt`, and `release.json`. When the build has an incremental OTA, the directory holds it too; a clean install does not use it. The device's Updater follows the type you install. To change type later, see [`gapps.md`](gapps.md#switch-types).
 
 Do not sideload a separate GApps package. It does not survive incremental OTAs.
 
+1. Find the current build ID of your type. Open `https://ota.yimura.dev/updates/salami.json` for `vanilla` or `https://ota.yimura.dev/updates/salami/gapps.json` for `gapps`. The `url` field names the install directory, for example `https://ota.yimura.dev/install/salami/20261003-121141/lineage-23.2-salami-20261003-121141-signed-ota.zip`.
+2. Download every file that `SHA256SUMS.txt` lists into an empty directory:
+
+   ```bash
+   base=https://ota.yimura.dev/install/salami/20261003-121141
+   curl -fLO "${base}/SHA256SUMS.txt"
+   awk '{print $2}' SHA256SUMS.txt | while read -r name; do curl -fLO "${base}/${name}"; done
+   ```
+
+   For `gapps`, use `base=https://ota.yimura.dev/install/salami/gapps/<build_id>`.
+3. Verify the files:
+
+   ```bash
+   sha256sum --check SHA256SUMS.txt
+   ```
+
+   Every line must report `OK`. If any line fails, stop and download again.
+
 ## 4. Flash matching signed images
 
-From `install-images-20261003-121141/`:
+From the directory that holds the verified files:
 
 ```bash
 fastboot flash boot boot.img
