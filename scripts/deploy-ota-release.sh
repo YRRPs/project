@@ -3,6 +3,8 @@ set -Eeuo pipefail
 
 readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly prepare_script=${script_dir}/prepare-ota-release.py
+readonly carry_tool=${script_dir}/ota-carry-over.py
+readonly channel_tool=${script_dir}/ota-channel.py
 source "${script_dir}/yrrp-release-lib.sh"
 : "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
 : "${OTA_BASE_IMAGE_REF:=ghcr.io/yrrps/ota-server:main}"
@@ -16,6 +18,7 @@ readonly health_interval=${OTA_HEALTH_INTERVAL:-2}
 readonly work_dir=${OTA_WORK_DIR:-/opt/android/out/ota-release-contexts}
 readonly lock_file=${OTA_LOCK_FILE:-/opt/android/out/.ota-deploy.lock}
 
+channel=salami/vanilla
 ota=
 target_files=
 build_id=
@@ -32,7 +35,7 @@ candidate_image=
 previous_image=
 
 usage() {
-    echo "usage: $0 --ota FILE --target-files FILE --build-id YYYYMMDD-HHMMSS [--incremental FILE]" >&2
+    echo "usage: $0 [--channel DEVICE/TYPE] --ota FILE --target-files FILE --build-id YYYYMMDD-HHMMSS [--incremental FILE]" >&2
     exit 64
 }
 
@@ -50,6 +53,7 @@ report() {
 
 while (($#)); do
     case $1 in
+        --channel) channel=${2:-}; shift 2 ;;
         --ota) ota=${2:-}; shift 2 ;;
         --target-files) target_files=${2:-}; shift 2 ;;
         --build-id) build_id=${2:-}; shift 2 ;;
@@ -58,6 +62,20 @@ while (($#)); do
     esac
 done
 [[ -n "${ota}" && -n "${target_files}" && -n "${build_id}" ]] || usage
+readonly channel
+
+channel_field() {
+    python3 "${channel_tool}" --channel "${channel}" "$@"
+}
+
+# Split assignments: readonly x=$(...) would hide a failing channel_field.
+channel_type=$(channel_field type) || usage
+channel_label=$(channel_field label) || usage
+install_dir=$(channel_field install-dir "${build_id}") || usage
+updates_full=$(channel_field updates-full) || usage
+fallback_route=$(channel_field updates-incremental 1) || usage
+readonly channel_type channel_label install_dir updates_full fallback_route
+incremental_route=
 
 cleanup() {
     if [[ -n "${context}" && -d "${context}" ]]; then
@@ -97,21 +115,40 @@ verify_candidate() {
     local ota_name incremental_name
     ota_name=$(basename "${ota}")
     docker exec "${container_name}" wget -q -O /dev/null "http://127.0.0.1:${internal_port}/healthz" || return 1
-    docker exec "${container_name}" wget -q -O /dev/null "http://127.0.0.1:${internal_port}/updates/salami.json" || return 1
-    container_range "/install/salami/${build_id}/${ota_name}" || return 1
-    container_get /updates/salami/1.json "${ota_name}" || return 1
+    docker exec "${container_name}" wget -q -O /dev/null "http://127.0.0.1:${internal_port}/${updates_full}" || return 1
+    container_range "/${install_dir}/${ota_name}" || return 1
+    container_get "/${fallback_route}" "${ota_name}" || return 1
     if [[ -n ${incremental} ]]; then
         incremental_name=$(basename "${incremental}")
-        container_get "/updates/salami/${source_incremental}.json" "${incremental_name}" || return 1
-        container_range "/install/salami/${build_id}/${incremental_name}" || return 1
+        container_get "/${incremental_route}" "${incremental_name}" || return 1
+        container_range "/${install_dir}/${incremental_name}" || return 1
     fi
+    if [[ -f ${context}/carried.json ]]; then
+        python3 "${carry_tool}" verify-routes --container "${container_name}" --snapshot "${context}/carried.json" || return 1
+    fi
+}
+
+# Copy and verify every other live channel into the context; append their labels to label_args.
+carry_live_channels() {
+    local labels_file=${context}/carried-labels label
+    local -a carried_labels
+    report carrying-ota-channels
+    python3 "${carry_tool}" carry --container "${container_name}" --channel "${channel}" --context "${context}" \
+        > "${labels_file}" || fail "carrying live OTA channels failed"
+    [[ -s ${context}/carried.json ]] || fail "carrying live OTA channels wrote no snapshot"
+    mapfile -t carried_labels < "${labels_file}"
+    for label in "${carried_labels[@]}"; do
+        [[ ${label} =~ ^io\.yrrp\.ota\.channel\.[a-z0-9]+\.[a-z0-9]+\.build-id=[0-9]{8}-[0-9]{6}$ ]] \
+            || fail "carry-over printed an invalid label: ${label}"
+        label_args+=(--label "${label}")
+    done
 }
 
 rollback_transaction() {
     local rollback_failed=false
     report rolling-back-ota-release >&2
     if ${candidate_started}; then
-        candidate_build=$(docker inspect --format '{{ index .Config.Labels "io.yrrp.ota.build-id" }}' "${container_name}" 2>/dev/null || true)
+        candidate_build=$(docker inspect --format "{{ index .Config.Labels \"${channel_label}\" }}" "${container_name}" 2>/dev/null || true)
         if [[ ${candidate_build} == "${build_id}" ]]; then
             docker logs --tail 100 "${container_name}" >&2 || true
             docker rm -f "${container_name}" >/dev/null 2>&1 || true
@@ -200,6 +237,7 @@ mapfile -t base_digests < <(
 readonly base_digest=${base_digests[0]}
 context=${work_dir}/release-${build_id}-$$
 prepare_args=(
+    --channel "${channel}"
     --ota "${ota}"
     --target-files "${target_files}"
     --build-id "${build_id}"
@@ -214,6 +252,13 @@ python3 "${prepare_script}" "${prepare_args[@]}" >/dev/null
 if [[ -n ${incremental} ]]; then
     source_incremental=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["source_incremental"])' "${incremental}.json")
     [[ ${source_incremental} =~ ^[0-9]+$ ]] || fail "incremental meta has non-numeric source_incremental"
+    incremental_route=$(channel_field updates-incremental "${source_incremental}") \
+        || fail "cannot derive the incremental route for ${channel}"
+fi
+# Only channel labels from here on; the legacy device/build-id pair is never written again.
+label_args=(--label io.yrrp.ota.release=true --label "${channel_label}=${build_id}")
+if ${previous_exists}; then
+    carry_live_channels
 fi
 cat > "${context}/Dockerfile" <<'EOF'
 ARG OTA_BASE_IMAGE
@@ -221,13 +266,11 @@ FROM ${OTA_BASE_IMAGE}
 COPY --chown=101:101 rootfs/ /srv/ota/
 EOF
 
-readonly image_tag=yrrp-ota-release:${build_id}
+readonly image_tag=yrrp-ota-release:${channel_type}-${build_id}
 report building-ota-release-image
 docker build \
     --build-arg "OTA_BASE_IMAGE=${base_digest}" \
-    --label io.yrrp.ota.release=true \
-    --label io.yrrp.ota.device=salami \
-    --label "io.yrrp.ota.build-id=${build_id}" \
+    "${label_args[@]}" \
     --tag "${image_tag}" \
     "${context}" >/dev/null
 candidate_image=$(docker image inspect --format '{{.Id}}' "${image_tag}")
@@ -252,9 +295,7 @@ docker run -d \
     --cap-drop ALL \
     --security-opt no-new-privileges:true \
     --restart unless-stopped \
-    --label io.yrrp.ota.release=true \
-    --label io.yrrp.ota.device=salami \
-    --label "io.yrrp.ota.build-id=${build_id}" \
+    "${label_args[@]}" \
     "${image_tag}" >/dev/null
 
 wait_for_health "${container_name}" || fail "candidate OTA container did not become healthy"
