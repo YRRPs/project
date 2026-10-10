@@ -795,6 +795,35 @@ class ReceiptRenderingTest(unittest.TestCase):
         del document["deployment_public_checks"]["carried_channels"]
         self.assertIn("- Channel: salami/vanilla", render_receipt(document))
 
+    def test_old_input_without_carried_channels_renders_not_recorded(self) -> None:
+        document = accepted_incremental_release()
+        del document["release_identity"]["channel"]
+        del document["deployment_public_checks"]["carried_channels"]
+        rendered = render_receipt(document)
+        self.assertIn("- Carried channels: Not recorded.", rendered)
+        self.assertIn(f"- Container build ID label: {BUILD_ID}\n", rendered)
+
+    def test_empty_carried_channels_renders_none(self) -> None:
+        rendered = render_receipt(accepted_incremental_release())
+        self.assertIn("- Carried channels: None.", rendered)
+        self.assertNotIn("Not recorded", rendered)
+
+    def test_new_style_success_requires_carried_channels(self) -> None:
+        document = accepted_incremental_release(channel="salami/gapps")
+        del document["deployment_public_checks"]["carried_channels"]
+        with self.assertRaisesRegex(ValueError, "carried_channels"):
+            render_receipt(document)
+        document["release_identity"]["overall_result"] = "FAILED"
+        self.assertIn("- Carried channels: Not recorded.", render_receipt(document))
+
+    def test_new_style_container_line_names_checked_label(self) -> None:
+        rendered = render_receipt(accepted_incremental_release(channel="salami/gapps"))
+        self.assertIn(
+            "- Container build ID label: io.yrrp.ota.channel.salami.gapps.build-id = "
+            f"{BUILD_ID}\n",
+            rendered,
+        )
+
     def test_rejects_invalid_release_channel(self) -> None:
         for channel in ("salami/other", "salami", "", 7):
             document = accepted_incremental_release()

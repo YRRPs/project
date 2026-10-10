@@ -587,6 +587,11 @@ def _validate_success_gate(document: dict[str, Any]) -> None:
     _validate_success_sources(document)
     incremental = _validate_success_artifacts(document)
     _validate_success_public_checks(document, incremental)
+    if "channel" in document["release_identity"] and "carried_channels" not in deployment:
+        raise ValueError(
+            "SUCCESS receipt with release_identity.channel requires "
+            "deployment_public_checks.carried_channels"
+        )
     require_carried_routes_unchanged(deployment.get("carried_channels", []))
 
 def _validate_success_sources(document: dict[str, Any]) -> None:
@@ -936,18 +941,8 @@ def _deployment(document: dict[str, Any]) -> str:
         f"- Deployment verified: {_md(value['deployment_verified'])}",
         f"- Installed build ID: {_md(value['installed_build_id'] or '(missing)')}",
     ]
-    container = value.get("container")
-    if container:
-        lines.extend(
-            (
-                f"- Container healthy: {_md(container['healthy'])}",
-                f"- Container build ID label: {_md(container['build_id_label'])}",
-                f"- Container image label: {_md(container['image_label'])}",
-            )
-        )
-    else:
-        lines.append("- Container evidence: Not captured.")
-    lines.extend(_carried_channels(value.get("carried_channels", [])))
+    lines.extend(_container_lines(value.get("container"), document["release_identity"]))
+    lines.extend(_carried_channels(value.get("carried_channels")))
     if not value["checks"]:
         lines.append("- Public checks: Not run.")
     for check in sorted(value["checks"], key=lambda item: (item["name"], item["url"])):
@@ -967,7 +962,22 @@ def _deployment(document: dict[str, Any]) -> str:
             lines.append(f"- Artifact: {_md(check['artifact_name'])}")
     return "\n".join(lines)
 
-def _carried_channels(entries: list[dict[str, Any]]) -> list[str]:
+def _container_lines(container: dict[str, Any] | None, identity: dict[str, Any]) -> list[str]:
+    if not container:
+        return ["- Container evidence: Not captured."]
+    build_id_label = _md(container["build_id_label"])
+    if "channel" in identity:
+        # Name the checked label; pre-channel receipts keep their original line.
+        build_id_label = f"{_md(release_channel(identity).label)} = {build_id_label}"
+    return [
+        f"- Container healthy: {_md(container['healthy'])}",
+        f"- Container build ID label: {build_id_label}",
+        f"- Container image label: {_md(container['image_label'])}",
+    ]
+
+def _carried_channels(entries: list[dict[str, Any]] | None) -> list[str]:
+    if entries is None:
+        return ["- Carried channels: Not recorded."]
     if not entries:
         return ["- Carried channels: None."]
     lines = ["- Carried channels:"]
