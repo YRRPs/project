@@ -56,6 +56,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
         ota: Path | None = None,
         target: Path | None = None,
         env_extra: dict[str, str] | None = None,
+        deploy: Path = DEPLOY,
     ) -> subprocess.CompletedProcess[str]:
         env = os.environ | {
             "PATH": f"{self.bin}:{os.environ['PATH']}",
@@ -76,7 +77,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
         channel_args = ["--channel", channel] if channel else []
         return subprocess.run(
             [
-                str(DEPLOY),
+                str(deploy),
                 *channel_args,
                 "--ota",
                 str(ota or self.ota),
@@ -173,7 +174,6 @@ class DeployOtaReleaseTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("A release build holds", result.stderr)
         self.assertFalse(self.log.exists())
-
 
     def stage_live(self, *, gapps: bool = False) -> Path:
         """A live /srv/ota serving vanilla, and gapps too when asked."""
@@ -278,6 +278,33 @@ class DeployOtaReleaseTest(unittest.TestCase):
         self.assert_previous_restored()
         flattened = [" ".join(command) for command in self.commands()]
         self.assertIn("rm -f yrrp-ota-server", flattened)
+        self.assertEqual([], self.release_contexts())
+
+    def deploy_with_carry_stub(self, labels: list[str]) -> Path:
+        """A copy of scripts/ whose ota-carry-over.py prints |labels| and writes a snapshot."""
+        scripts = self.root / "scripts"
+        shutil.copytree(ROOT / "scripts", scripts, ignore=shutil.ignore_patterns("__pycache__"))
+        stub = scripts / "ota-carry-over.py"
+        stub.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "if sys.argv[1] != 'carry':\n"
+            "    sys.exit(0)\n"
+            "context = Path(sys.argv[sys.argv.index('--context') + 1])\n"
+            "(context / 'carried.json').write_text('{\"carried\": {}, \"routes\": {}}\\n')\n"
+            f"print({chr(10).join(labels)!r})\n"
+        )
+        return scripts / "deploy-ota-release.sh"
+
+    def test_refuses_carried_label_for_released_channel(self) -> None:
+        deploy = self.deploy_with_carry_stub([f"{GAPPS_LABEL}={LIVE_GAPPS_BUILD}"])
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        result = self.run_deploy("existing", channel="salami/gapps", ota=ota, target=target, deploy=deploy)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("carry-over returned the released channel's label", result.stderr)
+        verbs = {c[0] for c in self.commands()}
+        self.assertFalse(verbs & {"build", "stop", "rename", "run", "rm", "start"}, verbs)
         self.assertEqual([], self.release_contexts())
 
     def test_rejects_unknown_channel(self) -> None:

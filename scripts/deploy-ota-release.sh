@@ -140,6 +140,8 @@ carry_live_channels() {
     for label in "${carried_labels[@]}"; do
         [[ ${label} =~ ^io\.yrrp\.ota\.channel\.[a-z0-9]+\.[a-z0-9]+\.build-id=[0-9]{8}-[0-9]{6}$ ]] \
             || fail "carry-over printed an invalid label: ${label}"
+        [[ ${label%%=*} != "${channel_label}" ]] \
+            || fail "carry-over returned the released channel's label: ${label}"
         label_args+=(--label "${label}")
     done
 }
