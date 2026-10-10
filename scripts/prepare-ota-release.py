@@ -38,6 +38,8 @@ IMAGE_NAMES = (
     "vendor_boot.img",
     "recovery.img",
 )
+# GApps components a gapps build must carry and a vanilla build must not.
+GAPPS_COMPONENTS = ("GmsCore", "Phonesky")
 
 
 def validate_public_base_url(value: str) -> str:
@@ -110,6 +112,29 @@ def validate_build_properties(
     build_type = system_properties.get("ro.yrrp.build.type", VANILLA.type)
     if build_type != channel.type:
         raise ValueError(f"target-files ro.yrrp.build.type is {build_type}, channel needs {channel.type}")
+
+
+def present_gapps_components(member_names: list[str]) -> set[str]:
+    """Return the GApps components with an APK under any partition's priv-app directory."""
+    return {
+        component
+        for component in GAPPS_COMPONENTS
+        for name in member_names
+        if f"/priv-app/{component}/" in name and name.endswith(".apk")
+    }
+
+
+def validate_gapps_presence(member_names: list[str], channel: Channel) -> None:
+    """vanilla and gapps share one out/; refuse a stale or missing GApps APK."""
+    present = present_gapps_components(member_names)
+    if channel.is_vanilla:
+        unexpected = sorted(present)
+        if unexpected:
+            raise ValueError(f"{channel.name} target-files contains {', '.join(unexpected)}; stale GApps in out/")
+        return
+    missing = [component for component in GAPPS_COMPONENTS if component not in present]
+    if missing:
+        raise ValueError(f"{channel.name} target-files is missing {', '.join(missing)} APK")
 
 
 def artifact_record(path: Path, role: str) -> dict[str, object]:
@@ -248,6 +273,7 @@ def stage_full_release(ota: Path, target_files: Path, release_dir: Path, channel
             target_zip.read("PRODUCT/etc/build.prop"), "target-files PRODUCT build.prop"
         )
         validate_build_properties(product_properties, read_system_properties(target_zip), metadata, channel)
+        validate_gapps_presence(target_zip.namelist(), channel)
         shutil.copyfile(ota, release_dir / ota.name)
         for image in IMAGE_NAMES:
             copy_member(target_zip, f"IMAGES/{image}", release_dir / image)

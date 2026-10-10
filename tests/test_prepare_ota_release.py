@@ -291,5 +291,38 @@ class PrepareOtaReleaseTest(unittest.TestCase):
         output = self.prepare("vanilla-out")
         self.assert_planted_file_rejected(output, VANILLA, GAPPS.updates_full_path)
 
+    def test_gapps_release_with_gapps_apps_passes(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        output = self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+        self.assertTrue((output / "rootfs/updates/salami/gapps.json").is_file())
+
+    def test_gapps_release_without_gmscore_is_rejected(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps", gapps_apps=("Phonesky",))
+        with self.assertRaisesRegex(ValueError, "salami/gapps .*missing GmsCore"):
+            self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+        self.assertFalse((self.root / "gapps-out").exists())
+
+    def test_gapps_release_without_phonesky_is_rejected(self) -> None:
+        ota, target = create_fixture(self.root / "gapps-input", build_type="gapps", gapps_apps=("GmsCore",))
+        with self.assertRaisesRegex(ValueError, "salami/gapps .*missing Phonesky"):
+            self.prepare("gapps-out", ota=ota, target_files=target, channel=GAPPS)
+
+    def test_vanilla_release_with_stale_gmscore_is_rejected(self) -> None:
+        ota, target = create_fixture(self.root / "stale-input", gapps_apps=("GmsCore",))
+        with self.assertRaisesRegex(ValueError, "salami/vanilla .*contains GmsCore"):
+            self.prepare("stale-out", ota=ota, target_files=target)
+        self.assertFalse((self.root / "stale-out").exists())
+
+    def test_gapps_apps_match_under_any_partition_prefix(self) -> None:
+        ota, target = create_fixture(
+            self.root / "system-input", gapps_apps=("Phonesky",), gapps_prefix="SYSTEM/system_ext"
+        )
+        with self.assertRaisesRegex(ValueError, "salami/vanilla .*contains Phonesky"):
+            self.prepare("system-out", ota=ota, target_files=target)
+
+    def test_vanilla_release_without_gapps_apps_passes(self) -> None:
+        output = self.prepare("vanilla-out")
+        self.assertTrue((output / "rootfs/updates/salami.json").is_file())
+
 if __name__ == "__main__":
     unittest.main()

@@ -29,6 +29,7 @@ SOURCE_BUILD_ID = "20981231-000000"
 SOURCE_INCREMENTAL = "4070822400"
 POST_BUILD = "yrpp/salami/salami:16/TEST/4070908800:userdebug/release-keys"
 INCREMENTAL_NAME = f"lineage-23.2-salami-{SOURCE_BUILD_ID}-to-{BUILD_ID}-signed-incremental-ota.zip"
+GAPPS_APPS = ("GmsCore", "Phonesky")
 
 
 def create_fixture(
@@ -43,8 +44,13 @@ def create_fixture(
     build_id: str = BUILD_ID,
     target_incremental: str | None = None,
     build_type: str | None = None,
+    gapps_apps: tuple[str, ...] | None = None,
+    gapps_prefix: str = "PRODUCT",
 ) -> tuple[Path, Path]:
-    """build_type None writes no ro.yrrp.build.type, like builds made before channels (read as vanilla)."""
+    """build_type None writes no ro.yrrp.build.type, like builds made before channels (read as vanilla).
+
+    gapps_apps None means: a gapps build carries every GApps APK, any other build none.
+    """
     root.mkdir(parents=True, exist_ok=True)
     channel = VANILLA if build_type is None else Channel(VANILLA.device, build_type)
     ota = root / channel.full_ota_name(build_id)
@@ -92,6 +98,10 @@ def create_fixture(
             if image != missing_image:
                 archive.writestr(f"IMAGES/{image}", f"synthetic-{index}-{image}\n")
         archive.writestr("PREBUILT_IMAGES/dtbo.img", b"must-not-be-used")
+        if gapps_apps is None:
+            gapps_apps = GAPPS_APPS if build_type == "gapps" else ()
+        for app in gapps_apps:
+            archive.writestr(f"{gapps_prefix}/priv-app/{app}/{app}.apk", f"synthetic-{app}\n")
     return ota, target
 
 
