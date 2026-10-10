@@ -263,6 +263,48 @@ class CarryOverTest(unittest.TestCase):
             self.run_carry({VANILLA.label: VANILLA_BUILD})
         self.assertEqual("[]\n", existing.read_text())
 
+    def plant_symlink(self, path: Path) -> None:
+        """Replace a live file with a symlink to an identical file outside the served tree."""
+        outside = self.root / "host" / path.name
+        outside.parent.mkdir(exist_ok=True)
+        shutil.copyfile(path, outside)
+        path.unlink()
+        path.symlink_to(outside)
+
+    def test_symlinked_artifact_is_refused(self) -> None:
+        write_release(self.live, VANILLA, VANILLA_BUILD)
+        self.plant_symlink(self.install(VANILLA, VANILLA_BUILD) / "boot.img")
+        with self.assertRaisesRegex(CarryOverError, "salami/vanilla.*boot.img.*yrrp-ota-server.*not a regular file"):
+            self.run_carry({VANILLA.label: VANILLA_BUILD})
+
+    def test_symlinked_release_json_is_refused(self) -> None:
+        write_release(self.live, VANILLA, VANILLA_BUILD)
+        self.plant_symlink(self.install(VANILLA, VANILLA_BUILD) / "release.json")
+        with self.assertRaisesRegex(CarryOverError, "salami/vanilla.*release.json.*not a regular file"):
+            self.run_carry({VANILLA.label: VANILLA_BUILD})
+
+    def test_directory_where_a_file_is_expected_is_refused(self) -> None:
+        write_release(self.live, VANILLA, VANILLA_BUILD)
+        boot = self.install(VANILLA, VANILLA_BUILD) / "boot.img"
+        boot.unlink()
+        boot.mkdir()
+        (boot / "inner").write_bytes(b"x")
+        with self.assertRaisesRegex(CarryOverError, "salami/vanilla.*boot.img.*not a regular file"):
+            self.run_carry({VANILLA.label: VANILLA_BUILD})
+
+    def test_cli_verify_routes_refuses_snapshot_missing_a_full_route(self) -> None:
+        self.context.mkdir()
+        snapshot = self.context / "carried.json"
+        snapshot.write_text(json.dumps({"carried": {"salami/vanilla": VANILLA_BUILD}, "routes": {}}))
+        self.env["FAKE_CANDIDATE_ROOT"] = str(self.context / "rootfs")
+        verify = subprocess.run(
+            [sys.executable, str(CLI), "verify-routes", "--container", "c", "--snapshot", str(snapshot)],
+            capture_output=True, text=True, env=self.env,
+        )
+        self.assertEqual(1, verify.returncode)
+        self.assertIn("salami/vanilla", verify.stderr)
+        self.assertIn(VANILLA.updates_full_path, verify.stderr)
+
     def test_verify_routes_passes_on_identical_bodies_and_fails_on_change(self) -> None:
         write_release(self.live, VANILLA, VANILLA_BUILD, incremental="42")
         result = self.run_carry({VANILLA.label: VANILLA_BUILD})

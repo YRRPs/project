@@ -112,13 +112,25 @@ class ChannelTest(unittest.TestCase):
                     with self.assertRaises(ValueError):
                         channel.updates_incremental_path(bad)
 
-    def test_channel_labels_take_precedence_over_legacy_labels(self) -> None:
-        labels = {
-            GAPPS.label: BUILD,
-            "io.yrrp.ota.device": "bogus",
-            "io.yrrp.ota.build-id": "latest",
-        }
-        self.assertEqual({GAPPS: BUILD}, live_channels(labels))
+    def test_legacy_labels_beside_channel_labels_must_match_vanilla(self) -> None:
+        legacy = {"io.yrrp.ota.device": "salami", "io.yrrp.ota.build-id": SOURCE}
+        labels = {VANILLA.label: SOURCE, GAPPS.label: BUILD, **legacy}
+        self.assertEqual({VANILLA: SOURCE, GAPPS: BUILD}, live_channels(labels))
+
+    def test_legacy_labels_beside_only_gapps_raise(self) -> None:
+        legacy = {"io.yrrp.ota.device": "salami", "io.yrrp.ota.build-id": SOURCE}
+        with self.assertRaisesRegex(ValueError, "legacy"):
+            live_channels({GAPPS.label: BUILD, **legacy})
+
+    def test_legacy_labels_mismatching_vanilla_label_raise(self) -> None:
+        legacy = {"io.yrrp.ota.device": "salami", "io.yrrp.ota.build-id": SOURCE}
+        with self.assertRaisesRegex(ValueError, "legacy"):
+            live_channels({VANILLA.label: BUILD, **legacy})
+
+    def test_bad_legacy_labels_beside_channel_labels_raise(self) -> None:
+        bogus = {"io.yrrp.ota.device": "bogus", "io.yrrp.ota.build-id": "latest"}
+        with self.assertRaises(ValueError):
+            live_channels({GAPPS.label: BUILD, **bogus})
 
     def test_no_labels_means_nothing_live(self) -> None:
         self.assertEqual({}, live_channels({}))

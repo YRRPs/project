@@ -37,8 +37,20 @@ def carry(args: argparse.Namespace) -> None:
         print(f"{label}={build_id}")
 
 
+def load_snapshot(path: Path) -> dict:
+    """Read carried.json, refusing one that lacks a carried channel's full updater route."""
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(snapshot, dict) or not all(isinstance(snapshot.get(k), dict) for k in ("carried", "routes")):
+        raise ValueError(f"{path}: carried and routes must be JSON objects")
+    for name in snapshot["carried"]:
+        route = Channel.parse(name).updates_full_path
+        if route not in snapshot["routes"]:
+            raise ValueError(f"{path}: carried channel {name} has no {route} route")
+    return snapshot
+
+
 def verify(args: argparse.Namespace) -> None:
-    snapshot = json.loads(args.snapshot.read_text(encoding="utf-8"))
+    snapshot = load_snapshot(args.snapshot)
     verify_routes(args.container, snapshot["routes"])
     print(f"carried routes unchanged: {len(snapshot['routes'])}", file=sys.stderr)
 

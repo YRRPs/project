@@ -131,4 +131,10 @@ def live_channels(labels: dict[str, str]) -> dict[Channel, str]:
             # Fail closed: a label for a channel outside ALLOWED makes every lookup raise.
             device, _, channel_type = key[len(LABEL_PREFIX) : -len(LABEL_SUFFIX)].partition(".")
             result[Channel(device, channel_type)] = require_build_id(value, f"label {key}")
-    return result or _legacy_vanilla_build(labels)
+    legacy = _legacy_vanilla_build(labels)
+    if result and legacy and legacy.get(VANILLA) != result.get(VANILLA):
+        # Ignoring them could drop a live vanilla build that only the legacy pair names.
+        raise ValueError(
+            f"legacy labels name {VANILLA.name} {legacy[VANILLA]} but {VANILLA.label} is {result.get(VANILLA)!r}"
+        )
+    return result or legacy

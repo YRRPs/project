@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import stat
 import subprocess
 import urllib.parse
 from dataclasses import dataclass, field
@@ -63,12 +64,15 @@ def _live_channels(container: str, env: Mapping[str, str] | None) -> dict[Channe
 
 def _copy(container: str, channel: Channel, path: str, rootfs: Path, env: Mapping[str, str] | None) -> Path:
     destination = rootfs / path
-    if destination.exists():
+    if destination.is_symlink() or destination.exists():
         raise CarryOverError(f"{channel.name}: {path} already exists in the release context")
     destination.parent.mkdir(parents=True, exist_ok=True)
     result = _docker(["cp", f"{container}:{SERVE_ROOT}/{path}", str(destination)], env)
     if result.returncode != 0:
         raise CarryOverError(f"{channel.name}: cannot copy {path}: {result.stderr.decode().strip()}")
+    # docker cp keeps symlinks and directories; reading through either would verify host files.
+    if not stat.S_ISREG(destination.lstat().st_mode):
+        raise CarryOverError(f"{channel.name}: {path} in {container} is not a regular file")
     return destination
 
 

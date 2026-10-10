@@ -6,6 +6,8 @@ FAKE_LIVE_LABELS    text printed for a `{{json .Config.Labels}}` inspect (defaul
 FAKE_INSPECT_FAIL   when set, that inspect exits 1 as for a missing container
 FAKE_LIVE_ROOT      directory standing in for the live container's /srv/ota
 FAKE_CANDIDATE_ROOT directory standing in for the candidate's /srv/ota
+
+Like real `docker cp`, a symlink is copied as a symlink and a directory as a directory.
 """
 import os
 import shutil
@@ -23,11 +25,16 @@ if args[:1] == ["cp"]:
     source, destination = args[1], Path(args[2])
     path = source.split(":", 1)[1].removeprefix("/srv/ota/")
     origin = Path(os.environ["FAKE_LIVE_ROOT"]) / path
-    if not origin.is_file():
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if origin.is_symlink():
+        os.symlink(os.readlink(origin), destination)
+    elif origin.is_dir():
+        shutil.copytree(origin, destination, symlinks=True)
+    elif origin.is_file():
+        shutil.copyfile(origin, destination)
+    else:
         print(f"no such file: {source}", file=sys.stderr)
         sys.exit(1)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(origin, destination)
     sys.exit(0)
 if args[:1] == ["exec"] and "wget" in args:
     url = args[-1]
