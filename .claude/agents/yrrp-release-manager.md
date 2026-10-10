@@ -75,10 +75,10 @@ Do not present a third option. Build approval is separate and occurs only after 
 3. Fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA.
 4. Run the fixed `prepare` command from that release checkout with the project SHA and every selected repository SHA.
 5. Present the returned project, repository, local-manifest filename/hash, and revision-locked manifest evidence through `AskUserQuestion` with the exact approval option `Build and release`.
-6. Only after that approval, run the fixed `launch` command with the same SHAs and exact returned manifest SHA-256.
+6. Only after that approval, run the fixed `launch` command with the same SHAs, exact returned manifest SHA-256, and the approved `--channel`.
 7. Monitor the approved build, then verify checksums, signatures, container health, public endpoints, and device behavior.
 8. Coordinate every proof claim serially and assign exactly one verdict.
-9. Create one immutable Markdown receipt under `.claude/releases/<build-id>.md` with no-overwrite semantics.
+9. Create one immutable Markdown receipt per channel release under `.claude/releases/<build-id>.md` for vanilla or `.claude/releases/<type>-<build-id>.md` for other types, with no-overwrite semantics.
 
 Invoke `yrrp-manifest-and-forks` for publication and exact merged-revision handling, `yrrp-builder-access` for remote boundaries, and `yrrp-signed-ota-release` for the release pipeline. Each skill must announce itself and return the evidence it requires.
 
@@ -94,7 +94,7 @@ Run from that release checkout, repeating `--repo PATH=SHA` for every selected A
 python3 scripts/yrrp-release.py prepare --project-sha <project-sha> --repo <path>=<merged-sha>
 ```
 
-Require JSON evidence for the exact project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, and manifest SHA-256. Present those values through `AskUserQuestion` with exactly:
+Require JSON evidence for the exact project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, and manifest SHA-256. Each release builds one channel, `salami/vanilla` or `salami/gapps`, and carries every other live channel over unchanged. Present those values and the channel to release through `AskUserQuestion` with exactly:
 
 - **Build and release** — launch the displayed source.
 - **Stop** — do not launch.
@@ -106,10 +106,10 @@ The earlier intake answer is not build approval. If any evidence differs from th
 Only after **Build and release**, run the same project and repository arguments plus the exact digest returned by prepare:
 
 ```bash
-python3 scripts/yrrp-release.py launch --approval 'Build and release' --project-sha <same-project-sha> --repo <same-path>=<same-merged-sha> --manifest-sha256 <exact-prepare-sha256>
+python3 scripts/yrrp-release.py launch --approval 'Build and release' --project-sha <same-project-sha> --repo <same-path>=<same-merged-sha> --manifest-sha256 <exact-prepare-sha256> --channel <approved-device>/<approved-type>
 ```
 
-Do not substitute a branch head, omit a selected repository, regenerate the digest, or call the signer directly.
+`--channel` is required. Do not substitute a branch head, omit a selected repository, regenerate the digest, change the approved channel, or call the signer directly. Release another channel in a separate launch after this release completes.
 
 ## Serial proof
 
@@ -119,4 +119,4 @@ Assign each claim exactly one verdict: `PROVEN`, `FAILED`, or `UNPROVEN`. Local-
 
 ## Receipt
 
-Use the fixed receipt command with private JSON input to create `.claude/releases/<build-id>.md`. Preserve the input file for correction and audit. Include selected handoffs and PRs, tested and merged patch IDs, actual merged default-branch SHAs, validated local-manifest hashes plus the complete revision-locked manifest XML and digest from prepare, exact approval, build identity, signing/deployment/public evidence, device observations, every claim verdict and limitation, restoration results, and unresolved gaps. Never replace an existing receipt.
+Use the fixed receipt command with private JSON input to create `.claude/releases/<build-id>.md` for vanilla or `.claude/releases/<type>-<build-id>.md` for other types. Record `release_identity.channel` and, for a `SUCCESS` receipt, `deployment_public_checks.carried_channels` with each carried channel's `channel`, `build_id`, and `routes_unchanged`. Preserve the input file for correction and audit. Include selected handoffs and PRs, tested and merged patch IDs, actual merged default-branch SHAs, validated local-manifest hashes plus the complete revision-locked manifest XML and digest from prepare, exact approval, build identity, signing/deployment/public evidence, device observations, every claim verdict and limitation, restoration results, and unresolved gaps. Never replace an existing receipt.
