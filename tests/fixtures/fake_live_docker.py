@@ -3,7 +3,8 @@
 
 FAKE_INSPECT_FAIL makes any inspect whose arguments contain that text exit 1.
 FAKE_LIVE_LABELS, when set, is printed verbatim for a `{{json .Config.Labels}}` inspect;
-otherwise the legacy label pair is built from FAKE_LIVE_DEVICE and FAKE_LIVE_BUILD.
+otherwise the legacy label pair is built from FAKE_LIVE_DEVICE and FAKE_LIVE_BUILD,
+and with neither set the container has no labels and `null` is printed.
 FAKE_EXEC_LOG, when set, receives the path of each `exec ... cat <path>`.
 """
 import json
@@ -16,13 +17,13 @@ live_build = os.environ.get("FAKE_LIVE_BUILD", "")
 if args[:2] == ["container", "inspect"]:
     sys.exit(0 if live_build else 1)
 if args[:1] == ["inspect"] and "{{json .Config.Labels}}" in args:
-    if not live_build and "FAKE_LIVE_LABELS" not in os.environ:
-        sys.exit(1)
     labels = os.environ.get("FAKE_LIVE_LABELS")
-    print(labels if labels is not None else json.dumps({
-        "io.yrrp.ota.device": os.environ.get("FAKE_LIVE_DEVICE", "salami"),
-        "io.yrrp.ota.build-id": live_build,
-    }))
+    if labels is None and live_build:
+        labels = json.dumps({
+            "io.yrrp.ota.device": os.environ.get("FAKE_LIVE_DEVICE", "salami"),
+            "io.yrrp.ota.build-id": live_build,
+        })
+    print(labels if labels is not None else "null")  # real docker prints null for no labels
     sys.exit(0)
 if args[:1] == ["inspect"]:
     if not live_build:

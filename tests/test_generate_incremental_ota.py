@@ -187,6 +187,11 @@ class GenerateIncrementalOtaTest(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("is not the live salami/gapps release (none)", result.stderr)
 
+    def test_unlabeled_live_container_reports_none(self) -> None:
+        result = self.run_script(FAKE_LIVE_BUILD="")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("is not the live salami/vanilla release (none)", result.stderr)
+
     def test_unreadable_live_labels_fail(self) -> None:
         result = self.run_script(env_extra={"FAKE_LIVE_LABELS": "not json"})
         self.assertNotEqual(0, result.returncode)
