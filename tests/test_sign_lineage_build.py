@@ -36,6 +36,7 @@ class SignLineageBuildTest(unittest.TestCase):
         self.incremental_log = self.root / "incremental.log"
         self.profile_log = self.root / "profile.log"
         self.build_type_log = self.root / "build-type.log"
+        self.docker_log = self.root / "docker.log"
         self.signed = self.build / "out/signed"
         self._create_build_tree()
         self._create_keys()
@@ -163,6 +164,7 @@ class SignLineageBuildTest(unittest.TestCase):
             "FAKE_LIVE_DEVICE": live_device,
             "FAKE_INSPECT_FAIL": inspect_fail,
             "FAKE_BUILD_TYPE_LOG": str(self.build_type_log),
+            "FAKE_DOCKER_CALL_LOG": str(self.docker_log),
         } | (env_extra or {})
         if not include_ota_environment:
             env.pop("OTA_PUBLIC_BASE_URL")
@@ -404,6 +406,54 @@ class SignLineageBuildTest(unittest.TestCase):
         result = self.run_script(channel="salami/gapps")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(b"vanilla-live", other.read_bytes())
+
+    def docker_calls(self) -> list[list[str]]:
+        if not self.docker_log.exists():
+            return []
+        return [json.loads(line) for line in self.docker_log.read_text().splitlines()]
+
+    def test_gapps_refused_before_build_when_base_image_lacks_route(self) -> None:
+        conf = "location = /updates/salami.json {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn(
+            "base OTA image ghcr.io/yrrp/ota:main does not serve /updates/salami/gapps.json; publish ota_server first",
+            result.stderr,
+        )
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
+        self.assertFalse(self.build_type_log.exists())
+        self.assertFalse(self.build_log.exists())
+        self.assertFalse(self.deploy_log.exists())
+
+    def test_gapps_proceeds_when_base_image_serves_route(self) -> None:
+        conf = "location = /updates/salami.json {\nlocation = /updates/salami/gapps.json {\n"
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.docker_calls()
+        self.assertIn(["pull", "ghcr.io/yrrp/ota:main"], calls)
+        grep = [call for call in calls if call[:1] == ["run"]]
+        self.assertEqual(1, len(grep), calls)
+        self.assertIn("location = /updates/salami/gapps.json {", grep[0])
+        self.assertEqual("gapps", self.build_type_log.read_text().strip())
+
+    def test_gapps_refused_before_build_when_base_image_pull_fails(self) -> None:
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_PULL_FAIL": "1"})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("cannot pull base OTA image ghcr.io/yrrp/ota:main", result.stderr)
+        self.assertTrue(self.status.read_text().startswith("signing-failed:"))
+        self.assertFalse(self.build_type_log.exists())
+
+    def test_gapps_refused_when_base_image_config_cannot_be_read(self) -> None:
+        result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_RUN_EXIT": "125"})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("cannot read nginx config of base OTA image ghcr.io/yrrp/ota:main", result.stderr)
+        self.assertFalse(self.build_type_log.exists())
+
+    def test_vanilla_skips_base_image_route_check(self) -> None:
+        result = self.run_script(env_extra={"FAKE_BASE_NGINX_CONF": ""})
+        self.assertEqual(0, result.returncode, result.stderr)
+        calls = self.docker_calls()
+        self.assertFalse([call for call in calls if call[:1] in (["pull"], ["run"])], calls)
 
     def test_unreadable_incremental_checksum_stops_before_deploy(self) -> None:
         self._create_live_source()

@@ -106,6 +106,26 @@ resolve_incremental_source() {
     printf '%s\n' "${build_id}"
 }
 
+# A non-vanilla release built against a base image without its routes would only fail at deploy, hours later.
+require_base_image_serves_channel() {
+    local route grep_status=0
+    route=$(channel_field updates-full) || return 1
+    docker pull "${OTA_BASE_IMAGE_REF}" >&2 || {
+        printf 'cannot pull base OTA image %s\n' "${OTA_BASE_IMAGE_REF}" >&2
+        return 1
+    }
+    docker run --rm --entrypoint grep "${OTA_BASE_IMAGE_REF}" \
+        -F -q -- "location = /${route} {" /etc/nginx/nginx.conf || grep_status=$?
+    case ${grep_status} in
+        0) return 0 ;;
+        1) printf 'base OTA image %s does not serve /%s; publish ota_server first\n' \
+            "${OTA_BASE_IMAGE_REF}" "${route}" >&2 ;;
+        *) printf 'cannot read nginx config of base OTA image %s (exit %s)\n' \
+            "${OTA_BASE_IMAGE_REF}" "${grep_status}" >&2 ;;
+    esac
+    return 1
+}
+
 readonly build_lock_fd=${YRRP_BUILD_LOCK_FD:-}
 [[ ${build_lock_fd} =~ ^[0-9]+$ ]] || {
     printf 'Release launcher must provide numeric YRRP_BUILD_LOCK_FD\n' >&2
@@ -158,6 +178,9 @@ docker version >/dev/null
 docker buildx version >/dev/null
 docker compose version >/dev/null
 docker network inspect "${OTA_NETWORK:-proxy-net}" >/dev/null
+if [[ ${build_type} != vanilla ]]; then
+    require_base_image_serves_channel || exit 1
+fi
 
 cd "${build_root}"
 source build/envsetup.sh
