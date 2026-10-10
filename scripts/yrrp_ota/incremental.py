@@ -6,7 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from .archive import open_unique_zip, read_metadata, read_system_properties, require, sha256
-from .naming import BUILD_ID_PATTERN, INCREMENTAL_PATTERN, SHA256_PATTERN, incremental_ota_name
+from .channel import VANILLA, Channel
+from .naming import BUILD_ID_PATTERN, INCREMENTAL_PATTERN, SHA256_PATTERN
 
 METADATA = "incremental OTA metadata"
 
@@ -40,12 +41,14 @@ def check_identity(
     target_build_id: str,
     source_incremental: str,
     source_target_files_sha256: str,
+    *,
+    channel: Channel = VANILLA,
 ) -> None:
     for build_id in (source_build_id, target_build_id):
         if not BUILD_ID_PATTERN.fullmatch(build_id):
             raise ValueError(f"build ID must match YYYYMMDD-HHMMSS: {build_id}")
-    if incremental_ota.name != incremental_ota_name(source_build_id, target_build_id):
-        raise ValueError("incremental OTA filename does not match source and target build IDs")
+    if incremental_ota.name != channel.incremental_ota_name(source_build_id, target_build_id):
+        raise ValueError("incremental OTA filename does not match channel, source, and target build IDs")
     if not INCREMENTAL_PATTERN.fullmatch(source_incremental):
         raise ValueError("source incremental must be numeric")
     if not SHA256_PATTERN.fullmatch(source_target_files_sha256):
@@ -60,9 +63,15 @@ def verify_output(
     target_build_id: str,
     source_incremental: str,
     source_target_files_sha256: str,
+    channel: Channel = VANILLA,
 ) -> dict[str, Any]:
     check_identity(
-        incremental_ota, source_build_id, target_build_id, source_incremental, source_target_files_sha256
+        incremental_ota,
+        source_build_id,
+        target_build_id,
+        source_incremental,
+        source_target_files_sha256,
+        channel=channel,
     )
     with open_unique_zip(incremental_ota) as archive:
         metadata = read_metadata(archive, METADATA)
@@ -85,7 +94,7 @@ def verify_output(
     }
 
 
-def load_meta(incremental_ota: Path, target_build_id: str) -> dict[str, Any]:
+def load_meta(incremental_ota: Path, target_build_id: str, *, channel: Channel = VANILLA) -> dict[str, Any]:
     """Read the meta JSON written next to the zip and check it still matches the zip."""
     meta_path = incremental_ota.with_name(incremental_ota.name + ".json")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -95,6 +104,7 @@ def load_meta(incremental_ota: Path, target_build_id: str) -> dict[str, Any]:
         target_build_id,
         str(meta.get("source_incremental", "")),
         str(meta.get("source_target_files_sha256", "")),
+        channel=channel,
     )
     if meta.get("filename") != incremental_ota.name:
         raise ValueError("incremental meta filename does not match zip")

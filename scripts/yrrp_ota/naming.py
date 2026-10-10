@@ -1,22 +1,11 @@
-"""Release identity: device, version, build-ID shape, and artifact names."""
+"""Release identity shared by every channel: version, ID shapes, and vanilla names."""
 from __future__ import annotations
 
 import re
 
-DEVICE = "salami"
-LINEAGE_VERSION = "23.2"
-BUILD_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}$")
-INCREMENTAL_PATTERN = re.compile(r"^[0-9]+$")
+from .channel import BUILD_ID_PATTERN, INCREMENTAL_PATTERN, LINEAGE_VERSION, VANILLA
+
+DEVICE = VANILLA.device
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
-
-def _prefix() -> str:
-    return f"lineage-{LINEAGE_VERSION}-{DEVICE}"
-
-
-def full_ota_name(build_id: str) -> str:
-    return f"{_prefix()}-{build_id}-signed-ota.zip"
-
-
-def incremental_ota_name(source_build_id: str, target_build_id: str) -> str:
-    return f"{_prefix()}-{source_build_id}-to-{target_build_id}-signed-incremental-ota.zip"
+__all__ = ["BUILD_ID_PATTERN", "DEVICE", "INCREMENTAL_PATTERN", "LINEAGE_VERSION", "SHA256_PATTERN"]

@@ -24,8 +24,9 @@ from yrrp_ota.archive import (  # noqa: E402
     sha256,
     write_json,
 )
+from yrrp_ota.channel import VANILLA  # noqa: E402
 from yrrp_ota.incremental import load_meta  # noqa: E402
-from yrrp_ota.naming import BUILD_ID_PATTERN, DEVICE, LINEAGE_VERSION, full_ota_name  # noqa: E402
+from yrrp_ota.naming import BUILD_ID_PATTERN, DEVICE, LINEAGE_VERSION  # noqa: E402
 
 RELEASE_TYPE = "UNOFFICIAL"
 RELEASE_SCHEMA = 2
@@ -214,7 +215,7 @@ def generate_metadata(release_dir: Path, release: Release) -> None:
 def validate_inputs(ota: Path, build_id: str, base_image_digest: str) -> None:
     if not BUILD_ID_PATTERN.fullmatch(build_id):
         raise ValueError("build ID must match YYYYMMDD-HHMMSS")
-    if ota.name != full_ota_name(build_id):
+    if ota.name != VANILLA.full_ota_name(build_id):
         raise ValueError("signed OTA filename does not match device, version, and build ID")
     if not DIGEST_PATTERN.fullmatch(base_image_digest):
         raise ValueError("base image must be pinned by sha256 digest")

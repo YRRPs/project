@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from yrrp_ota.archive import write_json  # noqa: E402
+from yrrp_ota.channel import Channel  # noqa: E402
 from yrrp_ota.incremental import check_source, verify_output  # noqa: E402
 
 
@@ -25,6 +26,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     output.add_argument("--target-build", required=True)
     output.add_argument("--source-incremental", required=True)
     output.add_argument("--source-sha256", required=True)
+    output.add_argument("--channel", default="salami/vanilla")
     return parser.parse_args(argv)
 
 
@@ -40,6 +42,7 @@ def run(args: argparse.Namespace) -> None:
         target_build_id=args.target_build,
         source_incremental=args.source_incremental,
         source_target_files_sha256=args.source_sha256,
+        channel=Channel.parse(args.channel),
     )
     write_json(args.incremental.with_name(args.incremental.name + ".json"), meta)
 
