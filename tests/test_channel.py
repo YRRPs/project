@@ -224,10 +224,36 @@ class ChannelCliTest(unittest.TestCase):
 
     def test_live_build_reads_channel_and_legacy_labels(self) -> None:
         legacy = json.dumps({"io.yrrp.ota.device": "salami", "io.yrrp.ota.build-id": SOURCE})
-        self.assertEqual(SOURCE, channel_cli("--channel", "salami/vanilla", "live-build", legacy).stdout.strip())
-        self.assertEqual("", channel_cli("--channel", "salami/gapps", "live-build", legacy).stdout.strip())
         labels = json.dumps({GAPPS.label: BUILD})
-        self.assertEqual(BUILD, channel_cli("--channel", "salami/gapps", "live-build", labels).stdout.strip())
+        cases = (
+            ("salami/vanilla", legacy, SOURCE),
+            ("salami/gapps", legacy, ""),
+            ("salami/gapps", labels, BUILD),
+            ("salami/vanilla", labels, ""),
+            ("salami/gapps", "null", ""),
+            ("salami/gapps", "{}", ""),
+        )
+        for channel, label_json, expected in cases:
+            result = channel_cli("--channel", channel, "live-build", label_json)
+            self.assertEqual(0, result.returncode, (channel, label_json, result.stderr))
+            self.assertEqual("", result.stderr)
+            self.assertEqual(expected, result.stdout.strip(), (channel, label_json))
+
+    def test_live_build_rejects_empty_argument(self) -> None:
+        result = channel_cli("--channel", "salami/gapps", "live-build", "")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("ota-channel:", result.stderr)
+
+    def test_live_build_fails_closed_on_unknown_channel_label(self) -> None:
+        labels = json.dumps({GAPPS.label: BUILD, "io.yrrp.ota.channel.salami.kernelsu.build-id": BUILD})
+        result = channel_cli("--channel", "salami/gapps", "live-build", labels)
+        self.assertEqual(2, result.returncode)
+        self.assertIn("unknown channel", result.stderr)
+
+    def test_unknown_field_uses_program_prefix(self) -> None:
+        result = channel_cli("--channel", "salami/gapps", "bogus")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("ota-channel:", result.stderr)
 
     def test_live_build_rejects_malformed_or_partial_labels(self) -> None:
         non_string_build = json.dumps({GAPPS.label: 5})

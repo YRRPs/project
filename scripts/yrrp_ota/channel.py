@@ -128,6 +128,7 @@ def live_channels(labels: dict[str, str]) -> dict[Channel, str]:
     result: dict[Channel, str] = {}
     for key, value in labels.items():
         if key.startswith(LABEL_PREFIX) and key.endswith(LABEL_SUFFIX):
+            # Fail closed: a label for a channel outside ALLOWED makes every lookup raise.
             device, _, channel_type = key[len(LABEL_PREFIX) : -len(LABEL_SUFFIX)].partition(".")
             result[Channel(device, channel_type)] = require_build_id(value, f"label {key}")
     return result or _legacy_vanilla_build(labels)

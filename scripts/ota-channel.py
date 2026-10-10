@@ -15,9 +15,12 @@ from yrrp_ota.channel import Channel, live_channels  # noqa: E402
 def live_build(channel: Channel, labels_json: str) -> str:
     """Build ID this channel serves according to a container's labels, or empty if none."""
     try:
-        labels = json.loads(labels_json or "{}")
+        labels = json.loads(labels_json)
     except json.JSONDecodeError as error:
+        # An empty capture lands here too, so it can never read as "not live".
         raise ValueError(f"labels are not valid JSON: {error}") from error
+    if labels is None:  # docker inspect prints null for a container without labels
+        labels = {}
     if not isinstance(labels, dict):
         raise ValueError("labels must be a JSON object")
     return live_channels(labels).get(channel, "")
@@ -39,8 +42,16 @@ FIELDS = {
 }
 
 
+EPILOG = """values per field:
+  none: type device label updates-full
+  one:  updates-incremental (source incremental), target-files / ota / checksums / install-dir (build ID),
+        live-build (container labels as JSON; null means no labels)
+  two:  incremental (source build ID, target build ID)"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="ota-channel", description=__doc__, epilog=EPILOG,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--channel", required=True, help="DEVICE/TYPE, for example salami/gapps")
     parser.add_argument("field", choices=sorted(FIELDS))
     parser.add_argument("values", nargs="*")
