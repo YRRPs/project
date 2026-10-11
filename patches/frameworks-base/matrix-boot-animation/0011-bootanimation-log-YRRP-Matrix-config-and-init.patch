@@ -1,0 +1,50 @@
+From a1cfa7d19846203ff83515b9bb57d5bb624cc94e Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 16:42:18 +0200
+Subject: [PATCH 11/13] bootanimation: log YRRP Matrix config and init
+
+Claude-Session: https://claude.ai/code/session_01XSL9fQo2kwe7nBcauq3dtX
+---
+ cmds/bootanimation/BootAnimationYrrp.cpp | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/cmds/bootanimation/BootAnimationYrrp.cpp b/cmds/bootanimation/BootAnimationYrrp.cpp
+index 3899a4da3690..b5a91eb73ee1 100644
+--- a/cmds/bootanimation/BootAnimationYrrp.cpp
++++ b/cmds/bootanimation/BootAnimationYrrp.cpp
+@@ -83,6 +83,11 @@ bool BootAnimation::playYrrpBootAnimation() {
+     status.shuttingDown = mShuttingDown;
+     status.propsReady = android::base::GetBoolProperty("ro.persistent_properties.ready", false);
+     status.route = yrrp::routeFor(status.config.style, mShuttingDown);
++    for (const auto& [key, value] : yrrp::statusProperties(status)) {
++        if (key == "sys.yrrp.bootanim.config") {
++            ALOGI("config %s", value.c_str());
++        }
++    }
+     if (status.route != yrrp::MatrixRoute::Matrix) {
+         status.blockedBy = "STYLE_LINEAGE";
+         publish(status);
+@@ -99,6 +104,12 @@ bool BootAnimation::playYrrpBootAnimation() {
+         ALOGW("init failed reason=%s fallback=%s", failure, yrrp::routeName(status.route));
+         return status.route == yrrp::MatrixRoute::Exit;
+     }
++    if (mDisplays.empty()) {
++        ALOGI("init ok panel=none displays=0");
++    } else {
++        ALOGI("init ok panel=%dx%d displays=%zu", mDisplays.front().width, mDisplays.front().height,
++              mDisplays.size());
++    }
+     publish(status);
+     runYrrpMatrix(gl, &status);
+     releaseYrrpMatrix(&gl);
+@@ -161,7 +172,6 @@ void BootAnimation::releaseYrrpMatrix(YrrpMatrixGl* gl) {
+ void BootAnimation::runYrrpMatrix(const YrrpMatrixGl& gl, yrrp::MatrixStatus* status) {
+     yrrp::MatrixTimeline timeline(status->config.fullIntro, mShuttingDown);
+     yrrp::FrameStats stats;
+-    ALOGI("start config fullIntro=%d shutdown=%d", status->config.fullIntro, mShuttingDown);
+ 
+     glDisable(GL_BLEND);
+     glDisable(GL_SCISSOR_TEST);
+-- 
+2.56.0
+

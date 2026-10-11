@@ -1,0 +1,137 @@
+From d93ce04dedf36d0627add787becb4e4538a12e6d Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 16:47:33 +0200
+Subject: [PATCH 12/13] bootanimation: harden YRRP Matrix init diagnostics
+
+Claude-Session: https://claude.ai/code/session_01XSL9fQo2kwe7nBcauq3dtX
+---
+ cmds/bootanimation/Android.bp                    |  2 ++
+ cmds/bootanimation/BootAnimationYrrp.cpp         | 13 ++++++++-----
+ cmds/bootanimation/YrrpMatrixStatus.cpp          |  3 ++-
+ cmds/bootanimation/YrrpMatrixStatus.h            |  3 +++
+ cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp |  9 +++++++++
+ cmds/bootanimation/tests/yrrp/run_host_tests.sh  |  2 +-
+ 6 files changed, 25 insertions(+), 7 deletions(-)
+
+diff --git a/cmds/bootanimation/Android.bp b/cmds/bootanimation/Android.bp
+index 6da5f97f8897..8e7651c4f9a1 100644
+--- a/cmds/bootanimation/Android.bp
++++ b/cmds/bootanimation/Android.bp
+@@ -112,6 +112,8 @@ cc_test {
+     cflags: [
+         "-Wall",
+         "-Werror",
++        "-Wunused",
++        "-Wunreachable-code",
+     ],
+     test_suites: ["general-tests"],
+ }
+diff --git a/cmds/bootanimation/BootAnimationYrrp.cpp b/cmds/bootanimation/BootAnimationYrrp.cpp
+index b5a91eb73ee1..279b8ea6ab19 100644
+--- a/cmds/bootanimation/BootAnimationYrrp.cpp
++++ b/cmds/bootanimation/BootAnimationYrrp.cpp
+@@ -83,11 +83,7 @@ bool BootAnimation::playYrrpBootAnimation() {
+     status.shuttingDown = mShuttingDown;
+     status.propsReady = android::base::GetBoolProperty("ro.persistent_properties.ready", false);
+     status.route = yrrp::routeFor(status.config.style, mShuttingDown);
+-    for (const auto& [key, value] : yrrp::statusProperties(status)) {
+-        if (key == "sys.yrrp.bootanim.config") {
+-            ALOGI("config %s", value.c_str());
+-        }
+-    }
++    ALOGI("config %s", yrrp::configValue(status).c_str());
+     if (status.route != yrrp::MatrixRoute::Matrix) {
+         status.blockedBy = "STYLE_LINEAGE";
+         publish(status);
+@@ -118,6 +114,10 @@ bool BootAnimation::playYrrpBootAnimation() {
+ }
+ 
+ const char* BootAnimation::initYrrpMatrix(YrrpMatrixGl* gl) {
++    // Drop errors left by earlier GL work so the final check reports only ours.
++    // Bounded, so a context-loss error that keeps reporting cannot spin here.
++    for (int i = 0; i < 16 && glGetError() != GL_NO_ERROR; ++i) {
++    }
+     if (initTexture(&gl->atlas, mAssets, kAtlasAsset) != NO_ERROR) {
+         return "ASSET_ATLAS";
+     }
+@@ -143,6 +143,9 @@ const char* BootAnimation::initYrrpMatrix(YrrpMatrixGl* gl) {
+     GLint linked = GL_FALSE;
+     glGetProgramiv(gl->program, GL_LINK_STATUS, &linked);
+     if (linked != GL_TRUE) {
++        char infoLog[512] = {};
++        glGetProgramInfoLog(gl->program, sizeof(infoLog), nullptr, infoLog);
++        ALOGW("program link failed log=%s", infoLog);
+         return "LINK";
+     }
+     gl->aPosition = glGetAttribLocation(gl->program, "aPosition");
+diff --git a/cmds/bootanimation/YrrpMatrixStatus.cpp b/cmds/bootanimation/YrrpMatrixStatus.cpp
+index 5b997e6c6ef2..94e2835c9703 100644
+--- a/cmds/bootanimation/YrrpMatrixStatus.cpp
++++ b/cmds/bootanimation/YrrpMatrixStatus.cpp
+@@ -8,7 +8,6 @@
+ #include <cstdio>
+ 
+ namespace android::yrrp {
+-namespace {
+ 
+ std::string configValue(const MatrixStatus& status) {
+     char buffer[92];
+@@ -20,6 +19,8 @@ std::string configValue(const MatrixStatus& status) {
+     return buffer;
+ }
+ 
++namespace {
++
+ std::string resultValue(const MatrixStatus& status) {
+     char buffer[92];
+     snprintf(buffer, sizeof(buffer), "outcome=%s frames=%d avgMs=%.1f maxMs=%.1f",
+diff --git a/cmds/bootanimation/YrrpMatrixStatus.h b/cmds/bootanimation/YrrpMatrixStatus.h
+index d3980486ac1f..75223bbba945 100644
+--- a/cmds/bootanimation/YrrpMatrixStatus.h
++++ b/cmds/bootanimation/YrrpMatrixStatus.h
+@@ -27,6 +27,9 @@ struct MatrixStatus {
+     double maxFrameMs = 0.0;
+ };
+ 
++// The sys.yrrp.bootanim.config value, also logged once per run.
++std::string configValue(const MatrixStatus& status);
++
+ std::vector<std::pair<std::string, std::string>> statusProperties(const MatrixStatus& status);
+ 
+ }  // namespace android::yrrp
+diff --git a/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp b/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
+index 24a54f43c357..08cadd546a5c 100644
+--- a/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
++++ b/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
+@@ -177,6 +177,15 @@ TEST(YrrpMatrixStatusTest, defaultMatrixRunPublishesEveryGate) {
+     EXPECT_EQ(0u, map.count("sys.yrrp.bootanim.result"));
+ }
+ 
++TEST(YrrpMatrixStatusTest, configValueMatchesThePublishedConfig) {
++    MatrixStatus status;
++    status.config = parseMatrixConfig("lineage", "0");
++    status.shuttingDown = true;
++    status.propsReady = true;
++    status.route = MatrixRoute::Exit;
++    EXPECT_EQ(asMap(status).at("sys.yrrp.bootanim.config"), configValue(status));
++}
++
+ TEST(YrrpMatrixStatusTest, initFailureNamesTheBlockingStage) {
+     MatrixStatus status;
+     status.config = parseMatrixConfig("matrix", "false");
+diff --git a/cmds/bootanimation/tests/yrrp/run_host_tests.sh b/cmds/bootanimation/tests/yrrp/run_host_tests.sh
+index cf7d455fdedb..c6863ad7743c 100755
+--- a/cmds/bootanimation/tests/yrrp/run_host_tests.sh
++++ b/cmds/bootanimation/tests/yrrp/run_host_tests.sh
+@@ -15,7 +15,7 @@ for unit in YrrpMatrixConfig YrrpMatrixTimeline YrrpMatrixStatus; do
+     fi
+ done
+ 
+-g++ -std=c++17 -Wall -Werror -I"${src}" "${units[@]}" "${here}/YrrpMatrixTest.cpp" \
++g++ -std=c++17 -Wall -Werror -Wunused -Wunreachable-code -I"${src}" "${units[@]}" "${here}/YrrpMatrixTest.cpp" \
+     -lgtest -lgtest_main -pthread -o "${out}/tests"
+ "${out}/tests"
+ 
+-- 
+2.56.0
+

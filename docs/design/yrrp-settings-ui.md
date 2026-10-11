@@ -1,13 +1,13 @@
 # YRRPs Settings UI
 
-The YRRPs page in LineageOS Settings controls Pulse and the screen-off animation. It shipped in OTA `20261007-083337` and passed device acceptance on 2026-10-07.
+The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, and the boot animation. The Pulse and screen-off pages shipped in OTA `20261007-083337` and passed device acceptance on 2026-10-07; the boot animation page awaits its first release.
 
 ## Layout
 
 - Settings home page: a **YRRPs** tile in its own group at the top. The group order is `-150` in the standard layout (before Account at `-140`) and `-140` in the expressive layout (before Connectivity at `-130`). The tile highlight key is `yrrp_menu_key`, so System keeps `menu_key_system`.
 - YRRPs hub (`YrrpSettings`, root key `yrrp_settings_screen`):
   - **Audio** → **Pulse** (On/Off), opening `YrrpPulseSettings`.
-  - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`.
+  - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`, and **Boot animation** (Matrix/LineageOS), opening `YrrpBootAnimationSettings`.
   - Category headers are `searchable="false"`.
 - Pulse page (`yrrp_pulse_settings_screen`), laid out like **System > Gestures > Navigation mode**:
 
@@ -31,8 +31,20 @@ The YRRPs page in LineageOS Settings controls Pulse and the screen-off animation
 
   Every control below the switch stays visible but is disabled while Pulse is off, the Solid gear included. The gear works in every color mode, because the color applies only in Solid but may be chosen before switching; confirming writes only `lineage_pulse_color` and keeps the mode. Every Appearance slider applies in every color mode. No group collapses.
 - Screen-off animation page (`yrrp_screen_off_animation_settings_screen`): **Stock** and **CRT** radio rows.
+- Boot animation page (`yrrp_boot_animation_settings_screen`):
 
-All three fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
+  ```text
+  Boot animation
+  ├ intro                              non-searchable
+  ├ [Style]                            non-searchable category
+  │ ├ Matrix   Finish intro summary    | gear → Finish intro dialog (OK/Cancel, one checkbox)
+  │ └ LineageOS
+  └ footer                             non-searchable, "Changes apply the next time…"
+  ```
+
+  The Matrix row summary reads "Always plays the full intro" or "Ends as soon as the phone is ready". The gear works in either style and never changes the style; OK writes only `persist.yrrp.bootanim.full_intro`. Cancel, back and outside tap write nothing. The hub row summary names the stored style. See `matrix-boot-animation.md`.
+
+All four fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
 
 ## Setting contract
 
@@ -56,6 +68,17 @@ Match theme draws white bars when the system dark theme is on and black bars whe
 
 The default alpha of 217 matches the fixed alpha SystemUI used before the setting existed. CRT requires Always-on display; see `crt-screen-off-animation.md`.
 
+### Property-backed settings
+
+The boot animation choice is the one exception to the per-user `Settings.Secure` rule. `bootanimation` starts before any settings provider runs, so it cannot read a Secure key. Settings stores the choice in device-wide persistent system properties through `YrrpBootAnimationStore` (backend `SystemProperties`), which parses exactly like `YrrpMatrixConfig` in `frameworks/base/cmds/bootanimation`:
+
+| Property | Default | Read | Write |
+|---|---|---|---|
+| `persist.yrrp.bootanim.style` | `matrix` | exact `lineage` is LineageOS; anything else, unset included, is Matrix | `matrix` or `lineage`, other values rejected |
+| `persist.yrrp.bootanim.full_intro` | `true` | `false` or `0` is off; anything else, unset included, is on | `true` or `false` |
+
+Properties have no change observer. The rows refresh on page resume and after their own writes; an external `adb shell setprop` while the page is open shows only after the page resumes. The `system_app` sepolicy grant lives in `android_vendor_extra`.
+
 ## Ownership
 
 - `YRRPs/android_packages_apps_Settings` owns YRRPs navigation, pages, controllers,
@@ -72,7 +95,8 @@ Settings home
         ├── Audio
         │   └── Pulse → Pulse page
         └── Animations
-            └── Screen-off animation → radio page
+            ├── Screen-off animation → radio page
+            └── Boot animation → radio page with a gear
 ```
 
 Use one category per domain, one row per feature, and one focused feature page.
@@ -118,6 +142,10 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-09 — Navigation-mode layout:** a setting that applies to one choice sits behind that choice row's gear; the separate greyed-out **Pulse color** row is removed. The gear works in every mode and writes only the color.
 - **2026-10-09 — Appearance category:** settings that apply to every choice sit under one titled category below the choices. Collapsing groups are forbidden; the Advanced group around Low-level boost is removed, and the checker rejects `initialExpandedChildrenCount`.
 - **2026-10-09 — Boost explanation:** the boost summary explains the effect, and the slider ends read Linear and Lifted.
+- **2026-10-11 — Property-backed boot animation:** the boot animation style and Finish intro are device-wide `persist.yrrp.bootanim.*` properties, not per-user `Settings.Secure` keys, because no settings provider runs while `bootanimation` starts. Approved exception to the per-user Secure-key rule.
+- **2026-10-11 — Boot animation hierarchy:** **YRRPs → Animations → Boot animation**, a page with a non-searchable intro, a non-searchable **Style** category holding the **Matrix** and **LineageOS** radio rows, and a non-searchable footer. Approved by the user.
+- **2026-10-11 — Finish intro gear:** Finish intro sits behind the Matrix row's gear as an OK/Cancel dialog with one checkbox. The gear works in either style and never changes the style; OK writes only `full_intro`.
+- **2026-10-11 — No property observer:** property-backed rows refresh on resume and after their own writes; there is no live observer for properties.
 - **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
 
 ## Release
