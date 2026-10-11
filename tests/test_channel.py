@@ -9,7 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from yrrp_ota import channel as channel_module  # noqa: E402
-from yrrp_ota.channel import ALLOWED, GAPPS, VANILLA, Channel, live_channels  # noqa: E402
+from yrrp_ota.channel import ALLOWED, GAPPS, VANILLA, XUEYING_GAPPS, Channel, live_channels  # noqa: E402
 
 BUILD = "20261010-120000"
 SOURCE = "20261009-120000"
@@ -22,9 +22,38 @@ class ChannelTest(unittest.TestCase):
         self.assertEqual(GAPPS, Channel.parse("salami/gapps"))
 
     def test_parse_rejects_unknown_channels(self) -> None:
-        for value in ("salami", "salami/kernelsu", "xueying/vanilla", "salami/gapps/x", "../vanilla"):
+        for value in ("salami", "salami/kernelsu", "xueying/vanilla", "xueying/kernelsu", "salami/gapps/x", "../vanilla"):
             with self.assertRaises(ValueError):
                 Channel.parse(value)
+
+    def test_parse_accepts_xueying_gapps(self) -> None:
+        self.assertEqual(XUEYING_GAPPS, Channel.parse("xueying/gapps"))
+        self.assertEqual(Channel("xueying", "gapps"), XUEYING_GAPPS)
+        self.assertIn(("xueying", "gapps"), ALLOWED)
+
+    def test_xueying_gapps_names_paths_and_label(self) -> None:
+        channel = XUEYING_GAPPS
+        self.assertEqual("xueying/gapps", channel.name)
+        self.assertFalse(channel.is_vanilla)
+        self.assertEqual(f"lineage-23.2-xueying-gapps-{BUILD}-signed-ota.zip", channel.full_ota_name(BUILD))
+        self.assertEqual(f"lineage-23.2-xueying-gapps-{BUILD}-signed-target_files.zip", channel.target_files_name(BUILD))
+        self.assertEqual(
+            f"lineage-23.2-xueying-gapps-{SOURCE}-to-{BUILD}-signed-incremental-ota.zip",
+            channel.incremental_ota_name(SOURCE, BUILD),
+        )
+        self.assertEqual(f"lineage-23.2-xueying-gapps-{BUILD}-SHA256SUMS.txt", channel.checksums_name(BUILD))
+        self.assertEqual("updates/xueying/gapps.json", channel.updates_full_path)
+        self.assertEqual("updates/xueying/gapps/7.json", channel.updates_incremental_path("7"))
+        self.assertEqual(f"install/xueying/gapps/{BUILD}", channel.install_dir(BUILD))
+        self.assertEqual("io.yrrp.ota.channel.xueying.gapps.build-id", channel.label)
+
+    def test_live_channels_reads_both_devices(self) -> None:
+        labels = {VANILLA.label: SOURCE, GAPPS.label: BUILD, XUEYING_GAPPS.label: BUILD}
+        self.assertEqual({VANILLA: SOURCE, GAPPS: BUILD, XUEYING_GAPPS: BUILD}, live_channels(labels))
+
+    def test_live_channels_rejects_xueying_vanilla_label(self) -> None:
+        with self.assertRaises(ValueError):
+            live_channels({"io.yrrp.ota.channel.xueying.vanilla.build-id": BUILD})
 
     def test_vanilla_names_are_unchanged(self) -> None:
         self.assertEqual(f"lineage-23.2-salami-{BUILD}-signed-ota.zip", VANILLA.full_ota_name(BUILD))

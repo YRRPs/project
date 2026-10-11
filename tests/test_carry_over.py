@@ -22,7 +22,7 @@ from tests.fixtures.make_release_fixture import (  # noqa: E402
     write_incremental_meta,
 )
 from yrrp_ota.carry_over import CarryOverError, carry_over, verify_routes  # noqa: E402
-from yrrp_ota.channel import GAPPS, VANILLA  # noqa: E402
+from yrrp_ota.channel import GAPPS, VANILLA, XUEYING_GAPPS  # noqa: E402
 
 VANILLA_BUILD = "20261009-120000"
 GAPPS_BUILD = "20261010-120000"
@@ -127,6 +127,32 @@ class CarryOverTest(unittest.TestCase):
         self.assertFalse((rootfs / GAPPS.updates_full_path).exists())
         self.assertEqual({VANILLA.label: VANILLA_BUILD}, result.labels)
         self.assertEqual({VANILLA.updates_full_path, VANILLA.updates_incremental_path("42")}, set(result.snapshot))
+
+    def test_xueying_release_carries_both_salami_channels(self) -> None:
+        write_release(self.live, VANILLA, VANILLA_BUILD, incremental="42")
+        write_release(self.live, GAPPS, GAPPS_BUILD, incremental="43")
+        result = self.run_carry({VANILLA.label: VANILLA_BUILD, GAPPS.label: GAPPS_BUILD}, releasing=XUEYING_GAPPS)
+        self.assertEqual({VANILLA: VANILLA_BUILD, GAPPS: GAPPS_BUILD}, result.carried)
+        self.assertEqual({VANILLA.label: VANILLA_BUILD, GAPPS.label: GAPPS_BUILD}, result.labels)
+        rootfs = self.context / "rootfs"
+        for channel, build, incremental in ((VANILLA, VANILLA_BUILD, "42"), (GAPPS, GAPPS_BUILD, "43")):
+            self.assertTrue((rootfs / channel.updates_full_path).is_file())
+            self.assertTrue((rootfs / channel.updates_incremental_path(incremental)).is_file())
+            self.assertTrue((rootfs / channel.install_dir(build) / channel.full_ota_name(build)).is_file())
+        self.assertFalse((rootfs / XUEYING_GAPPS.updates_full_path).exists())
+
+    def test_salami_release_carries_xueying_gapps(self) -> None:
+        write_release(self.live, VANILLA, OLD_BUILD)
+        write_release(self.live, XUEYING_GAPPS, GAPPS_BUILD, incremental="44")
+        result = self.run_carry({VANILLA.label: OLD_BUILD, XUEYING_GAPPS.label: GAPPS_BUILD}, releasing=VANILLA)
+        self.assertEqual({XUEYING_GAPPS: GAPPS_BUILD}, result.carried)
+        self.assertEqual({XUEYING_GAPPS.label: GAPPS_BUILD}, result.labels)
+        rootfs = self.context / "rootfs"
+        self.assertTrue((rootfs / XUEYING_GAPPS.updates_full_path).is_file())
+        self.assertTrue((rootfs / XUEYING_GAPPS.updates_incremental_path("44")).is_file())
+        install = rootfs / XUEYING_GAPPS.install_dir(GAPPS_BUILD)
+        self.assertTrue((install / XUEYING_GAPPS.full_ota_name(GAPPS_BUILD)).is_file())
+        self.assertFalse((rootfs / VANILLA.updates_full_path).exists())
 
     def test_legacy_labels_carry_schema_2_vanilla(self) -> None:
         write_release(self.live, VANILLA, VANILLA_BUILD, schema=2, incremental="42")
