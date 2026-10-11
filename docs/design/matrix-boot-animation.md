@@ -166,12 +166,13 @@ up to 4.2 s in total.
 
 ## Status
 
+- Issue: YRRPs/project#56.
 - Framework: `YRRPs/android_frameworks_base` branch `feat/matrix-boot-animation`, base
-  `806ce24c8c72`, head `e912908e1780`. PR: pending.
+  `806ce24c8c72`, head `e912908e1780`. PR: https://github.com/YRRPs/android_frameworks_base/pull/12 (draft).
 - vendor/extra: `YRRPs/android_vendor_extra` branch `feat/matrix-boot-animation`, base
-  `43d73d9`, head `d68baf1`. PR: pending.
+  `43d73d9`, head `d68baf1`. PR: https://github.com/YRRPs/android_vendor_extra/pull/4 (draft).
 - Settings: `YRRPs/android_packages_apps_Settings` branch `feat/matrix-boot-animation`, base
-  `6d4230cbb1`, head `b18ac07a08`. PR: pending.
+  `6d4230cbb1`, head `b18ac07a08`. PR: https://github.com/YRRPs/android_packages_apps_Settings/pull/8 (draft).
 - Framework patch series: `patches/frameworks-base/matrix-boot-animation/` (13 patches),
   checksums in `SHA256SUMS.txt`.
 - Local checks: `cmds/bootanimation/tests/yrrp/run_host_tests.sh` builds and runs the pure-unit
