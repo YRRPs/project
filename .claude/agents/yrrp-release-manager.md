@@ -94,7 +94,7 @@ Run from that release checkout, repeating `--repo PATH=SHA` for every selected A
 python3 scripts/yrrp-release.py prepare --project-sha <project-sha> --repo <path>=<merged-sha>
 ```
 
-Require JSON evidence for the exact project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, and manifest SHA-256. Each release builds one channel, `salami/vanilla` or `salami/gapps`, and carries every other live channel over unchanged. Present those values and the channel to release through `AskUserQuestion` with exactly:
+Require JSON evidence for the exact project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, and manifest SHA-256. Each release builds one channel, `salami/vanilla`, `salami/gapps`, or `xueying/gapps`, and carries every other live channel over unchanged. Present those values and the channel to release through `AskUserQuestion` with exactly:
 
 - **Build and release** — launch the displayed source.
 - **Stop** — do not launch.

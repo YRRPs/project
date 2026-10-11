@@ -28,17 +28,21 @@ If signing validation fails, stop and invoke `yrrp-signing-keys`. If any revisio
 
 ## 2. Choose one channel
 
-A release builds, signs, and deploys exactly one channel: `salami/vanilla` or `salami/gapps`. The deploy carries every other live channel over unchanged. The builder runs one release at a time, so release another channel in a separate launch after this one completes.
+A release builds, signs, and deploys exactly one channel: `salami/vanilla`, `salami/gapps`, or `xueying/gapps`. The deploy carries every other live channel over unchanged. The builder runs one release at a time, so release another channel in a separate launch after this one completes.
 
-| | `salami/vanilla` | `salami/gapps` |
-|---|---|---|
-| Artifact prefix | `lineage-23.2-salami-<build-id>` | `lineage-23.2-salami-gapps-<build-id>` |
-| Checksums | `lineage-23.2-salami-<build-id>-SHA256SUMS.txt` | `lineage-23.2-salami-gapps-<build-id>-SHA256SUMS.txt` |
-| Full-OTA entry | `/updates/salami.json` | `/updates/salami/gapps.json` |
-| Incremental entry | `/updates/salami/<incr>.json` | `/updates/salami/gapps/<incr>.json` |
-| Install files | `/install/salami/<build-id>/` | `/install/salami/gapps/<build-id>/` |
-| Container label | `io.yrrp.ota.channel.salami.vanilla.build-id` | `io.yrrp.ota.channel.salami.gapps.build-id` |
-| Receipt | `.claude/releases/<build-id>.md` | `.claude/releases/gapps-<build-id>.md` |
+| | `salami/vanilla` | `salami/gapps` | `xueying/gapps` |
+|---|---|---|---|
+| Artifact prefix | `lineage-23.2-salami-<build-id>` | `lineage-23.2-salami-gapps-<build-id>` | `lineage-23.2-xueying-gapps-<build-id>` |
+| Checksums | `lineage-23.2-salami-<build-id>-SHA256SUMS.txt` | `lineage-23.2-salami-gapps-<build-id>-SHA256SUMS.txt` | `lineage-23.2-xueying-gapps-<build-id>-SHA256SUMS.txt` |
+| Full-OTA entry | `/updates/salami.json` | `/updates/salami/gapps.json` | `/updates/xueying/gapps.json` |
+| Incremental entry | `/updates/salami/<incr>.json` | `/updates/salami/gapps/<incr>.json` | `/updates/xueying/gapps/<incr>.json` |
+| Install files | `/install/salami/<build-id>/` | `/install/salami/gapps/<build-id>/` | `/install/xueying/gapps/<build-id>/` |
+| Container label | `io.yrrp.ota.channel.salami.vanilla.build-id` | `io.yrrp.ota.channel.salami.gapps.build-id` | `io.yrrp.ota.channel.xueying.gapps.build-id` |
+| Receipt | `.claude/releases/<build-id>.md` | `.claude/releases/gapps-<build-id>.md` | `.claude/releases/gapps-<build-id>.md` |
+
+Both gapps channels share the receipt filename pattern; the receipt's `channel` field names the device.
+
+xueying (OnePlus Open) builds from the unforked LineageOS device tree and TheMuppets blobs: no OPlus camera port. Its first YRRP install is a clean install, because YRRP release keys differ from any other build, and its first release is full-only because no earlier xueying target-files exist.
 
 Derive names instead of typing them: `python3 scripts/ota-channel.py --channel <device>/<type> <field> [values]` prints each one (`checksums`, `ota`, `install-dir`, `updates-full`, `updates-incremental`, `label`, and more; see `--help`).
 
@@ -73,12 +77,12 @@ Monitor `/home/android/signed-build.status` (it reads `launch-starting-signer:<c
 
 Before calling the release successful, capture:
 
-- `sha256sum -c` on the channel's checksum file in `/opt/android/out/signed/`: `lineage-23.2-salami-<build-id>-SHA256SUMS.txt` for vanilla, `lineage-23.2-salami-gapps-<build-id>-SHA256SUMS.txt` for gapps.
+- `sha256sum -c` on the channel's checksum file in `/opt/android/out/signed/`: the Checksums row of the channel table, for example `lineage-23.2-salami-gapps-<build-id>-SHA256SUMS.txt`.
 - OTA certificate equals `releasekey.x509.pem`; SystemUI signer equals `platform`.
 - `docker inspect yrrp-ota-server --format '{{.State.Health.Status}} {{.Image}}'` reports healthy and the intended `yrrp-ota-release:<type>-<build-id>` image.
 - `docker inspect yrrp-ota-server --format '{{ index .Config.Labels "io.yrrp.ota.channel.<device>.<type>.build-id" }}'` prints the build ID. Record that value as the receipt's `build_id_label`.
-- Public HTTPS for the released channel: `/healthz` is 200; the full-OTA entry (`/updates/salami.json` or `/updates/salami/gapps.json`) names the build; the stale fallback (`/updates/salami/1.json` or `/updates/salami/gapps/1.json`) returns the same full OTA; the install directory (`/install/salami/<build-id>/` or `/install/salami/gapps/<build-id>/`) is 200; and a one-byte range request on each OTA is 206. Record these in the receipt's `deployment_public_checks.checks` under exactly the names `healthz`, `updates metadata`, `stale fallback`, `install listing`, `full OTA range`, and, with an incremental, `incremental OTA range`. The receipt command rejects any other set of names.
-- When the release has an incremental, also confirm that the known incremental entry (`/updates/salami/<incr>.json` or `/updates/salami/gapps/<incr>.json`) names it. This check is evidence only: report it, but do not add it to the receipt's `checks`.
+- Public HTTPS for the released channel: `/healthz` is 200; the channel's full-OTA entry (for example `/updates/xueying/gapps.json`) names the build; the stale fallback (`1.json` in the channel's incremental directory, for example `/updates/xueying/gapps/1.json`) returns the same full OTA; the channel's install directory (for example `/install/xueying/gapps/<build-id>/`) is 200; and a one-byte range request on each OTA is 206. Record these in the receipt's `deployment_public_checks.checks` under exactly the names `healthz`, `updates metadata`, `stale fallback`, `install listing`, `full OTA range`, and, with an incremental, `incremental OTA range`. The receipt command rejects any other set of names.
+- When the release has an incremental, also confirm that the known incremental entry (the channel table's Incremental entry row) names it. This check is evidence only: report it, but do not add it to the receipt's `checks`.
 - Carried channels: before launch, save the public body of every other live channel's full-OTA and incremental entries. After the deploy, each body must be byte-identical. The deployer swaps the production container, waits for health, verifies the released channel's routes, and requires byte-identical bodies on every carried route. A changed carried route fails the candidate and rolls back to the previous container. The public comparison is the receipt's `routes_unchanged` evidence.
 - Device proof claims run serially using their trigger, observable, expected result, limitation, and restoration fields. Skip TalkBack and accessibility acceptance for this personal ROM.
 
