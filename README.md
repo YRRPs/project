@@ -1,6 +1,6 @@
 # Yim's Riced ROM Project
 
-YRRP is a personal LineageOS 23.2 derivative for OnePlus 11 (`salami`). This repository holds release tooling, tests, architecture notes, and installation guidance; Android source lives in the `YRRPs` organization forks selected by `YRRPs/android`.
+YRRP is a personal LineageOS 23.2 derivative for OnePlus 11 (`salami`), with a GApps channel for OnePlus Open (`xueying`). This repository holds release tooling, tests, architecture notes, and installation guidance; Android source lives in the `YRRPs` organization forks selected by `YRRPs/android`.
 
 ## Workflow
 
