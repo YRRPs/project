@@ -1,13 +1,14 @@
 # Install the gapps type
 
-YRRP ships two build types for `salami`. Each type is a separate update channel with its own builds and incremental OTAs.
+YRRP ships two build types for `salami` (OnePlus 11) and one for `xueying` (OnePlus Open). Each device and type pair is a separate update channel with its own builds and incremental OTAs.
 
 | Type | Channel | Contents |
 |---|---|---|
 | `vanilla` | `salami/vanilla` | LineageOS with YRRP features, no Google apps. |
 | `gapps` | `salami/gapps` | The same ROM with MindTheGapps built into the signed image. |
+| `gapps` | `xueying/gapps` | The OnePlus Open build with MindTheGapps built in. |
 
-Both types are signed with the same release key. You can move between them without wiping `/data`.
+All types are signed with the same release key. On `salami` you can move between types without wiping `/data`. `xueying` has only `gapps`.
 
 ## Why GApps are built in
 
@@ -21,12 +22,11 @@ The `gapps` type never modifies `system` after install, so its incremental OTAs 
 
 Each build has its channel's Updater URL built in. The Updater requests the incremental route with the installed build's `ro.build.version.incremental`. If no incremental exists for that number, the server returns the channel's full OTA entry.
 
-| Type | Updater requests | Full OTA entry | Install files |
+| Channel | Updater requests | Full OTA entry | Install files |
 |---|---|---|---|
-| `vanilla` | `https://ota.yimura.dev/updates/salami/{incr}.json` | `https://ota.yimura.dev/updates/salami.json` | `https://ota.yimura.dev/install/salami/<build_id>/` |
-| `gapps` | `https://ota.yimura.dev/updates/salami/gapps/{incr}.json` | `https://ota.yimura.dev/updates/salami/gapps.json` | `https://ota.yimura.dev/install/salami/gapps/<build_id>/` |
-
-xueying (OnePlus Open) has one channel, `xueying/gapps`: its Updater requests `https://ota.yimura.dev/updates/xueying/gapps/{incr}.json`, and its full OTA entry is `https://ota.yimura.dev/updates/xueying/gapps.json`, with files under `https://ota.yimura.dev/install/xueying/gapps/<build_id>/`. xueying has no `vanilla` type. The install steps in this guide and in `clean-install.md` were written and tested on salami only.
+| `salami` `vanilla` | `https://ota.yimura.dev/updates/salami/{incr}.json` | `https://ota.yimura.dev/updates/salami.json` | `https://ota.yimura.dev/install/salami/<build_id>/` |
+| `salami` `gapps` | `https://ota.yimura.dev/updates/salami/gapps/{incr}.json` | `https://ota.yimura.dev/updates/salami/gapps.json` | `https://ota.yimura.dev/install/salami/gapps/<build_id>/` |
+| `xueying` `gapps` | `https://ota.yimura.dev/updates/xueying/gapps/{incr}.json` | `https://ota.yimura.dev/updates/xueying/gapps.json` | `https://ota.yimura.dev/install/xueying/gapps/<build_id>/` |
 
 `<build_id>` has the form `YYYYMMDD-HHMMSS`. To see which type a device runs:
 
@@ -37,11 +37,11 @@ adb shell getprop lineage.updater.uri
 
 ## Install on a new device
 
-Follow [`clean-install.md`](clean-install.md) and pick the `gapps` type in the "Choose your type" step.
+Follow [`clean-install.md`](clean-install.md) and pick your device's `gapps` row in the "Choose your type" step.
 
 ## Switch types
 
-You switch types by sideloading the other type's full OTA in recovery. The full OTA replaces `system`, and the new build's Updater URL moves the device to the other channel.
+This section applies to `salami` only; `xueying` has no other type. You switch types by sideloading the other type's full OTA in recovery. The full OTA replaces `system`, and the new build's Updater URL moves the device to the other channel.
 
 1. Make sure no update is pending. Enable **Developer options → Rooted debugging**, then run:
 

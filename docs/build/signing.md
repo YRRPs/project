@@ -89,4 +89,4 @@ An incremental or deployment retry does not require rebuilding. The release mana
 
 ## Clean installation
 
-OnePlus 11 requires current stock Android 16 firmware. Flash the six matching signed images from the same target-files output, boot matching recovery, format data, and sideload the signed full OTA. All files must come from one type; see `docs/install/clean-install.md`. Never mix images from an earlier build. Keep the bootloader unlocked.
+OnePlus 11 and OnePlus Open require current stock Android 16 firmware. Flash the six matching signed images from the same target-files output, boot matching recovery, format data, and sideload the signed full OTA. All files must come from one type; see `docs/install/clean-install.md`. Never mix images from an earlier build. Keep the bootloader unlocked.
