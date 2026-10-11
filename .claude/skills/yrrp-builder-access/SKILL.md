@@ -48,7 +48,7 @@ Report the exact status, screen listing, returned log path, and relevant log tai
 
 For any other long maintenance job, use detached `screen`, a dedicated log, a status file, and an `ERR` trap. Never keep `brunch`, `repo sync`, extraction, signing, or deployment attached to an SSH session.
 
-Non-interactive shells need `bash -lc`, `/opt/android`, `source build/envsetup.sh`, and `breakfast salami`. Do not combine `set -u` with `envsetup.sh`. Use `/opt/android/external/ktfmt/ktfmt.sh` with JDK 21 when formatting Kotlin.
+Non-interactive shells need `bash -lc`, `/opt/android`, `source build/envsetup.sh`, and `breakfast <device>` (`salami` by default; `xueying` for xueying channels). Do not combine `set -u` with `envsetup.sh`. Use `/opt/android/external/ktfmt/ktfmt.sh` with JDK 21 when formatting Kotlin.
 
 ## Container recreation safety
 

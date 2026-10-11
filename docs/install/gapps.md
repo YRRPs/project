@@ -26,6 +26,8 @@ Each build has its channel's Updater URL built in. The Updater requests the incr
 | `vanilla` | `https://ota.yimura.dev/updates/salami/{incr}.json` | `https://ota.yimura.dev/updates/salami.json` | `https://ota.yimura.dev/install/salami/<build_id>/` |
 | `gapps` | `https://ota.yimura.dev/updates/salami/gapps/{incr}.json` | `https://ota.yimura.dev/updates/salami/gapps.json` | `https://ota.yimura.dev/install/salami/gapps/<build_id>/` |
 
+xueying (OnePlus Open) has one channel, `xueying/gapps`: its Updater requests `https://ota.yimura.dev/updates/xueying/gapps/{incr}.json`, and its full OTA entry is `https://ota.yimura.dev/updates/xueying/gapps.json`, with files under `https://ota.yimura.dev/install/xueying/gapps/<build_id>/`. xueying has no `vanilla` type. The install steps in this guide and in `clean-install.md` were written and tested on salami only.
+
 `<build_id>` has the form `YYYYMMDD-HHMMSS`. To see which type a device runs:
 
 ```bash

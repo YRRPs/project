@@ -21,19 +21,21 @@ Both prepare and launch use `/home/android/.yrrp-build-launch.lock`. Launch rech
 
 ## Channels
 
-A release builds, signs, and deploys exactly one channel. A channel is `<device>/<type>`. Launch requires `--channel` and accepts only `salami/vanilla` and `salami/gapps`. The builder runs one release at a time, so release another channel in a separate launch.
+A release builds, signs, and deploys exactly one channel. A channel is `<device>/<type>`. Launch requires `--channel` and accepts only `salami/vanilla`, `salami/gapps`, and `xueying/gapps`. The builder runs one release at a time, so release another channel in a separate launch.
 
-The launcher passes the channel to `sign-lineage-build.sh --channel`. The signer exports `YRRP_BUILD_TYPE=<type>` before `breakfast`, and `android_vendor_extra` selects the type from it. When `YRRP_BUILD_TYPE` is unset, the build is `vanilla`. The status file reads `launch-starting-signer:<channel>` while the signer starts, and the log names the channel and `YRRP_BUILD_TYPE`.
+The launcher passes the channel to `sign-lineage-build.sh --channel`. The signer exports `YRRP_BUILD_TYPE=<type>` before `breakfast <device>`, and `android_vendor_extra` selects the type from it. When `YRRP_BUILD_TYPE` is unset, the build is `vanilla`. The status file reads `launch-starting-signer:<channel>` while the signer starts, and the log names the channel and `YRRP_BUILD_TYPE`.
 
 `vanilla` keeps the original artifact names. Other types insert `-<type>` after the device:
 
-| Artifact | `salami/vanilla` | `salami/gapps` |
-|---|---|---|
-| Signed target-files | `lineage-23.2-salami-<id>-signed-target_files.zip` | `lineage-23.2-salami-gapps-<id>-signed-target_files.zip` |
-| Full OTA | `lineage-23.2-salami-<id>-signed-ota.zip` | `lineage-23.2-salami-gapps-<id>-signed-ota.zip` |
-| Incremental OTA | `lineage-23.2-salami-<src>-to-<id>-signed-incremental-ota.zip` | `lineage-23.2-salami-gapps-<src>-to-<id>-signed-incremental-ota.zip` |
-| Checksums | `lineage-23.2-salami-<id>-SHA256SUMS.txt` | `lineage-23.2-salami-gapps-<id>-SHA256SUMS.txt` |
-| Receipt | `.claude/releases/<id>.md` | `.claude/releases/gapps-<id>.md` |
+| Artifact | `salami/vanilla` | `salami/gapps` | `xueying/gapps` |
+|---|---|---|---|
+| Signed target-files | `lineage-23.2-salami-<id>-signed-target_files.zip` | `lineage-23.2-salami-gapps-<id>-signed-target_files.zip` | `lineage-23.2-xueying-gapps-<id>-signed-target_files.zip` |
+| Full OTA | `lineage-23.2-salami-<id>-signed-ota.zip` | `lineage-23.2-salami-gapps-<id>-signed-ota.zip` | `lineage-23.2-xueying-gapps-<id>-signed-ota.zip` |
+| Incremental OTA | `lineage-23.2-salami-<src>-to-<id>-signed-incremental-ota.zip` | `lineage-23.2-salami-gapps-<src>-to-<id>-signed-incremental-ota.zip` | `lineage-23.2-xueying-gapps-<src>-to-<id>-signed-incremental-ota.zip` |
+| Checksums | `lineage-23.2-salami-<id>-SHA256SUMS.txt` | `lineage-23.2-salami-gapps-<id>-SHA256SUMS.txt` | `lineage-23.2-xueying-gapps-<id>-SHA256SUMS.txt` |
+| Receipt | `.claude/releases/<id>.md` | `.claude/releases/gapps-<id>.md` | `.claude/releases/gapps-<id>.md` |
+
+Before building any channel except `salami/vanilla`, the signer pulls the configured base OTA image and refuses to start unless its nginx config serves the channel's full-OTA entry, so a channel whose `YRRPs/ota_server` routes are unpublished fails in seconds instead of at deploy.
 
 `scripts/yrrp_ota/channel.py` owns every channel-derived name, route, and label. Shell scripts read them through `scripts/ota-channel.py`, for example `python3 scripts/ota-channel.py --channel salami/gapps ota <build-id>`.
 

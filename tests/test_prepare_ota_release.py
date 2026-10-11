@@ -21,7 +21,7 @@ from tests.fixtures.make_release_fixture import (
     create_incremental_fixture,
     write_incremental_meta,
 )
-from yrrp_ota.channel import GAPPS, VANILLA, Channel  # fixture import puts scripts/ on sys.path
+from yrrp_ota.channel import GAPPS, VANILLA, XUEYING_GAPPS, Channel  # fixture import puts scripts/ on sys.path
 
 ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = ROOT / "scripts/prepare-ota-release.py"
@@ -267,6 +267,28 @@ class PrepareOtaReleaseTest(unittest.TestCase):
                     data = data.replace(b"ro.lineage.device=salami", f"ro.lineage.device={device}".encode())
                 target.writestr(info, data)
         return edited
+
+    def test_xueying_gapps_channel_writes_xueying_tree(self) -> None:
+        ota, target = create_fixture(self.root / "xueying-input", build_type="gapps", device="xueying")
+        output = self.prepare("xueying-out", ota=ota, target_files=target, channel=XUEYING_GAPPS)
+        install = Path("rootfs/install/xueying/gapps") / BUILD_ID
+        expected = {
+            Path("rootfs/updates/xueying/gapps.json"),
+            *(install / name for name in (XUEYING_GAPPS.full_ota_name(BUILD_ID), *IMAGES, "SHA256SUMS.txt", "release.json")),
+        }
+        self.assertEqual(expected, {path.relative_to(output) for path in output.rglob("*") if path.is_file()})
+        release = json.loads((output / install / "release.json").read_text())
+        self.assertEqual("xueying/gapps", release["channel"])
+        self.assertEqual("xueying", release["device"])
+        entry = json.loads((output / "rootfs/updates/xueying/gapps.json").read_text())
+        self.assertIn(f"/install/xueying/gapps/{BUILD_ID}/", entry[0]["files"][0]["url"])
+
+    def test_xueying_channel_rejects_salami_target_files(self) -> None:
+        ota, target = create_fixture(self.root / "salami-gapps", build_type="gapps")
+        renamed = ota.with_name(XUEYING_GAPPS.full_ota_name(BUILD_ID))
+        shutil.copyfile(ota, renamed)
+        with self.assertRaisesRegex(ValueError, "ro.lineage.device must equal xueying"):
+            self.prepare("wrong-device", ota=renamed, target_files=target, channel=XUEYING_GAPPS)
 
     def test_rejects_target_files_for_other_device(self) -> None:
         with self.assertRaisesRegex(ValueError, "ro.lineage.device must equal salami"):

@@ -47,6 +47,6 @@ Before recreation, prove the release lock is free and no build screen/process ex
 ## Baseline
 
 - Manifest: `https://github.com/YRRPs/android.git`, branch `lineage-23.2`
-- Device/product: OnePlus 11 `salami` / `lineage_salami`
-- Output: `/opt/android/out/target/product/salami/`
+- Devices/products: OnePlus 11 `salami` / `lineage_salami` (default), OnePlus Open `xueying` / `lineage_xueying`
+- Output: `/opt/android/out/target/product/<device>/`; signed releases in `/opt/android/out/signed/`
 - `CCACHE_MAXSIZE=100G`; `nsjail` is disabled under current container restrictions.

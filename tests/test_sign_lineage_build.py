@@ -36,6 +36,7 @@ class SignLineageBuildTest(unittest.TestCase):
         self.incremental_log = self.root / "incremental.log"
         self.profile_log = self.root / "profile.log"
         self.build_type_log = self.root / "build-type.log"
+        self.breakfast_log = self.root / "breakfast.log"
         self.docker_log = self.root / "docker.log"
         self.signed = self.build / "out/signed"
         self._create_build_tree()
@@ -57,7 +58,8 @@ class SignLineageBuildTest(unittest.TestCase):
         (self.build / "build").mkdir()
         (self.build / "build/envsetup.sh").write_text(
             f"OUT={self.build}/out/target/product/salami\n"
-            "breakfast() { printf '%s\\n' \"$YRRP_BUILD_TYPE\" > \"${FAKE_BUILD_TYPE_LOG}\"; }\n"
+            "breakfast() { printf '%s\\n' \"$YRRP_BUILD_TYPE\" > \"${FAKE_BUILD_TYPE_LOG}\"; "
+            "printf '%s\\n' \"$*\" > \"${FAKE_BREAKFAST_LOG}\"; }\n"
             "mka() { printf '%s\\n' \"$*\" > \"${YRRP_BUILD_LOG}\"; }\n"
             "sign_target_files_apks() { cp \"${ANDROID_PW_FILE}\" \"${YRRP_PASSWORD_LOG}\"; "
             "printf '%s' \"${YRRP_SIGNING_PROFILE_DIR:-unset}\" > \"${YRRP_PROFILE_LOG}\"; "
@@ -164,6 +166,7 @@ class SignLineageBuildTest(unittest.TestCase):
             "FAKE_LIVE_DEVICE": live_device,
             "FAKE_INSPECT_FAIL": inspect_fail,
             "FAKE_BUILD_TYPE_LOG": str(self.build_type_log),
+            "FAKE_BREAKFAST_LOG": str(self.breakfast_log),
             "FAKE_DOCKER_CALL_LOG": str(self.docker_log),
         } | (env_extra or {})
         if not include_ota_environment:
@@ -384,6 +387,7 @@ class SignLineageBuildTest(unittest.TestCase):
         result = self.run_script()
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("vanilla", self.build_type_log.read_text().strip())
+        self.assertEqual("salami", self.breakfast_log.read_text().strip())
         self.assertIn("--channel salami/vanilla", self.deploy_log.read_text())
 
     def test_incremental_source_comes_from_the_channels_own_label(self) -> None:
@@ -464,6 +468,26 @@ class SignLineageBuildTest(unittest.TestCase):
         result = self.run_script(channel="salami/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
         self.assertNotEqual(0, result.returncode)
         self.assertIn("does not serve /updates/salami/gapps.json", result.stderr)
+
+    def test_xueying_gapps_checks_its_own_route_and_builds_xueying(self) -> None:
+        conf = "location = /updates/salami/gapps.json {\nlocation = /updates/xueying/gapps.json {\n"
+        result = self.run_script(channel="xueying/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertEqual(0, result.returncode, result.stderr)
+        grep = [call for call in self.docker_calls() if call[:1] == ["run"]]
+        self.assertEqual(1, len(grep))
+        self.assertIn("^[[:space:]]*location = /updates/xueying/gapps\\.json \\{", grep[0])
+        self.assertIn("--channel xueying/gapps", self.deploy_log.read_text())
+        self.assertIn("channel xueying/gapps, YRRP_BUILD_TYPE=gapps", result.stdout)
+        self.assertEqual("xueying", self.breakfast_log.read_text().strip())
+        self.assertEqual("gapps", self.build_type_log.read_text().strip())
+
+    def test_xueying_gapps_refused_when_base_image_serves_only_salami(self) -> None:
+        conf = "location = /updates/salami.json {\nlocation = /updates/salami/gapps.json {\n"
+        result = self.run_script(channel="xueying/gapps", env_extra={"FAKE_BASE_NGINX_CONF": conf})
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not serve /updates/xueying/gapps.json; publish ota_server first", result.stderr)
+        self.assertFalse(self.build_type_log.exists())
+        self.assertFalse(self.deploy_log.exists())
 
     def test_vanilla_skips_base_image_route_check(self) -> None:
         result = self.run_script(env_extra={"FAKE_BASE_NGINX_CONF": ""})

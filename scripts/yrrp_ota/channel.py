@@ -9,7 +9,7 @@ BUILD_ID_PATTERN = re.compile(r"^[0-9]{8}-[0-9]{6}$")
 INCREMENTAL_PATTERN = re.compile(r"^[0-9]+$")
 ALLOWLIST_TOKEN_PATTERN = re.compile(r"^[a-z0-9]+$")
 VANILLA_TYPE = "vanilla"
-ALLOWED = frozenset({("salami", "vanilla"), ("salami", "gapps")})
+ALLOWED = frozenset({("salami", "vanilla"), ("salami", "gapps"), ("xueying", "gapps")})
 LABEL_PREFIX = "io.yrrp.ota.channel."
 LABEL_SUFFIX = ".build-id"
 LEGACY_DEVICE_LABEL = "io.yrrp.ota.device"
@@ -108,6 +108,7 @@ class Channel:
 
 VANILLA = Channel("salami", "vanilla")
 GAPPS = Channel("salami", "gapps")
+XUEYING_GAPPS = Channel("xueying", "gapps")
 
 
 def _legacy_vanilla_build(labels: dict[str, str]) -> dict[Channel, str]:

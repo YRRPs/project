@@ -46,13 +46,14 @@ def create_fixture(
     build_type: str | None = None,
     gapps_apps: tuple[str, ...] | None = None,
     gapps_prefix: str = "PRODUCT",
+    device: str = VANILLA.device,
 ) -> tuple[Path, Path]:
     """build_type None writes no ro.yrrp.build.type, like builds made before channels (read as vanilla).
 
     gapps_apps None means: a gapps build carries every GApps APK, any other build none.
     """
     root.mkdir(parents=True, exist_ok=True)
-    channel = VANILLA if build_type is None else Channel(VANILLA.device, build_type)
+    channel = VANILLA if build_type is None else Channel(device, build_type)
     ota = root / channel.full_ota_name(build_id)
     target = root / channel.target_files_name(build_id)
     post_build = f"yrpp/salami/salami:16/TEST/4070908800:userdebug/{post_build_suffix}"
@@ -77,8 +78,8 @@ def create_fixture(
 
     build_prop = "\n".join(
         (
-            "ro.product.device=salami",
-            "ro.lineage.device=salami",
+            f"ro.product.device={device}",
+            f"ro.lineage.device={device}",
             "ro.lineage.releasetype=UNOFFICIAL",
             "ro.lineage.build.version=23.2",
         )

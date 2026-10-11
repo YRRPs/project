@@ -106,7 +106,8 @@ resolve_incremental_source() {
     printf '%s\n' "${build_id}"
 }
 
-# A non-vanilla release built against a base image without its routes would only fail at deploy, hours later.
+# A release whose routes the base image lacks would only fail at deploy, hours later.
+# Only salami/vanilla predates the check; every route it serves has shipped in every base image.
 require_base_image_serves_channel() {
     local route route_pattern grep_status=0
     route=$(channel_field updates-full) || return 1
@@ -182,7 +183,7 @@ docker version >/dev/null
 docker buildx version >/dev/null
 docker compose version >/dev/null
 docker network inspect "${OTA_NETWORK:-proxy-net}" >/dev/null
-if [[ ${build_type} != vanilla ]]; then
+if [[ ${channel} != salami/vanilla ]]; then
     require_base_image_serves_channel || exit 1
 fi
 

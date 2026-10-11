@@ -4,14 +4,15 @@
 
 A hardened static Nginx container joins external `proxy-net` as `ota-server:8080`. It publishes no host port and receives no keys or Docker socket. The user-managed HTTPS reverse proxy is the public edge.
 
-The server holds one live build per channel. A channel is `<device>/<type>`, currently `salami/vanilla` or `salami/gapps`. For each channel, the release image contains updater JSON, a full OTA, at most one incremental from that channel's previous live build, six install images, checksums, and `release.json`. Signed target-files remain private for future incrementals and recovery.
+The server holds one live build per channel. A channel is `<device>/<type>`, currently `salami/vanilla`, `salami/gapps`, or `xueying/gapps`. For each channel, the release image contains updater JSON, a full OTA, at most one incremental from that channel's previous live build, six install images, checksums, and `release.json`. Signed target-files remain private for future incrementals and recovery.
 
 | Channel | Full-OTA entry | Incremental entry | Install files |
 |---|---|---|---|
 | `salami/vanilla` | `/updates/salami.json` | `/updates/salami/<incr>.json` | `/install/salami/<build-id>/` |
 | `salami/gapps` | `/updates/salami/gapps.json` | `/updates/salami/gapps/<incr>.json` | `/install/salami/gapps/<build-id>/` |
+| `xueying/gapps` | `/updates/xueying/gapps.json` | `/updates/xueying/gapps/<incr>.json` | `/install/xueying/gapps/<build-id>/` |
 
-`vanilla` keeps the routes devices already use. `scripts/yrrp_ota/channel.py` owns every channel-derived name, route, and label.
+`vanilla` keeps the routes devices already use. `scripts/yrrp_ota/channel.py` owns every channel-derived name, route, and label. A new channel needs both an allowlist entry there and explicit `YRRPs/ota_server` locations; the signer refuses every channel except `salami/vanilla` until the published base image serves its full-OTA entry.
 
 ## Release pipeline
 
@@ -27,7 +28,7 @@ The server holds one live build per channel. A channel is `<device>/<type>`, cur
 
 Updater JSON is a top-level array whose first file contains `filename`, `sha256`, `size`, and direct HTTPS `url`; release fields include `datetime`, `files`, `type`, and `version`. The endpoint begins with HTTPS and returns 200 without redirect.
 
-Nginx permits GET and HEAD only, serves `/healthz`, exact no-cache updater metadata for every channel, scoped `/install/salami/` autoindex, immutable versioned files, and byte ranges. Everything else is 404. The container is non-root, read-only, capability-free, and uses a `/tmp` tmpfs.
+Nginx permits GET and HEAD only, serves `/healthz`, exact no-cache updater metadata for every channel, scoped `/install/salami/`, `/install/salami/gapps/`, and `/install/xueying/gapps/` autoindex, immutable versioned files, and byte ranges. Everything else is 404. The container is non-root, read-only, capability-free, and uses a `/tmp` tmpfs.
 
 ## Incremental and recovery behavior
 
