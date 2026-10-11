@@ -1,0 +1,94 @@
+From e912908e17806a7934596403c9b415149e34219a Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 17:15:39 +0200
+Subject: [PATCH 13/13] bootanimation: drop the persistent-properties readiness
+ read
+
+Claude-Session: https://claude.ai/code/session_01XSL9fQo2kwe7nBcauq3dtX
+---
+ cmds/bootanimation/BootAnimationYrrp.cpp         | 1 -
+ cmds/bootanimation/YrrpMatrixStatus.cpp          | 7 +++----
+ cmds/bootanimation/YrrpMatrixStatus.h            | 1 -
+ cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp | 7 ++-----
+ 4 files changed, 5 insertions(+), 11 deletions(-)
+
+diff --git a/cmds/bootanimation/BootAnimationYrrp.cpp b/cmds/bootanimation/BootAnimationYrrp.cpp
+index 279b8ea6ab19..6a72618cf213 100644
+--- a/cmds/bootanimation/BootAnimationYrrp.cpp
++++ b/cmds/bootanimation/BootAnimationYrrp.cpp
+@@ -81,7 +81,6 @@ bool BootAnimation::playYrrpBootAnimation() {
+     status.config = yrrp::parseMatrixConfig(android::base::GetProperty(yrrp::kStyleProp, ""),
+                                             android::base::GetProperty(yrrp::kFullIntroProp, ""));
+     status.shuttingDown = mShuttingDown;
+-    status.propsReady = android::base::GetBoolProperty("ro.persistent_properties.ready", false);
+     status.route = yrrp::routeFor(status.config.style, mShuttingDown);
+     ALOGI("config %s", yrrp::configValue(status).c_str());
+     if (status.route != yrrp::MatrixRoute::Matrix) {
+diff --git a/cmds/bootanimation/YrrpMatrixStatus.cpp b/cmds/bootanimation/YrrpMatrixStatus.cpp
+index 94e2835c9703..30b6e338061b 100644
+--- a/cmds/bootanimation/YrrpMatrixStatus.cpp
++++ b/cmds/bootanimation/YrrpMatrixStatus.cpp
+@@ -11,11 +11,10 @@ namespace android::yrrp {
+ 
+ std::string configValue(const MatrixStatus& status) {
+     char buffer[92];
+-    snprintf(buffer, sizeof(buffer), "style=%s/%s fullIntro=%d/%s shutdown=%d propsReady=%d",
++    snprintf(buffer, sizeof(buffer), "style=%s/%s fullIntro=%d/%s shutdown=%d",
+              styleName(status.config.style), status.config.styleFromProp ? "prop" : "default",
+-             status.config.fullIntro ? 1 : 0,
+-             status.config.fullIntroFromProp ? "prop" : "default", status.shuttingDown ? 1 : 0,
+-             status.propsReady ? 1 : 0);
++             status.config.fullIntro ? 1 : 0, status.config.fullIntroFromProp ? "prop" : "default",
++             status.shuttingDown ? 1 : 0);
+     return buffer;
+ }
+ 
+diff --git a/cmds/bootanimation/YrrpMatrixStatus.h b/cmds/bootanimation/YrrpMatrixStatus.h
+index 75223bbba945..9ed72a3b5f70 100644
+--- a/cmds/bootanimation/YrrpMatrixStatus.h
++++ b/cmds/bootanimation/YrrpMatrixStatus.h
+@@ -18,7 +18,6 @@ namespace android::yrrp {
+ struct MatrixStatus {
+     MatrixConfig config;
+     bool shuttingDown = false;
+-    bool propsReady = false;
+     MatrixRoute route = MatrixRoute::Matrix;
+     std::string blockedBy = "none";  // STYLE_LINEAGE, ASSET_ATLAS, ASSET_LOGO, COMPILE, LINK, GL
+     std::string outcome;             // COMPLETED, EXIT_PENDING, SWAP_FAILED; empty until the end
+diff --git a/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp b/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
+index 08cadd546a5c..e891520e5757 100644
+--- a/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
++++ b/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
+@@ -167,10 +167,9 @@ std::map<std::string, std::string> asMap(const MatrixStatus& status) {
+ TEST(YrrpMatrixStatusTest, defaultMatrixRunPublishesEveryGate) {
+     MatrixStatus status;
+     status.config = parseMatrixConfig("", "");
+-    status.propsReady = true;
+     status.route = MatrixRoute::Matrix;
+     const auto map = asMap(status);
+-    EXPECT_EQ("style=matrix/default fullIntro=1/default shutdown=0 propsReady=1",
++    EXPECT_EQ("style=matrix/default fullIntro=1/default shutdown=0",
+               map.at("sys.yrrp.bootanim.config"));
+     EXPECT_EQ("MATRIX", map.at("sys.yrrp.bootanim.route"));
+     EXPECT_EQ("none", map.at("sys.yrrp.bootanim.blocked_by"));
+@@ -181,7 +180,6 @@ TEST(YrrpMatrixStatusTest, configValueMatchesThePublishedConfig) {
+     MatrixStatus status;
+     status.config = parseMatrixConfig("lineage", "0");
+     status.shuttingDown = true;
+-    status.propsReady = true;
+     status.route = MatrixRoute::Exit;
+     EXPECT_EQ(asMap(status).at("sys.yrrp.bootanim.config"), configValue(status));
+ }
+@@ -192,8 +190,7 @@ TEST(YrrpMatrixStatusTest, initFailureNamesTheBlockingStage) {
+     status.route = MatrixRoute::Stock;
+     status.blockedBy = "COMPILE";
+     const auto map = asMap(status);
+-    EXPECT_EQ("style=matrix/prop fullIntro=0/prop shutdown=0 propsReady=0",
+-              map.at("sys.yrrp.bootanim.config"));
++    EXPECT_EQ("style=matrix/prop fullIntro=0/prop shutdown=0", map.at("sys.yrrp.bootanim.config"));
+     EXPECT_EQ("STOCK", map.at("sys.yrrp.bootanim.route"));
+     EXPECT_EQ("COMPILE", map.at("sys.yrrp.bootanim.blocked_by"));
+ }
+-- 
+2.56.0
+

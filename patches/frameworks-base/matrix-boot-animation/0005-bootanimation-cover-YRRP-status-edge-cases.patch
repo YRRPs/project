@@ -1,0 +1,44 @@
+From 3ec25a1a1f462c4b237a4fa4a3f72c7222691bc9 Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Sun, 11 Oct 2026 16:29:56 +0200
+Subject: [PATCH 05/13] bootanimation: cover YRRP status edge cases
+
+Claude-Session: https://claude.ai/code/session_01XSL9fQo2kwe7nBcauq3dtX
+---
+ .../tests/yrrp/YrrpMatrixTest.cpp             | 21 +++++++++++++++++++
+ 1 file changed, 21 insertions(+)
+
+diff --git a/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp b/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
+index e7c81fad5415..24a54f43c357 100644
+--- a/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
++++ b/cmds/bootanimation/tests/yrrp/YrrpMatrixTest.cpp
+@@ -215,5 +215,26 @@ TEST(YrrpMatrixStatusTest, everyValueFitsAPropertyValue) {
+     }
+ }
+ 
++TEST(YrrpMatrixStatusTest, resultIsOnlyPublishedForMatrixRuns) {
++    for (const MatrixRoute route : {MatrixRoute::Stock, MatrixRoute::Exit}) {
++        MatrixStatus status;
++        status.route = route;
++        status.outcome = "COMPLETED";
++        EXPECT_EQ(0u, asMap(status).count("sys.yrrp.bootanim.result"));
++    }
++}
++
++TEST(YrrpMatrixStatusTest, hugeFrameTimesStillFitAPropertyValue) {
++    MatrixStatus status;
++    status.route = MatrixRoute::Matrix;
++    status.outcome = "SWAP_FAILED";
++    status.frames = 999999999;
++    status.averageFrameMs = 1e300;
++    status.maxFrameMs = 1e300;
++    for (const auto& [key, value] : statusProperties(status)) {
++        EXPECT_LT(value.size(), 92u) << key;
++    }
++}
++
+ }  // namespace
+ }  // namespace android::yrrp
+-- 
+2.56.0
+
