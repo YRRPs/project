@@ -1,0 +1,662 @@
+From b7734899bc398ed350e573a1ce51b6195fb533e5 Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:41:11 +0200
+Subject: [PATCH 10/17] SystemUI: release the fold animation latch on sleep and
+ timeout
+
+Release the latched style when the device sleeps or 10 s after a latch, and
+let a gated provider whose token was released start a fresh transition. Latch
+at the screen-on handshake so the overlays and the gate agree on the style.
+---
+ .../UnfoldLightRevealOverlayAnimationTest.kt  | 26 ++++++
+ ...tedUnfoldTransitionProgressProviderTest.kt | 30 +++++++
+ .../yrrp/DuoFoldOverlayAnimationTest.kt       | 16 ++++
+ .../yrrp/FoldAnimationStyleSelectorTest.kt    | 72 ++++++++++++++++
+ .../yrrp/YrrpFoldAnimationStartableTest.kt    | 86 +++++++++++++++++++
+ .../UnfoldLightRevealOverlayAnimation.kt      | 12 +--
+ .../unfold/yrrp/DuoFoldOverlayAnimation.kt    |  3 +
+ .../unfold/yrrp/FoldAnimationStyleSelector.kt | 51 +++++++++--
+ .../unfold/yrrp/YrrpFoldAnimationStartable.kt | 55 +++++++++++-
+ .../systemui/unfold/UnfoldSharedModule.kt     |  2 +-
+ ...leGatedUnfoldTransitionProgressProvider.kt |  7 +-
+ .../unfold/util/UnfoldTransitionStyleGate.kt  |  8 ++
+ 12 files changed, 348 insertions(+), 20 deletions(-)
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
+index e36bc8dc8db3..8ba5c3e4c74c 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
+@@ -31,6 +31,7 @@ import com.android.systemui.unfoldedDeviceState
+ import com.android.systemui.util.concurrency.ThreadFactory
+ import java.util.concurrent.Executor
+ import javax.inject.Provider
++import com.google.common.truth.Truth.assertThat
+ import org.junit.Before
+ import org.junit.Test
+ import org.junit.runner.RunWith
+@@ -159,6 +160,31 @@ class UnfoldLightRevealOverlayAnimationTest : SysuiTestCase() {
+         verify(controller, never()).addOverlay(any(), anyOrNull())
+     }
+ 
++    @Test
++    fun pixel_handshakeLatchesStyle_soGateJoinsInsteadOfRestarting() {
++        selector.onSettingChanged(FoldAnimationStyle.PIXEL)
++        unfoldAfterFold()
++
++        underTest.onScreenTurningOn(onOverlayReady)
++        testableLooper.processAllMessages()
++        selector.onSettingChanged(FoldAnimationStyle.STOCK)
++
++        assertThat(selector.latchedStyle()).isEqualTo(FoldAnimationStyle.PIXEL)
++        assertThat(selector.starts).isEqualTo(1)
++        assertThat(selector.onGatedTransitionStarted(Any())).isTrue()
++        assertThat(selector.starts).isEqualTo(1)
++    }
++
++    @Test
++    fun noUnfold_handshakeDoesNotLatch() {
++        selector.onSettingChanged(FoldAnimationStyle.PIXEL)
++
++        underTest.onScreenTurningOn(onOverlayReady)
++        testableLooper.processAllMessages()
++
++        assertThat(selector.latchedStyle()).isNull()
++    }
++
+     private fun unfoldAfterFold() {
+         foldStateCallback.onDeviceStateChanged(foldedState)
+         foldStateCallback.onDeviceStateChanged(unfoldedState)
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt
+index daa3498aa5e2..89eced446ea4 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt
+@@ -99,18 +99,48 @@ class StyleGatedUnfoldTransitionProgressProviderTest : SysuiTestCase() {
+         assertThat(events).containsExactly("start", "p0.3", "finish").inOrder()
+     }
+ 
++    @Test
++    fun externalRelease_rearmsProvider_nextStartIsFresh() {
++        gate.allow = true
++        source.onTransitionStarted()
++        // The gate dropped this token (sleep or timeout) and the finish was lost.
++        gate.active = false
++        events.clear()
++
++        source.onTransitionStarted()
++        source.onTransitionProgress(0.2f)
++        source.onTransitionFinished()
++
++        assertThat(gate.started).isEqualTo(2)
++        assertThat(events).containsExactly("start", "p0.2", "finish").inOrder()
++    }
++
++    @Test
++    fun duplicateStartWhileActive_isStillIgnored() {
++        gate.allow = true
++        source.onTransitionStarted()
++        source.onTransitionStarted()
++
++        assertThat(gate.started).isEqualTo(1)
++        assertThat(events).containsExactly("start")
++    }
++
+     private class FakeGate : UnfoldTransitionStyleGate {
+         var allow = true
++        var active = true
+         var started = 0
+         var finished = 0
+ 
+         override fun onGatedTransitionStarted(token: Any): Boolean {
+             started++
++            active = true
+             return allow
+         }
+ 
+         override fun onGatedTransitionFinished(token: Any) {
+             finished++
+         }
++
++        override fun isActive(token: Any) = active
+     }
+ }
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+index 7ec9a3c829ce..60a6d2cfd35f 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+@@ -129,6 +129,22 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
+     }
+ 
++    @Test
++    fun duoUnfold_handshakeLatchesStyleOnce_andGatedStartJoins() {
++        reportFolded(true)
++        reportFolded(false)
++
++        underTest.onScreenTurningOn {}
++        processAll()
++        selector.onSettingChanged(FoldAnimationStyle.STOCK)
++
++        assertThat(selector.latchedStyle()).isEqualTo(FoldAnimationStyle.DUO)
++        assertThat(selector.starts).isEqualTo(1)
++        selector.onGatedTransitionStarted(progressProvider)
++        assertThat(selector.starts).isEqualTo(1)
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++    }
++
+     @Test
+     fun pixel_neverAttaches_andReportsReady() {
+         selector.onSettingChanged(FoldAnimationStyle.PIXEL)
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt
+index 2f18002e0bdb..a90526386532 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt
+@@ -93,6 +93,78 @@ class FoldAnimationStyleSelectorTest : SysuiTestCase() {
+         assertThat(underTest.completions).isEqualTo(0)
+     }
+ 
++    @Test
++    fun releaseAll_dropsLatchAndTokens_andReportsForcedRelease() {
++        val seen = mutableListOf<String>()
++        underTest.listener =
++            object : FoldAnimationStyleSelector.Listener {
++                override fun onLatched(style: FoldAnimationStyle) {}
++                override fun onReleased(style: FoldAnimationStyle) { seen += "released" }
++                override fun onForceReleased(style: FoldAnimationStyle, reason: String) {
++                    seen += "forced=$style/$reason"
++                }
++            }
++        underTest.onSettingChanged(FoldAnimationStyle.DUO)
++        val token = Any()
++        underTest.onGatedTransitionStarted(token)
++
++        underTest.releaseAll("SLEEP")
++
++        assertThat(underTest.latchedStyle()).isNull()
++        assertThat(underTest.isActive(token)).isFalse()
++        assertThat(seen).containsExactly("forced=DUO/SLEEP")
++        // The lost finish arriving later changes nothing.
++        underTest.onGatedTransitionFinished(token)
++        assertThat(underTest.completions).isEqualTo(0)
++        // The next start latches afresh.
++        underTest.onSettingChanged(FoldAnimationStyle.PIXEL)
++        underTest.onGatedTransitionStarted(Any())
++        assertThat(underTest.latchedStyle()).isEqualTo(FoldAnimationStyle.PIXEL)
++        assertThat(underTest.starts).isEqualTo(2)
++    }
++
++    @Test
++    fun releaseAll_withoutLatch_isSilent() {
++        var forced = 0
++        underTest.listener =
++            object : FoldAnimationStyleSelector.Listener {
++                override fun onLatched(style: FoldAnimationStyle) {}
++                override fun onReleased(style: FoldAnimationStyle) {}
++                override fun onForceReleased(style: FoldAnimationStyle, reason: String) { forced++ }
++            }
++        underTest.releaseAll("SLEEP")
++        assertThat(forced).isEqualTo(0)
++    }
++
++    @Test
++    fun latchIfIdle_latchesOnce_andGatedStartJoinsWithoutDoubleCount() {
++        underTest.onSettingChanged(FoldAnimationStyle.DUO)
++        underTest.latchIfIdle()
++        underTest.latchIfIdle()
++        underTest.onSettingChanged(FoldAnimationStyle.STOCK)
++
++        assertThat(underTest.currentStyle()).isEqualTo(FoldAnimationStyle.DUO)
++        assertThat(underTest.starts).isEqualTo(1)
++
++        val token = Any()
++        assertThat(underTest.onGatedTransitionStarted(token)).isTrue()
++        assertThat(underTest.starts).isEqualTo(1)
++
++        underTest.onGatedTransitionFinished(token)
++        assertThat(underTest.latchedStyle()).isNull()
++        assertThat(underTest.completions).isEqualTo(1)
++    }
++
++    @Test
++    fun latchIfIdle_whileLatched_keepsExistingStyle() {
++        underTest.onSettingChanged(FoldAnimationStyle.PIXEL)
++        underTest.onGatedTransitionStarted(Any())
++        underTest.onSettingChanged(FoldAnimationStyle.DUO)
++
++        assertThat(underTest.latchIfIdle()).isEqualTo(FoldAnimationStyle.PIXEL)
++        assertThat(underTest.starts).isEqualTo(1)
++    }
++
+     @Test
+     fun listenerSeesLatchAndRelease() {
+         val seen = mutableListOf<String>()
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt
+index da46ad2feb1e..7bc513514bb8 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt
+@@ -21,6 +21,7 @@ import androidx.test.filters.SmallTest
+ import com.android.systemui.SysuiTestCase
+ import com.android.systemui.dump.DumpManager
+ import com.android.systemui.log.logcatLogBuffer
++import com.android.systemui.power.domain.interactor.PowerInteractor
+ import com.android.systemui.unfold.config.UnfoldTransitionConfig
+ import com.google.common.truth.Truth.assertThat
+ import java.io.PrintWriter
+@@ -28,6 +29,7 @@ import java.io.StringWriter
+ import kotlinx.coroutines.ExperimentalCoroutinesApi
+ import kotlinx.coroutines.flow.MutableStateFlow
+ import kotlinx.coroutines.test.TestScope
++import kotlinx.coroutines.test.advanceTimeBy
+ import kotlinx.coroutines.test.runCurrent
+ import kotlinx.coroutines.test.runTest
+ import org.junit.Test
+@@ -44,6 +46,9 @@ class YrrpFoldAnimationStartableTest : SysuiTestCase() {
+     private val selector = FoldAnimationStyleSelector()
+     private val runtime = FoldAnimationRuntimeState()
+     private val raw = MutableStateFlow(0)
++    private val isAsleep = MutableStateFlow(false)
++    private val powerInteractor =
++        mock<PowerInteractor> { on { isAsleep } doReturn this@YrrpFoldAnimationStartableTest.isAsleep }
+     private val repository = mock<FoldAnimationSettingsRepository>()
+     private val dumpManager = mock<DumpManager>()
+     private val config =
+@@ -109,6 +114,86 @@ class YrrpFoldAnimationStartableTest : SysuiTestCase() {
+         assertThat(out.toString()).contains("blockedBy=NONE")
+     }
+ 
++    @Test
++    fun sleep_releasesLatch_andCountsCancellation() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        raw.value = 2
++        create(this).start()
++        runCurrent()
++        selector.onGatedTransitionStarted(Any())
++        assertThat(selector.latchedStyle()).isEqualTo(FoldAnimationStyle.DUO)
++
++        isAsleep.value = true
++        runCurrent()
++
++        assertThat(selector.latchedStyle()).isNull()
++        assertThat(runtime.cancellations).isEqualTo(1)
++        assertThat(runtime.lastCancelReason).isEqualTo("SLEEP")
++    }
++
++    @Test
++    fun sleepWithoutLatch_recordsNothing() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        create(this).start()
++        runCurrent()
++
++        isAsleep.value = true
++        runCurrent()
++
++        assertThat(runtime.cancellations).isEqualTo(0)
++    }
++
++    @Test
++    fun latchTimeout_releasesLatchAfterTenSeconds() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        raw.value = 1
++        create(this).start()
++        runCurrent()
++        selector.onGatedTransitionStarted(Any())
++
++        advanceTimeBy(YrrpFoldAnimationStartable.LATCH_TIMEOUT_MS - 1)
++        runCurrent()
++        assertThat(selector.latchedStyle()).isEqualTo(FoldAnimationStyle.PIXEL)
++
++        advanceTimeBy(2)
++        runCurrent()
++        assertThat(selector.latchedStyle()).isNull()
++        assertThat(runtime.lastCancelReason).isEqualTo("LATCH_TIMEOUT")
++        assertThat(runtime.cancellations).isEqualTo(1)
++    }
++
++    @Test
++    fun normalFinish_cancelsTimeout_soNoCancellationIsRecorded() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        create(this).start()
++        runCurrent()
++        val token = Any()
++        selector.onGatedTransitionStarted(token)
++        selector.onGatedTransitionFinished(token)
++
++        advanceTimeBy(YrrpFoldAnimationStartable.LATCH_TIMEOUT_MS + 1)
++        runCurrent()
++
++        assertThat(runtime.cancellations).isEqualTo(0)
++    }
++
++    @Test
++    fun staleTimeout_doesNotReleaseLaterLatch() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        create(this).start()
++        runCurrent()
++        val first = Any()
++        selector.onGatedTransitionStarted(first)
++        advanceTimeBy(6_000)
++        selector.onGatedTransitionFinished(first)
++        selector.onGatedTransitionStarted(Any())
++
++        advanceTimeBy(6_000)
++        runCurrent()
++
++        assertThat(selector.latchedStyle()).isNotNull()
++    }
++
+     private fun create(scope: TestScope, animationsEnabled: Boolean = true) =
+         YrrpFoldAnimationStartable(
+             repository = repository,
+@@ -118,6 +203,7 @@ class YrrpFoldAnimationStartableTest : SysuiTestCase() {
+             dumpManager = dumpManager,
+             // A real buffer: a bare mock returns null from obtain() and the inline log() NPEs.
+             logBuffer = logcatLogBuffer("YrrpFoldAnimationLog"),
++            powerInteractor = powerInteractor,
+             backgroundScope = scope.backgroundScope,
+             animationsEnabled = { animationsEnabled },
+         )
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt
+index c3aa5a476ffe..ecb1b67c90b4 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt
+@@ -99,12 +99,12 @@ constructor(
+             Trace.beginSection("$TAG#onScreenTurningOn")
+             try {
+                 // Add the view only if we are unfolding and this is the first screen on
+-                if (
+-                    !isFolded &&
+-                        !isUnfoldHandled &&
+-                        isPixel() &&
+-                        contentResolver.areAnimationsEnabled()
+-                ) {
++                val unfoldPending =
++                    !isFolded && !isUnfoldHandled && contentResolver.areAnimationsEnabled()
++                // Latch before reading the style so this overlay and the gated transition that
++                // follows agree on it.
++                if (unfoldPending) foldAnimationStyleSelector.latchIfIdle()
++                if (unfoldPending && isPixel()) {
+                     overlayAddReason = UNFOLD
+                     controller.addOverlay(calculateRevealAmount(), onOverlayReady)
+                     isUnfoldHandled = true
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+index a25729c90c5a..f97026989075 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+@@ -121,6 +121,9 @@ constructor(
+         val coverReveal = isFolded && pendingCoverReveal
+         if (unfold) pendingUnfold = false
+         if (coverReveal) pendingCoverReveal = false
++        // Latch before reading the style so this overlay and the gated transition that follows
++        // agree on it. Only the unfold: the cover reveal has no gated transition to release it.
++        if (unfold && contentResolver.areAnimationsEnabled()) selector.latchIfIdle()
+         when {
+             unfold && isDuo() -> {
+                 attach(inner, FoldAnimationPhase.UNFOLDING, onOverlayReady)
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt
+index b2b8b96271e3..45b72017e1c3 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt
+@@ -24,7 +24,8 @@ import javax.inject.Singleton
+ 
+ /**
+  * Latches the user's fold animation style when the first gated progress provider starts a
+- * transition and releases it when the last one finishes. Every unfold consumer, Shell included,
++ * transition (or a screen-on handshake calls [latchIfIdle] first) and releases it when the last
++ * gated provider finishes, or by force through [releaseAll] on sleep or timeout. Every unfold consumer, Shell included,
+  * reads [currentStyle], so one transition never mixes styles. Lives in the global graph because
+  * Shell and the unfold library are both resolved there.
+  */
+@@ -36,6 +37,9 @@ class FoldAnimationStyleSelector @Inject constructor() :
+         fun onLatched(style: FoldAnimationStyle)
+ 
+         fun onReleased(style: FoldAnimationStyle)
++
++        /** The latch was dropped without a normal finish; [reason] names why. */
++        fun onForceReleased(style: FoldAnimationStyle, reason: String) {}
+     }
+ 
+     @Volatile var listener: Listener? = null
+@@ -63,21 +67,54 @@ class FoldAnimationStyleSelector @Inject constructor() :
+ 
+     override fun getUnfoldAnimationStyle(): Int = currentStyle().shellValue
+ 
++    /**
++     * Latches the current setting if nothing is latched yet and returns the style now latched. The
++     * screen-on handshake calls this so the overlays and the gate agree; the gated start that
++     * follows joins this latch instead of starting a second one.
++     */
++    fun latchIfIdle(): FoldAnimationStyle {
++        val (style, newlyLatched) = synchronized(lock) { latchLocked() }
++        if (newlyLatched) listener?.onLatched(style)
++        return style
++    }
++
++    @GuardedBy("lock")
++    private fun latchLocked(): Pair<FoldAnimationStyle, Boolean> {
++        val fresh = latched == null
++        if (fresh) {
++            latched = setting
++            startCount++
++        }
++        return latched!! to fresh
++    }
++
+     override fun onGatedTransitionStarted(token: Any): Boolean {
+         val (style, newlyLatched) =
+             synchronized(lock) {
+-                val fresh = activeTokens.isEmpty()
+-                if (fresh) {
+-                    latched = setting
+-                    startCount++
+-                }
++                val result = latchLocked()
+                 activeTokens += token
+-                latched!! to fresh
++                result
+             }
+         if (newlyLatched) listener?.onLatched(style)
+         return style != FoldAnimationStyle.STOCK
+     }
+ 
++    override fun isActive(token: Any): Boolean = synchronized(lock) { token in activeTokens }
++
++    /**
++     * Drops the latch and every token without a finish (sleep, safety timeout). Tokens dropped
++     * here report inactive, so their providers treat the next start as fresh. Does nothing when
++     * nothing is latched.
++     */
++    fun releaseAll(reason: String) {
++        val released =
++            synchronized(lock) {
++                activeTokens.clear()
++                latched.also { latched = null }
++            }
++        released?.let { listener?.onForceReleased(it, reason) }
++    }
++
+     override fun onGatedTransitionFinished(token: Any) {
+         val released =
+             synchronized(lock) {
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt
+index 092d8df49a29..25ae2e37fa6e 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt
+@@ -17,6 +17,7 @@
+ package com.android.systemui.unfold.yrrp
+ 
+ import android.content.ContentResolver
++import androidx.annotation.GuardedBy
+ import com.android.app.tracing.coroutines.launchTraced as launch
+ import com.android.systemui.CoreStartable
+ import com.android.systemui.Dumpable
+@@ -26,15 +27,18 @@ import com.android.systemui.dump.DumpManager
+ import com.android.systemui.log.LogBuffer
+ import com.android.systemui.log.core.LogLevel
+ import com.android.systemui.log.dagger.YrrpFoldAnimationLog
++import com.android.systemui.power.domain.interactor.PowerInteractor
+ import com.android.systemui.unfold.config.UnfoldTransitionConfig
+ import com.android.systemui.unfold.util.ScaleAwareTransitionProgressProvider.Companion.areAnimationsEnabled
+ import java.io.PrintWriter
+ import javax.inject.Inject
+ import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.delay
+ 
+ /**
+- * Feeds the per-user setting into [FoldAnimationStyleSelector], logs latch transitions, and dumps
+- * every gate. Dump: `dumpsys activity service com.android.systemui/.SystemUIService
++ * Feeds the per-user setting into [FoldAnimationStyleSelector], logs latch transitions, releases a
++ * stuck latch on sleep or after [LATCH_TIMEOUT_MS], and dumps every gate. Dump: `dumpsys activity service com.android.systemui/.SystemUIService
+  * YrrpFoldAnimation YrrpFoldAnimationLog`.
+  */
+ @SysUISingleton
+@@ -45,6 +49,7 @@ class YrrpFoldAnimationStartable(
+     private val config: UnfoldTransitionConfig,
+     private val dumpManager: DumpManager,
+     private val logBuffer: LogBuffer,
++    private val powerInteractor: PowerInteractor,
+     private val backgroundScope: CoroutineScope,
+     private val animationsEnabled: () -> Boolean,
+ ) : CoreStartable, Dumpable {
+@@ -57,6 +62,7 @@ class YrrpFoldAnimationStartable(
+         config: UnfoldTransitionConfig,
+         dumpManager: DumpManager,
+         @YrrpFoldAnimationLog logBuffer: LogBuffer,
++        powerInteractor: PowerInteractor,
+         @Background backgroundScope: CoroutineScope,
+         contentResolver: ContentResolver,
+     ) : this(
+@@ -66,18 +72,39 @@ class YrrpFoldAnimationStartable(
+         config,
+         dumpManager,
+         logBuffer,
++        powerInteractor,
+         backgroundScope,
+         { contentResolver.areAnimationsEnabled() },
+     )
+ 
++    private val timeoutLock = Any()
++    @GuardedBy("timeoutLock") private var timeoutJob: Job? = null
++
+     override fun start() {
+         dumpManager.registerNormalDumpable(TAG, this)
+         selector.listener =
+             object : FoldAnimationStyleSelector.Listener {
+-                override fun onLatched(style: FoldAnimationStyle) = log("latched style=$style")
++                override fun onLatched(style: FoldAnimationStyle) {
++                    log("latched style=$style")
++                    armTimeout()
++                }
++
++                override fun onReleased(style: FoldAnimationStyle) {
++                    log("released style=$style")
++                    disarmTimeout()
++                }
+ 
+-                override fun onReleased(style: FoldAnimationStyle) = log("released style=$style")
++                override fun onForceReleased(style: FoldAnimationStyle, reason: String) {
++                    runtimeState.recordCancel(reason)
++                    log("released style=$style forced reason=$reason")
++                    disarmTimeout()
++                }
++            }
++        backgroundScope.launch {
++            powerInteractor.isAsleep.collect { asleep ->
++                if (asleep) selector.releaseAll("SLEEP")
+             }
++        }
+         backgroundScope.launch {
+             repository.setting.collect { raw ->
+                 val style = FoldAnimationStyle.fromRaw(raw)
+@@ -87,6 +114,25 @@ class YrrpFoldAnimationStartable(
+         }
+     }
+ 
++    /** A lost finish must not pin the style or swallow the next start: release after a delay. */
++    private fun armTimeout() {
++        synchronized(timeoutLock) {
++            timeoutJob?.cancel()
++            timeoutJob =
++                backgroundScope.launch {
++                    delay(LATCH_TIMEOUT_MS)
++                    selector.releaseAll("LATCH_TIMEOUT")
++                }
++        }
++    }
++
++    private fun disarmTimeout() {
++        synchronized(timeoutLock) {
++            timeoutJob?.cancel()
++            timeoutJob = null
++        }
++    }
++
+     private fun log(message: String) {
+         logBuffer.log(TAG, LogLevel.DEBUG, { str1 = message }, { str1!! })
+     }
+@@ -122,5 +168,6 @@ class YrrpFoldAnimationStartable(
+ 
+     companion object {
+         const val TAG = "YrrpFoldAnimation"
++        const val LATCH_TIMEOUT_MS = 10_000L
+     }
+ }
+diff --git a/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt b/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt
+index f3b2682a4676..fe30e5605d82 100644
+--- a/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt
++++ b/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt
+@@ -33,9 +33,9 @@ import com.android.systemui.unfold.updates.hinge.HingeAngleProvider
+ import com.android.systemui.unfold.updates.hinge.HingeSensorAngleProvider
+ import com.android.systemui.unfold.util.ATraceLoggerTransitionProgressListener
+ import com.android.systemui.unfold.util.ScaleAwareTransitionProgressProvider
++import com.android.systemui.unfold.util.StyleGatedUnfoldTransitionProgressProvider
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityManager
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityManagerImpl
+-import com.android.systemui.unfold.util.StyleGatedUnfoldTransitionProgressProvider
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityProvider
+ import com.android.systemui.unfold.util.UnfoldTransitionStyleGate
+ import dagger.BindsOptionalOf
+diff --git a/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt
+index 5defe2c4ecfc..d1b4936d6b61 100644
+--- a/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt
++++ b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt
+@@ -22,7 +22,8 @@ import java.util.concurrent.CopyOnWriteArrayList
+ 
+ /**
+  * Forwards a whole transition or none of it, as decided by [gate] when the transition starts. A
+- * finish with no start forwards nothing and leaves the gate untouched. All callbacks arrive on
++ * finish with no start forwards nothing and leaves the gate untouched. A start that arrives after
++ * the gate released the token externally begins a fresh transition. All callbacks arrive on
+  * the source's progress thread.
+  */
+ class StyleGatedUnfoldTransitionProgressProvider(
+@@ -38,7 +39,9 @@ class StyleGatedUnfoldTransitionProgressProvider(
+     }
+ 
+     override fun onTransitionStarted() {
+-        if (running) return
++        // A start while running is a duplicate, unless the gate released this token behind our
++        // back (lost finish): then the previous run is dead and this start begins a new one.
++        if (running && gate.isActive(this)) return
+         running = true
+         passing = gate.onGatedTransitionStarted(this)
+         if (passing) listeners.forEach { it.onTransitionStarted() }
+diff --git a/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt
+index 6b15d968b3b3..194979dd7b36 100644
+--- a/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt
++++ b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt
+@@ -26,4 +26,12 @@ interface UnfoldTransitionStyleGate {
+ 
+     /** Called on the progress thread when [token]'s transition finishes. */
+     fun onGatedTransitionFinished(token: Any)
++
++    /**
++     * Whether [token] still holds a started transition. False after the gate released it
++     * externally (sleep, timeout) without a finish, which lets the provider treat its next start
++     * as a fresh one instead of swallowing it. Defaults to true for gates that never release
++     * early.
++     */
++    fun isActive(token: Any): Boolean = true
+ }
+-- 
+2.56.0
+

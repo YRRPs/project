@@ -1,0 +1,205 @@
+From 6c18d139b31ae794307271630b146c70367fe4fb Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:41:43 +0200
+Subject: [PATCH 11/17] SystemUI: harden Duo overlay timeouts and pending state
+
+Remove the inner overlay after 5 s if the transition never finishes, clear
+the pending unfold and cover reveal flags on cancel, and start the fold blur
+at zero so it no longer flashes at the first frame.
+---
+ .../yrrp/DuoFoldOverlayAnimationTest.kt       | 74 +++++++++++++++++++
+ .../unfold/yrrp/DuoFoldOverlayAnimation.kt    | 42 ++++++++++-
+ 2 files changed, 113 insertions(+), 3 deletions(-)
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+index 60a6d2cfd35f..22f260c6b175 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+@@ -323,6 +323,80 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         verify(innerController, never()).isTouchBlocked = false
+     }
+ 
++    @Test
++    fun foldOnInner_startsUnblurred_soNoFlashBeforeProgress() {
++        selector.onGatedTransitionStarted(progressProvider)
++
++        progressProvider.onTransitionStarted()
++        processAll()
++
++        verify(innerController).setBackgroundBlurRadius(DuoBlurCurve.radiusFor(1f))
++        verify(innerController, never()).setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
++    }
++
++    @Test
++    fun unfoldNeverFinishing_safetyTimeoutRemovesOverlay() {
++        reportFolded(true)
++        reportFolded(false)
++        underTest.onScreenTurningOn {}
++        processAll()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.UNFOLDING)
++
++        testableLooper.moveTimeForward(DuoFoldOverlayAnimation.SAFETY_TIMEOUT_MS + 1)
++        processAll()
++
++        verify(innerController, atLeastOnce()).ensureOverlayRemoved()
++        verify(innerController, atLeastOnce()).isTouchBlocked = false
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++        assertThat(runtime.lastCancelReason).isEqualTo("TIMEOUT")
++    }
++
++    @Test
++    fun foldNeverFinishing_safetyTimeoutRemovesOverlay() {
++        selector.onGatedTransitionStarted(progressProvider)
++        progressProvider.onTransitionStarted()
++        processAll()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.FOLDING)
++
++        testableLooper.moveTimeForward(DuoFoldOverlayAnimation.SAFETY_TIMEOUT_MS + 1)
++        processAll()
++
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++        assertThat(runtime.lastCancelReason).isEqualTo("TIMEOUT")
++    }
++
++    @Test
++    fun finishBeforeTimeout_recordsNoCancel() {
++        selector.onGatedTransitionStarted(progressProvider)
++        progressProvider.onTransitionStarted()
++        processAll()
++        progressProvider.onTransitionFinished()
++        processAll()
++
++        testableLooper.moveTimeForward(DuoFoldOverlayAnimation.SAFETY_TIMEOUT_MS + 1)
++        processAll()
++
++        assertThat(runtime.cancellations).isEqualTo(0)
++    }
++
++    @Test
++    fun foldThenSleepBeforeScreenOn_wakeDoesNotRevealCover() {
++        reportFolded(false)
++        reportFolded(true)
++        isAsleep.value = true
++        processAll()
++        isAsleep.value = false
++        processAll()
++        var ready = false
++
++        underTest.onScreenTurningOn { ready = true }
++        processAll()
++
++        assertThat(ready).isTrue()
++        verify(coverController, never()).addOverlay(any(), anyOrNull())
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++    }
++
+     @Test
+     fun foldCompletes_removesInnerOverlay() {
+         selector.onGatedTransitionStarted(progressProvider)
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+index f97026989075..492dccf7c2ea 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+@@ -158,6 +158,7 @@ constructor(
+         controller: FullscreenLightRevealAnimationController,
+         phase: FoldAnimationPhase,
+         onOverlayReady: Runnable,
++        initialBlurPx: Int = DuoBlurCurve.MAX_BLUR_PX,
+     ) {
+         // The commit listener and the failure path must not both report ready.
+         val reported = AtomicBoolean(false)
+@@ -166,10 +167,10 @@ constructor(
+         }
+         try {
+             controller.addOverlay(ALPHA_TRANSPARENT, readyOnce)
+-            runtimeState.blurAvailable =
+-                controller.setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
++            runtimeState.blurAvailable = controller.setBackgroundBlurRadius(initialBlurPx)
+             runtimeState.overlayAttached = true
+             runtimeState.phase = phase
++            armSafetyTimeout(phase)
+             log("overlay added phase=$phase blur=${runtimeState.blurAvailable}")
+         } catch (e: RuntimeException) {
+             controller.ensureOverlayRemoved()
+@@ -178,6 +179,26 @@ constructor(
+         }
+     }
+ 
++    /**
++     * The inner overlay blurs and blocks touch until the transition finishes; a lost finish must
++     * not leave it up. The cover reveal has its own bounds.
++     */
++    private fun armSafetyTimeout(phase: FoldAnimationPhase) {
++        bgHandler.removeCallbacks(safetyTimeout)
++        if (phase == FoldAnimationPhase.UNFOLDING || phase == FoldAnimationPhase.FOLDING) {
++            bgHandler.postDelayed(safetyTimeout, SAFETY_TIMEOUT_MS)
++        }
++    }
++
++    private val safetyTimeout = Runnable {
++        if (
++            runtimeState.phase == FoldAnimationPhase.UNFOLDING ||
++                runtimeState.phase == FoldAnimationPhase.FOLDING
++        ) {
++            cancel("TIMEOUT")
++        }
++    }
++
+     /** Runs the timed cover-screen clear once the cover panel is on. */
+     fun onCoverScreenOn() {
+         if (runtimeState.phase != FoldAnimationPhase.COVER_REVEAL) return
+@@ -218,6 +239,7 @@ constructor(
+     }
+ 
+     private fun detach(controller: FullscreenLightRevealAnimationController) {
++        bgHandler.removeCallbacks(safetyTimeout)
+         controller.ensureOverlayRemoved()
+         controller.isTouchBlocked = false
+         runtimeState.overlayAttached = false
+@@ -226,6 +248,10 @@ constructor(
+     }
+ 
+     private fun cancel(reason: String) {
++        bgHandler.removeCallbacks(safetyTimeout)
++        // Pending flags belong to the interrupted cycle; a later wake must not replay them.
++        pendingUnfold = false
++        pendingCoverReveal = false
+         coverAnimator?.cancel()
+         coverWaitJob?.cancel()
+         if (runtimeState.overlayAttached) runtimeState.recordCancel(reason)
+@@ -243,7 +269,13 @@ constructor(
+             // Folding on the inner screen: the overlay is not attached yet. A pending unfold means
+             // this transition is the unfold whose screen-on has not arrived, not a fold.
+             if (isDuo() && !isFolded && !pendingUnfold && !runtimeState.overlayAttached) {
+-                attach(inner, FoldAnimationPhase.FOLDING, Runnable {})
++                // Progress is near 1 here, so start clear and let progress callbacks blur.
++                attach(
++                    inner,
++                    FoldAnimationPhase.FOLDING,
++                    Runnable {},
++                    DuoBlurCurve.radiusFor(1f),
++                )
+                 inner.isTouchBlocked = true
+             }
+         }
+@@ -282,7 +314,10 @@ constructor(
+                     cancel("FOLDED")
+                 } else if (!folded && runtimeState.phase == FoldAnimationPhase.COVER_REVEAL) {
+                     cancel("UNFOLDED")
++                    // The unfold this cancel interrupts is real, so its screen-on is still due.
++                    pendingUnfold = true
+                 } else if (folded) {
++                    bgHandler.removeCallbacks(safetyTimeout)
+                     inner.ensureOverlayRemoved()
+                     runtimeState.overlayAttached = false
+                     runtimeState.phase = FoldAnimationPhase.IDLE
+@@ -312,5 +347,6 @@ constructor(
+         private const val COVER_OVERLAY_TITLE = "yrrp-duo-cover-overlay"
+         const val COVER_REVEAL_MS = 350L
+         const val READY_TIMEOUT_MS = 2000L
++        const val SAFETY_TIMEOUT_MS = 5000L
+     }
+ }
+-- 
+2.56.0
+

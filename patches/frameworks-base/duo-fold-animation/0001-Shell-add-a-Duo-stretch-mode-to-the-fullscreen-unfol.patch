@@ -1,0 +1,631 @@
+From e6356d9932adfe54fc7ccd8c5f24a44b43ef58f0 Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:02:19 +0200
+Subject: [PATCH 01/17] Shell: add a Duo stretch mode to the fullscreen unfold
+ animator
+
+Duo squeezes fullscreen and home tasks horizontally to the cover
+screen's width and widens them to full with unfold progress. In Stock
+the unfold transition handler no longer claims the display change,
+because no progress arrives and the claim would hold the switch for
+five seconds. SystemUI binds the style; without it Shell keeps AOSP
+behaviour.
+---
+ .../wm/shell/dagger/WMShellBaseModule.java    |   4 +
+ .../wm/shell/dagger/WMShellModule.java        |  13 +-
+ .../unfold/UnfoldAnimationStyleProvider.java  |  30 ++++
+ .../shell/unfold/UnfoldTransitionHandler.java |  12 +-
+ .../unfold/animation/DuoUnfoldGeometry.java   |  31 ++++
+ .../FullscreenUnfoldTaskAnimator.java         |  68 +++++++--
+ .../shell/unfold/DuoUnfoldGeometryTest.java   |  49 ++++++
+ .../FullscreenUnfoldTaskAnimatorDuoTest.java  | 141 ++++++++++++++++++
+ .../unfold/UnfoldTransitionHandlerTest.java   |  16 +-
+ 9 files changed, 348 insertions(+), 16 deletions(-)
+ create mode 100644 libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldAnimationStyleProvider.java
+ create mode 100644 libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/DuoUnfoldGeometry.java
+ create mode 100644 libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/DuoUnfoldGeometryTest.java
+ create mode 100644 libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/FullscreenUnfoldTaskAnimatorDuoTest.java
+
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java b/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java
+index 20f9d9eadbba..f66564ae74f9 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellBaseModule.java
+@@ -145,6 +145,7 @@ import com.android.wm.shell.transition.MixedTransitionHandler;
+ import com.android.wm.shell.transition.Transitions;
+ import com.android.wm.shell.unfold.ShellUnfoldProgressProvider;
+ import com.android.wm.shell.unfold.UnfoldAnimationController;
++import com.android.wm.shell.unfold.UnfoldAnimationStyleProvider;
+ import com.android.wm.shell.unfold.UnfoldTransitionHandler;
+ import com.android.wm.shell.windowdecor.WindowDecorViewModel;
+ import com.android.wm.shell.windowdecor.viewholder.AppHandleNotifier;
+@@ -655,6 +656,9 @@ public abstract class WMShellBaseModule {
+     @BindsOptionalOf
+     abstract ShellUnfoldProgressProvider optionalShellUnfoldProgressProvider();
+ 
++    @BindsOptionalOf
++    abstract UnfoldAnimationStyleProvider optionalUnfoldAnimationStyleProvider();
++
+     // Workaround for dynamic overriding with a default implementation, see {@link DynamicOverride}
+     @BindsOptionalOf
+     @DynamicOverride
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellModule.java b/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellModule.java
+index a44c2941b8aa..1f7f2c00c622 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellModule.java
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/dagger/WMShellModule.java
+@@ -199,6 +199,7 @@ import com.android.wm.shell.transition.MixedTransitionHandler;
+ import com.android.wm.shell.transition.Transitions;
+ import com.android.wm.shell.unfold.ShellUnfoldProgressProvider;
+ import com.android.wm.shell.unfold.UnfoldAnimationController;
++import com.android.wm.shell.unfold.UnfoldAnimationStyleProvider;
+ import com.android.wm.shell.unfold.UnfoldBackgroundController;
+ import com.android.wm.shell.unfold.UnfoldTransitionHandler;
+ import com.android.wm.shell.unfold.animation.FullscreenUnfoldTaskAnimator;
+@@ -837,9 +838,11 @@ public abstract class WMShellModule {
+             Context context,
+             UnfoldBackgroundController unfoldBackgroundController,
+             ShellController shellController,
+-            DisplayInsetsController displayInsetsController) {
++            DisplayInsetsController displayInsetsController,
++            Optional<UnfoldAnimationStyleProvider> styleProvider) {
+         return new FullscreenUnfoldTaskAnimator(
+-                context, unfoldBackgroundController, shellController, displayInsetsController);
++                context, unfoldBackgroundController, shellController, displayInsetsController,
++                styleProvider);
+     }
+ 
+     @Provides
+@@ -887,7 +890,8 @@ public abstract class WMShellModule {
+             @ShellMainThread ShellExecutor executor,
+             @ShellMainThread Handler handler,
+             ShellInit shellInit,
+-            Optional<BubbleTaskUnfoldTransitionMerger> bubbleTaskUnfoldTransitionMerger) {
++            Optional<BubbleTaskUnfoldTransitionMerger> bubbleTaskUnfoldTransitionMerger,
++            Optional<UnfoldAnimationStyleProvider> styleProvider) {
+         return new UnfoldTransitionHandler(
+                 shellInit,
+                 progressProvider.get(),
+@@ -897,7 +901,8 @@ public abstract class WMShellModule {
+                 executor,
+                 handler,
+                 transitions,
+-                bubbleTaskUnfoldTransitionMerger);
++                bubbleTaskUnfoldTransitionMerger,
++                styleProvider);
+     }
+ 
+     @WMSingleton
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldAnimationStyleProvider.java b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldAnimationStyleProvider.java
+new file mode 100644
+index 000000000000..c14f8c603919
+--- /dev/null
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldAnimationStyleProvider.java
+@@ -0,0 +1,30 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.wm.shell.unfold;
++
++/**
++ * The fold animation style chosen by the user. SystemUI binds the implementation; when it is
++ * absent, Shell behaves as {@link #STYLE_PIXEL}, the AOSP animation.
++ */
++public interface UnfoldAnimationStyleProvider {
++    int STYLE_STOCK = 0;
++    int STYLE_PIXEL = 1;
++    int STYLE_DUO = 2;
++
++    /** The style of the running transition, or the selected style when idle. */
++    int getUnfoldAnimationStyle();
++}
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldTransitionHandler.java b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldTransitionHandler.java
+index b19da041643f..f9436cff93a2 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldTransitionHandler.java
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/UnfoldTransitionHandler.java
+@@ -89,6 +89,7 @@ public class UnfoldTransitionHandler implements TransitionHandler, UnfoldListene
+     private final Executor mExecutor;
+     private final TransactionPool mTransactionPool;
+     private final Handler mHandler;
++    private final Optional<UnfoldAnimationStyleProvider> mStyleProvider;
+ 
+     @Nullable
+     private TransitionFinishCallback mFinishCallback;
+@@ -115,12 +116,14 @@ public class UnfoldTransitionHandler implements TransitionHandler, UnfoldListene
+             Executor executor,
+             Handler handler,
+             Transitions transitions,
+-            Optional<BubbleTaskUnfoldTransitionMerger> bubbleTaskUnfoldTransitionMerger) {
++            Optional<BubbleTaskUnfoldTransitionMerger> bubbleTaskUnfoldTransitionMerger,
++            Optional<UnfoldAnimationStyleProvider> styleProvider) {
+         mUnfoldProgressProvider = unfoldProgressProvider;
+         mTransitions = transitions;
+         mTransactionPool = transactionPool;
+         mExecutor = executor;
+         mHandler = handler;
++        mStyleProvider = styleProvider;
+         mBubbleTaskUnfoldTransitionMerger = bubbleTaskUnfoldTransitionMerger;
+ 
+         mAnimators.add(splitUnfoldTaskAnimator);
+@@ -311,6 +314,13 @@ public class UnfoldTransitionHandler implements TransitionHandler, UnfoldListene
+ 
+     /** Whether `request` contains an unfold action. */
+     public boolean shouldPlayUnfoldAnimation(@NonNull TransitionRequestInfo request) {
++        // YRRP: in Stock no progress arrives, so claiming would hold the display switch for
++        // FINISH_ANIMATION_TIMEOUT_MILLIS.
++        if (mStyleProvider.map(p -> p.getUnfoldAnimationStyle()
++                == UnfoldAnimationStyleProvider.STYLE_STOCK).orElse(false)) {
++            return false;
++        }
++
+         // Unfold animation won't play when animations are disabled
+         if (!ValueAnimator.areAnimatorsEnabled()) return false;
+ 
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/DuoUnfoldGeometry.java b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/DuoUnfoldGeometry.java
+new file mode 100644
+index 000000000000..a344fc20bf2c
+--- /dev/null
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/DuoUnfoldGeometry.java
+@@ -0,0 +1,31 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.wm.shell.unfold.animation;
++
++/** Duo stretch: content starts squeezed to the cover screen's width and widens to full. */
++public final class DuoUnfoldGeometry {
++    /** Cover panel width (1116) over inner panel width (2268) on the OnePlus Open. */
++    public static final float COVER_WIDTH_FRACTION = 1116f / 2268f;
++
++    private DuoUnfoldGeometry() {}
++
++    /** Horizontal content scale for unfold progress 0..1; vertical scale stays 1. */
++    public static float scaleX(float progress) {
++        float p = Math.max(0f, Math.min(1f, progress));
++        return COVER_WIDTH_FRACTION + (1f - COVER_WIDTH_FRACTION) * p;
++    }
++}
+diff --git a/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/FullscreenUnfoldTaskAnimator.java b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/FullscreenUnfoldTaskAnimator.java
+index 2080d9bf6caf..3ddb2bba1c71 100644
+--- a/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/FullscreenUnfoldTaskAnimator.java
++++ b/libs/WindowManager/Shell/src/com/android/wm/shell/unfold/animation/FullscreenUnfoldTaskAnimator.java
+@@ -42,8 +42,11 @@ import com.android.wm.shell.common.DisplayInsetsController;
+ import com.android.wm.shell.sysui.ConfigurationChangeListener;
+ import com.android.wm.shell.sysui.ShellController;
+ import com.android.wm.shell.unfold.UnfoldAnimationController;
++import com.android.wm.shell.unfold.UnfoldAnimationStyleProvider;
+ import com.android.wm.shell.unfold.UnfoldBackgroundController;
+ 
++import java.util.Optional;
++
+ /**
+  * This helper class contains logic that calculates scaling and cropping parameters
+  * for the folding/unfolding animation. As an input it receives TaskInfo objects and
+@@ -67,21 +70,26 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+     private static final float START_SCALE = END_SCALE - VERTICAL_START_MARGIN * 2;
+ 
+     private final SparseArray<AnimationContext> mAnimationContextByTaskId = new SparseArray<>();
++    // Home tasks are tracked separately: only the Duo style animates them.
++    private final SparseArray<AnimationContext> mHomeContextByTaskId = new SparseArray<>();
+     private final DisplayInsetsController mDisplayInsetsController;
+     private final UnfoldBackgroundController mBackgroundController;
+     private final Context mContext;
+     private final ShellController mShellController;
++    private final Optional<UnfoldAnimationStyleProvider> mStyleProvider;
+ 
+     private InsetsSource mExpandedTaskbarInsetsSource;
+     private float mWindowCornerRadiusPx;
+ 
+     public FullscreenUnfoldTaskAnimator(Context context,
+             @NonNull UnfoldBackgroundController backgroundController,
+-            ShellController shellController, DisplayInsetsController displayInsetsController) {
++            ShellController shellController, DisplayInsetsController displayInsetsController,
++            Optional<UnfoldAnimationStyleProvider> styleProvider) {
+         mContext = context;
+         mDisplayInsetsController = displayInsetsController;
+         mBackgroundController = backgroundController;
+         mShellController = shellController;
++        mStyleProvider = styleProvider;
+         mWindowCornerRadiusPx = ScreenDecorationsUtils.getWindowCornerRadius(context);
+     }
+ 
+@@ -100,12 +108,27 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+     @Override
+     public void insetsChanged(InsetsState insetsState) {
+         mExpandedTaskbarInsetsSource = getExpandedTaskbarSource(insetsState);
+-        for (int i = mAnimationContextByTaskId.size() - 1; i >= 0; i--) {
+-            AnimationContext context = mAnimationContextByTaskId.valueAt(i);
++        updateInsets(mAnimationContextByTaskId);
++        updateInsets(mHomeContextByTaskId);
++    }
++
++    private void updateInsets(SparseArray<AnimationContext> contexts) {
++        for (int i = contexts.size() - 1; i >= 0; i--) {
++            AnimationContext context = contexts.valueAt(i);
+             context.update(mExpandedTaskbarInsetsSource, context.mTaskInfo);
+         }
+     }
+ 
++    private boolean isDuo() {
++        return mStyleProvider.map(p -> p.getUnfoldAnimationStyle()
++                == UnfoldAnimationStyleProvider.STYLE_DUO).orElse(false);
++    }
++
++    private SparseArray<AnimationContext> contextsFor(TaskInfo taskInfo) {
++        return taskInfo.getActivityType() == ACTIVITY_TYPE_HOME
++                ? mHomeContextByTaskId : mAnimationContextByTaskId;
++    }
++
+     private static InsetsSource getExpandedTaskbarSource(InsetsState state) {
+         for (int i = state.sourceSize() - 1; i >= 0; i--) {
+             final InsetsSource source = state.sourceAt(i);
+@@ -118,19 +141,20 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+     }
+ 
+     public boolean hasActiveTasks() {
+-        return mAnimationContextByTaskId.size() > 0;
++        return mAnimationContextByTaskId.size() > 0
++                || (isDuo() && mHomeContextByTaskId.size() > 0);
+     }
+ 
+     @Override
+     public void onTaskAppeared(TaskInfo taskInfo, SurfaceControl leash) {
+         AnimationContext animationContext = new AnimationContext(
+                 leash, mExpandedTaskbarInsetsSource, taskInfo);
+-        mAnimationContextByTaskId.put(taskInfo.taskId, animationContext);
++        contextsFor(taskInfo).put(taskInfo.taskId, animationContext);
+     }
+ 
+     @Override
+     public void onTaskChanged(TaskInfo taskInfo) {
+-        AnimationContext animationContext = mAnimationContextByTaskId.get(taskInfo.taskId);
++        AnimationContext animationContext = contextsFor(taskInfo).get(taskInfo.taskId);
+         if (animationContext != null) {
+             animationContext.update(mExpandedTaskbarInsetsSource, taskInfo);
+         }
+@@ -138,17 +162,18 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+ 
+     @Override
+     public void onTaskVanished(TaskInfo taskInfo) {
+-        mAnimationContextByTaskId.remove(taskInfo.taskId);
++        contextsFor(taskInfo).remove(taskInfo.taskId);
+     }
+ 
+     @Override
+     public void clearTasks() {
+         mAnimationContextByTaskId.clear();
++        mHomeContextByTaskId.clear();
+     }
+ 
+     @Override
+     public void resetSurface(TaskInfo taskInfo, Transaction transaction) {
+-        final AnimationContext context = mAnimationContextByTaskId.get(taskInfo.taskId);
++        final AnimationContext context = contextsFor(taskInfo).get(taskInfo.taskId);
+         if (context != null) {
+             resetSurface(context, transaction);
+         }
+@@ -156,6 +181,11 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+ 
+     @Override
+     public void applyAnimationProgress(float progress, Transaction transaction) {
++        if (isDuo()) {
++            applyDuo(mAnimationContextByTaskId, progress, transaction);
++            applyDuo(mHomeContextByTaskId, progress, transaction);
++            return;
++        }
+         if (mAnimationContextByTaskId.size() == 0) return;
+ 
+         for (int i = mAnimationContextByTaskId.size() - 1; i >= 0; i--) {
+@@ -175,6 +205,22 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+         }
+     }
+ 
++    private void applyDuo(SparseArray<AnimationContext> contexts, float progress,
++            Transaction transaction) {
++        final float scaleX = DuoUnfoldGeometry.scaleX(progress);
++        for (int i = contexts.size() - 1; i >= 0; i--) {
++            final AnimationContext context = contexts.valueAt(i);
++            context.mCurrentCropRect.set(context.mEndCropRect);
++            context.mMatrix.setScale(scaleX, 1f, context.mCurrentCropRect.exactCenterX(),
++                    context.mCurrentCropRect.exactCenterY());
++
++            transaction.setWindowCrop(context.mLeash, context.mCurrentCropRect)
++                    .setMatrix(context.mLeash, context.mMatrix, FLOAT_9)
++                    .setCornerRadius(context.mLeash, mWindowCornerRadiusPx)
++                    .show(context.mLeash);
++        }
++    }
++
+     @Override
+     public void prepareStartTransaction(Transaction transaction) {
+         mBackgroundController.ensureBackground(transaction);
+@@ -189,8 +235,7 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+     public boolean isApplicableTask(TaskInfo taskInfo) {
+         return taskInfo != null && taskInfo.isVisible()
+                 && taskInfo.realActivity != null // to filter out parents created by organizer
+-                && taskInfo.getWindowingMode() == WINDOWING_MODE_FULLSCREEN
+-                && taskInfo.getActivityType() != ACTIVITY_TYPE_HOME;
++                && taskInfo.getWindowingMode() == WINDOWING_MODE_FULLSCREEN;
+     }
+ 
+     @Override
+@@ -199,6 +244,9 @@ public class FullscreenUnfoldTaskAnimator implements UnfoldTaskAnimator,
+             final AnimationContext context = mAnimationContextByTaskId.valueAt(i);
+             resetSurface(context, transaction);
+         }
++        for (int i = mHomeContextByTaskId.size() - 1; i >= 0; i--) {
++            resetSurface(mHomeContextByTaskId.valueAt(i), transaction);
++        }
+     }
+ 
+     private void resetSurface(AnimationContext context, Transaction transaction) {
+diff --git a/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/DuoUnfoldGeometryTest.java b/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/DuoUnfoldGeometryTest.java
+new file mode 100644
+index 000000000000..04cd909a7701
+--- /dev/null
++++ b/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/DuoUnfoldGeometryTest.java
+@@ -0,0 +1,49 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.wm.shell.unfold;
++
++import static com.google.common.truth.Truth.assertThat;
++
++import androidx.test.ext.junit.runners.AndroidJUnit4;
++import androidx.test.filters.SmallTest;
++
++import com.android.wm.shell.unfold.animation.DuoUnfoldGeometry;
++
++import org.junit.Test;
++import org.junit.runner.RunWith;
++
++@SmallTest
++@RunWith(AndroidJUnit4.class)
++public class DuoUnfoldGeometryTest {
++    @Test
++    public void scaleX_startsAtCoverWidthAndEndsAtFullWidth() {
++        assertThat(DuoUnfoldGeometry.scaleX(0f)).isWithin(1e-4f).of(1116f / 2268f);
++        assertThat(DuoUnfoldGeometry.scaleX(1f)).isWithin(1e-4f).of(1f);
++    }
++
++    @Test
++    public void scaleX_isLinearInProgress() {
++        float expected = (1116f / 2268f) + (1f - 1116f / 2268f) * 0.5f;
++        assertThat(DuoUnfoldGeometry.scaleX(0.5f)).isWithin(1e-4f).of(expected);
++    }
++
++    @Test
++    public void scaleX_clampsProgressOutsideZeroToOne() {
++        assertThat(DuoUnfoldGeometry.scaleX(-0.2f)).isWithin(1e-4f).of(1116f / 2268f);
++        assertThat(DuoUnfoldGeometry.scaleX(1.3f)).isWithin(1e-4f).of(1f);
++    }
++}
+diff --git a/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/FullscreenUnfoldTaskAnimatorDuoTest.java b/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/FullscreenUnfoldTaskAnimatorDuoTest.java
+new file mode 100644
+index 000000000000..9493cf7295ab
+--- /dev/null
++++ b/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/FullscreenUnfoldTaskAnimatorDuoTest.java
+@@ -0,0 +1,141 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.wm.shell.unfold;
++
++import static android.app.WindowConfiguration.ACTIVITY_TYPE_HOME;
++import static android.app.WindowConfiguration.ACTIVITY_TYPE_STANDARD;
++import static android.app.WindowConfiguration.WINDOWING_MODE_FULLSCREEN;
++
++import static com.google.common.truth.Truth.assertThat;
++
++import static org.mockito.ArgumentMatchers.any;
++import static org.mockito.ArgumentMatchers.anyFloat;
++import static org.mockito.ArgumentMatchers.eq;
++import static org.mockito.Mockito.mock;
++import static org.mockito.Mockito.never;
++import static org.mockito.Mockito.verify;
++import static org.mockito.Mockito.when;
++
++import android.app.ActivityManager;
++import android.content.ComponentName;
++import android.graphics.Matrix;
++import android.graphics.Rect;
++import android.view.SurfaceControl;
++
++import androidx.test.ext.junit.runners.AndroidJUnit4;
++import androidx.test.filters.SmallTest;
++import androidx.test.platform.app.InstrumentationRegistry;
++
++import com.android.wm.shell.common.DisplayInsetsController;
++import com.android.wm.shell.sysui.ShellController;
++import com.android.wm.shell.unfold.animation.DuoUnfoldGeometry;
++import com.android.wm.shell.unfold.animation.FullscreenUnfoldTaskAnimator;
++
++import org.junit.Before;
++import org.junit.Test;
++import org.junit.runner.RunWith;
++import org.mockito.ArgumentCaptor;
++
++import java.util.Optional;
++
++@SmallTest
++@RunWith(AndroidJUnit4.class)
++public class FullscreenUnfoldTaskAnimatorDuoTest {
++    private final SurfaceControl.Transaction mTransaction = mock(SurfaceControl.Transaction.class);
++    private int mStyle = UnfoldAnimationStyleProvider.STYLE_PIXEL;
++    private FullscreenUnfoldTaskAnimator mAnimator;
++
++    @Before
++    public void setUp() {
++        when(mTransaction.setWindowCrop(any(), any())).thenReturn(mTransaction);
++        when(mTransaction.setMatrix(any(), any(Matrix.class), any())).thenReturn(mTransaction);
++        when(mTransaction.setMatrix(any(), anyFloat(), anyFloat(), anyFloat(), anyFloat()))
++                .thenReturn(mTransaction);
++        when(mTransaction.setCornerRadius(any(), anyFloat())).thenReturn(mTransaction);
++        when(mTransaction.setPosition(any(), anyFloat(), anyFloat())).thenReturn(mTransaction);
++        when(mTransaction.show(any())).thenReturn(mTransaction);
++        mAnimator = new FullscreenUnfoldTaskAnimator(
++                InstrumentationRegistry.getInstrumentation().getTargetContext(),
++                mock(UnfoldBackgroundController.class),
++                mock(ShellController.class),
++                mock(DisplayInsetsController.class),
++                Optional.of(() -> mStyle));
++    }
++
++    @Test
++    public void homeTask_isApplicable_butInactiveOutsideDuo() {
++        ActivityManager.RunningTaskInfo home = task(1, ACTIVITY_TYPE_HOME);
++        assertThat(mAnimator.isApplicableTask(home)).isTrue();
++        mAnimator.onTaskAppeared(home, mock(SurfaceControl.class));
++
++        assertThat(mAnimator.hasActiveTasks()).isFalse();
++        mStyle = UnfoldAnimationStyleProvider.STYLE_DUO;
++        assertThat(mAnimator.hasActiveTasks()).isTrue();
++    }
++
++    @Test
++    public void pixel_doesNotTouchHomeTask() {
++        SurfaceControl leash = mock(SurfaceControl.class);
++        mAnimator.onTaskAppeared(task(1, ACTIVITY_TYPE_HOME), leash);
++
++        mAnimator.applyAnimationProgress(0.3f, mTransaction);
++
++        verify(mTransaction, never()).setMatrix(eq(leash), any(Matrix.class), any());
++    }
++
++    @Test
++    public void duo_squeezesHorizontallyOnlyAtStart() {
++        mStyle = UnfoldAnimationStyleProvider.STYLE_DUO;
++        SurfaceControl leash = mock(SurfaceControl.class);
++        mAnimator.onTaskAppeared(task(1, ACTIVITY_TYPE_STANDARD), leash);
++
++        mAnimator.applyAnimationProgress(0f, mTransaction);
++
++        ArgumentCaptor<Matrix> matrix = ArgumentCaptor.forClass(Matrix.class);
++        verify(mTransaction).setMatrix(eq(leash), matrix.capture(), any());
++        float[] values = new float[9];
++        matrix.getValue().getValues(values);
++        assertThat(values[Matrix.MSCALE_X]).isWithin(1e-4f).of(DuoUnfoldGeometry.scaleX(0f));
++        assertThat(values[Matrix.MSCALE_Y]).isWithin(1e-4f).of(1f);
++        verify(mTransaction).setWindowCrop(leash, new Rect(0, 0, 2268, 2440));
++    }
++
++    @Test
++    public void duo_resetSurface_restoresIdentityForHome() {
++        mStyle = UnfoldAnimationStyleProvider.STYLE_DUO;
++        SurfaceControl leash = mock(SurfaceControl.class);
++        ActivityManager.RunningTaskInfo home = task(1, ACTIVITY_TYPE_HOME);
++        mAnimator.onTaskAppeared(home, leash);
++
++        mAnimator.resetSurface(home, mTransaction);
++
++        verify(mTransaction).setMatrix(leash, 1.0F, 0.0F, 0.0F, 1.0F);
++        verify(mTransaction).setWindowCrop(leash, null);
++    }
++
++    private static ActivityManager.RunningTaskInfo task(int id, int activityType) {
++        ActivityManager.RunningTaskInfo info = new ActivityManager.RunningTaskInfo();
++        info.taskId = id;
++        info.isVisible = true;
++        info.realActivity = new ComponentName("p", "c");
++        info.configuration.windowConfiguration.setWindowingMode(WINDOWING_MODE_FULLSCREEN);
++        info.configuration.windowConfiguration.setActivityType(activityType);
++        info.configuration.windowConfiguration.setBounds(new Rect(0, 0, 2268, 2440));
++        info.positionInParent.set(0, 0);
++        return info;
++    }
++}
+diff --git a/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/UnfoldTransitionHandlerTest.java b/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/UnfoldTransitionHandlerTest.java
+index f048aae4f653..c595de2e75f4 100644
+--- a/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/UnfoldTransitionHandlerTest.java
++++ b/libs/WindowManager/Shell/tests/unittest/src/com/android/wm/shell/unfold/UnfoldTransitionHandlerTest.java
+@@ -82,6 +82,7 @@ public class UnfoldTransitionHandlerTest extends ShellTestCase {
+     private Handler mHandler;
+ 
+     private final IBinder mTransition = new Binder();
++    private int mStyle = UnfoldAnimationStyleProvider.STYLE_PIXEL;
+ 
+     @Before
+     public void before() {
+@@ -104,7 +105,8 @@ public class UnfoldTransitionHandlerTest extends ShellTestCase {
+                 executor,
+                 mHandler,
+                 mTransitions,
+-                /* bubbleTaskUnfoldTransitionMerger= */ Optional.empty()
++                /* bubbleTaskUnfoldTransitionMerger= */ Optional.empty(),
++                Optional.of(() -> mStyle)
+         );
+ 
+         shellInit.init();
+@@ -127,6 +129,18 @@ public class UnfoldTransitionHandlerTest extends ShellTestCase {
+         assertThat(result).isNotNull();
+     }
+ 
++    @Test
++    public void handleRequest_stockStyle_doesNotClaimUnfold() {
++        mStyle = UnfoldAnimationStyleProvider.STYLE_STOCK;
++        TransitionRequestInfo requestInfo = createUnfoldTransitionRequestInfo();
++
++        WindowContainerTransaction result = mUnfoldTransitionHandler.handleRequest(
++                mTransition, requestInfo);
++
++        assertThat(result).isNull();
++        assertThat(mUnfoldTransitionHandler.willHandleTransition()).isFalse();
++    }
++
+     @Test
+     public void handleRequest_physicalDisplayChangeFold_doesNotHandleTransition() {
+         ActivityManager.RunningTaskInfo triggerTaskInfo = new ActivityManager.RunningTaskInfo();
+-- 
+2.56.0
+

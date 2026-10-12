@@ -1,0 +1,302 @@
+From 92b5ea9c1d93b855fda6c0b4b683fddfbdc2eef9 Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:08:38 +0200
+Subject: [PATCH 04/17] SystemUI: add the YRRP fold animation style selector
+
+Latches Stock, Pixel or Duo when the first gated unfold provider starts
+and releases it when the last one finishes. It gates root unfold
+progress (Stock drops it) and tells Shell which stretch to play.
+---
+ .../yrrp/FoldAnimationStyleSelectorTest.kt    | 110 ++++++++++++++++++
+ .../systemui/unfold/UnfoldTransitionModule.kt |   7 ++
+ .../unfold/yrrp/FoldAnimationStyle.kt         |  36 ++++++
+ .../unfold/yrrp/FoldAnimationStyleSelector.kt |  90 ++++++++++++++
+ 4 files changed, 243 insertions(+)
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyle.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt
+new file mode 100644
+index 000000000000..2f18002e0bdb
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelectorTest.kt
+@@ -0,0 +1,110 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.wm.shell.unfold.UnfoldAnimationStyleProvider
++import com.google.common.truth.Truth.assertThat
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class FoldAnimationStyleSelectorTest : SysuiTestCase() {
++    private val underTest = FoldAnimationStyleSelector()
++
++    @Test
++    fun fromRaw_normalizesUnknownToStock() {
++        assertThat(FoldAnimationStyle.fromRaw(0)).isEqualTo(FoldAnimationStyle.STOCK)
++        assertThat(FoldAnimationStyle.fromRaw(1)).isEqualTo(FoldAnimationStyle.PIXEL)
++        assertThat(FoldAnimationStyle.fromRaw(2)).isEqualTo(FoldAnimationStyle.DUO)
++        assertThat(FoldAnimationStyle.fromRaw(3)).isEqualTo(FoldAnimationStyle.STOCK)
++        assertThat(FoldAnimationStyle.fromRaw(-1)).isEqualTo(FoldAnimationStyle.STOCK)
++    }
++
++    @Test
++    fun defaultsToStock_andStockDeniesTransitions() {
++        assertThat(underTest.currentStyle()).isEqualTo(FoldAnimationStyle.STOCK)
++        assertThat(underTest.onGatedTransitionStarted(Any())).isFalse()
++    }
++
++    @Test
++    fun pixelAndDuoAllowTransitions() {
++        underTest.onSettingChanged(FoldAnimationStyle.PIXEL)
++        val a = Any()
++        assertThat(underTest.onGatedTransitionStarted(a)).isTrue()
++        underTest.onGatedTransitionFinished(a)
++        underTest.onSettingChanged(FoldAnimationStyle.DUO)
++        assertThat(underTest.onGatedTransitionStarted(Any())).isTrue()
++    }
++
++    @Test
++    fun latchHoldsThroughSettingChange_andReleasesOnFinish() {
++        underTest.onSettingChanged(FoldAnimationStyle.DUO)
++        val token = Any()
++        underTest.onGatedTransitionStarted(token)
++        underTest.onSettingChanged(FoldAnimationStyle.STOCK)
++
++        assertThat(underTest.currentStyle()).isEqualTo(FoldAnimationStyle.DUO)
++        assertThat(underTest.getUnfoldAnimationStyle())
++            .isEqualTo(UnfoldAnimationStyleProvider.STYLE_DUO)
++
++        underTest.onGatedTransitionFinished(token)
++        assertThat(underTest.latchedStyle()).isNull()
++        assertThat(underTest.currentStyle()).isEqualTo(FoldAnimationStyle.STOCK)
++    }
++
++    @Test
++    fun secondTokenJoinsExistingLatch() {
++        underTest.onSettingChanged(FoldAnimationStyle.PIXEL)
++        val main = Any()
++        val bg = Any()
++        underTest.onGatedTransitionStarted(main)
++        underTest.onSettingChanged(FoldAnimationStyle.STOCK)
++
++        assertThat(underTest.onGatedTransitionStarted(bg)).isTrue()
++        underTest.onGatedTransitionFinished(main)
++        assertThat(underTest.latchedStyle()).isEqualTo(FoldAnimationStyle.PIXEL)
++        underTest.onGatedTransitionFinished(bg)
++        assertThat(underTest.latchedStyle()).isNull()
++        assertThat(underTest.starts).isEqualTo(1)
++        assertThat(underTest.completions).isEqualTo(1)
++    }
++
++    @Test
++    fun unknownTokenFinish_isIgnored() {
++        underTest.onGatedTransitionFinished(Any())
++        assertThat(underTest.completions).isEqualTo(0)
++    }
++
++    @Test
++    fun listenerSeesLatchAndRelease() {
++        val seen = mutableListOf<String>()
++        underTest.listener =
++            object : FoldAnimationStyleSelector.Listener {
++                override fun onLatched(style: FoldAnimationStyle) { seen += "latched=$style" }
++                override fun onReleased(style: FoldAnimationStyle) { seen += "released=$style" }
++            }
++        underTest.onSettingChanged(FoldAnimationStyle.DUO)
++        val t = Any()
++        underTest.onGatedTransitionStarted(t)
++        underTest.onGatedTransitionFinished(t)
++        assertThat(seen).containsExactly("latched=DUO", "released=DUO").inOrder()
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/UnfoldTransitionModule.kt b/packages/SystemUI/src/com/android/systemui/unfold/UnfoldTransitionModule.kt
+index 5d6efcb03dc7..79271715b41a 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/UnfoldTransitionModule.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/UnfoldTransitionModule.kt
+@@ -41,8 +41,11 @@ import com.android.systemui.unfold.util.NaturalRotationUnfoldProgressProvider
+ import com.android.systemui.unfold.util.ScopedUnfoldTransitionProgressProvider
+ import com.android.systemui.unfold.util.UnfoldOnlyProgressProvider
+ import com.android.systemui.unfold.util.UnfoldTransitionATracePrefix
++import com.android.systemui.unfold.util.UnfoldTransitionStyleGate
++import com.android.systemui.unfold.yrrp.FoldAnimationStyleSelector
+ import com.android.systemui.util.time.SystemClock
+ import com.android.wm.shell.unfold.ShellUnfoldProgressProvider
++import com.android.wm.shell.unfold.UnfoldAnimationStyleProvider
+ import dagger.Binds
+ import dagger.Lazy
+ import dagger.Module
+@@ -185,6 +188,10 @@ class UnfoldTransitionModule {
+         @Binds fun bindRepository(impl: UnfoldTransitionRepositoryImpl): UnfoldTransitionRepository
+ 
+         @Binds fun bindFoldStateRepository(impl: FoldStateRepositoryImpl): FoldStateRepository
++
++        @Binds fun bindStyleGate(impl: FoldAnimationStyleSelector): UnfoldTransitionStyleGate
++
++        @Binds fun bindShellStyle(impl: FoldAnimationStyleSelector): UnfoldAnimationStyleProvider
+     }
+ 
+     @Module
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyle.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyle.kt
+new file mode 100644
+index 000000000000..6114e5e0fae1
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyle.kt
+@@ -0,0 +1,36 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import com.android.wm.shell.unfold.UnfoldAnimationStyleProvider
++
++/** Fold animation chosen in YRRPs Settings (`lineage_fold_animation`). */
++enum class FoldAnimationStyle(val rawValue: Int, val shellValue: Int) {
++    STOCK(0, UnfoldAnimationStyleProvider.STYLE_STOCK),
++    PIXEL(1, UnfoldAnimationStyleProvider.STYLE_PIXEL),
++    DUO(2, UnfoldAnimationStyleProvider.STYLE_DUO);
++
++    companion object {
++        /** 1 is Pixel, 2 is Duo; every other value, unset included, is Stock. */
++        fun fromRaw(raw: Int): FoldAnimationStyle =
++            when (raw) {
++                1 -> PIXEL
++                2 -> DUO
++                else -> STOCK
++            }
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt
+new file mode 100644
+index 000000000000..b2b8b96271e3
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationStyleSelector.kt
+@@ -0,0 +1,90 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import androidx.annotation.GuardedBy
++import com.android.systemui.unfold.util.UnfoldTransitionStyleGate
++import com.android.wm.shell.unfold.UnfoldAnimationStyleProvider
++import javax.inject.Inject
++import javax.inject.Singleton
++
++/**
++ * Latches the user's fold animation style when the first gated progress provider starts a
++ * transition and releases it when the last one finishes. Every unfold consumer, Shell included,
++ * reads [currentStyle], so one transition never mixes styles. Lives in the global graph because
++ * Shell and the unfold library are both resolved there.
++ */
++@Singleton
++class FoldAnimationStyleSelector @Inject constructor() :
++    UnfoldTransitionStyleGate, UnfoldAnimationStyleProvider {
++
++    interface Listener {
++        fun onLatched(style: FoldAnimationStyle)
++
++        fun onReleased(style: FoldAnimationStyle)
++    }
++
++    @Volatile var listener: Listener? = null
++
++    private val lock = Any()
++    @GuardedBy("lock") private var setting = FoldAnimationStyle.STOCK
++    @GuardedBy("lock") private var latched: FoldAnimationStyle? = null
++    @GuardedBy("lock") private val activeTokens = mutableSetOf<Any>()
++    @GuardedBy("lock") private var startCount = 0
++    @GuardedBy("lock") private var completionCount = 0
++
++    val starts: Int
++        get() = synchronized(lock) { startCount }
++
++    val completions: Int
++        get() = synchronized(lock) { completionCount }
++
++    fun onSettingChanged(style: FoldAnimationStyle) = synchronized(lock) { setting = style }
++
++    fun settingStyle(): FoldAnimationStyle = synchronized(lock) { setting }
++
++    fun latchedStyle(): FoldAnimationStyle? = synchronized(lock) { latched }
++
++    fun currentStyle(): FoldAnimationStyle = synchronized(lock) { latched ?: setting }
++
++    override fun getUnfoldAnimationStyle(): Int = currentStyle().shellValue
++
++    override fun onGatedTransitionStarted(token: Any): Boolean {
++        val (style, newlyLatched) =
++            synchronized(lock) {
++                val fresh = activeTokens.isEmpty()
++                if (fresh) {
++                    latched = setting
++                    startCount++
++                }
++                activeTokens += token
++                latched!! to fresh
++            }
++        if (newlyLatched) listener?.onLatched(style)
++        return style != FoldAnimationStyle.STOCK
++    }
++
++    override fun onGatedTransitionFinished(token: Any) {
++        val released =
++            synchronized(lock) {
++                if (!activeTokens.remove(token) || activeTokens.isNotEmpty()) return
++                completionCount++
++                latched.also { latched = null }
++            }
++        released?.let { listener?.onReleased(it) }
++    }
++}
+-- 
+2.56.0
+

@@ -1,13 +1,13 @@
 # YRRPs Settings UI
 
-The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, and the boot animation. The Pulse and screen-off pages shipped in OTA `20261007-083337` and passed device acceptance on 2026-10-07; the boot animation page awaits its first release.
+The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, the boot animation, and the fold animation. The Pulse and screen-off pages shipped in OTA `20261007-083337` and passed device acceptance on 2026-10-07; the boot animation and fold animation pages await their first release.
 
 ## Layout
 
 - Settings home page: a **YRRPs** tile in its own group at the top. The group order is `-150` in the standard layout (before Account at `-140`) and `-140` in the expressive layout (before Connectivity at `-130`). The tile highlight key is `yrrp_menu_key`, so System keeps `menu_key_system`.
 - YRRPs hub (`YrrpSettings`, root key `yrrp_settings_screen`):
   - **Audio** → **Pulse** (On/Off), opening `YrrpPulseSettings`.
-  - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`, and **Boot animation** (Matrix/LineageOS), opening `YrrpBootAnimationSettings`.
+  - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`, and **Boot animation** (Matrix/LineageOS), opening `YrrpBootAnimationSettings`, and **Fold animation** (Stock/Pixel/Duo), opening `YrrpFoldAnimationSettings`. The Fold animation row and page exist on foldables only.
   - Category headers are `searchable="false"`.
 - Pulse page (`yrrp_pulse_settings_screen`), laid out like **System > Gestures > Navigation mode**:
 
@@ -44,7 +44,21 @@ The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, a
 
   The Matrix row summary reads "Always plays the full intro" or "Ends as soon as the phone is ready". The gear works in either style and never changes the style; OK writes only `persist.yrrp.bootanim.full_intro`. Cancel, back and outside tap write nothing. The hub row summary names the stored style. See `matrix-boot-animation.md`.
 
-All four fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
+- Fold animation page (`yrrp_fold_animation_settings_screen`):
+
+  ```text
+  Fold animation
+  ├ intro                              non-searchable, "Plays when you open or close the phone"
+  ├ [Style]                            non-searchable category
+  │ ├ Stock                            "Switches screens instantly"
+  │ ├ Pixel                            "Reveals the inner screen from the hinge"
+  │ └ Duo                              "Blurs and stretches content across the fold"
+  └ footer                             non-searchable, "Applies the next time you fold or unfold"
+  ```
+
+  Available only when `config_unfoldTransitionEnabled` and `config_unfoldTransitionHingeAngle` are `true` and the device reports a `TYPE_HINGE_ANGLE` sensor (`YrrpFoldAnimationAvailability`); otherwise the controller returns `UNSUPPORTED_ON_DEVICE` and search does not index the row or page. The hub row summary names the stored style. See `fold-animation.md`.
+
+All five fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
 
 ## Setting contract
 
@@ -61,6 +75,7 @@ Private per-user `Settings.Secure` keys, shared with SystemUI:
 | `lineage_pulse_bar_count` | 32 | clamp 16–64 | clamp, then snap to 16 + 4n |
 | `lineage_pulse_bar_gap_percent` | 30 | clamp 0–80 | clamp, then snap to 5n |
 | `lineage_screen_off_animation` | 0 | only 1 is CRT | 0 or 1, other values rejected |
+| `lineage_fold_animation` | 0 (Stock) | 1 Pixel, 2 Duo; other values Stock | 0–2, other values rejected |
 
 Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The Solid row summary and the picker show `#RRGGBB`; confirming the picker writes only the color, then re-reads it. The boost summary explains the effect before the value; the slider label and state description show the value alone. The opacity slider covers 26–255 in steps of 1 and shows a rounded percentage of 255.
 
@@ -96,7 +111,8 @@ Settings home
         │   └── Pulse → Pulse page
         └── Animations
             ├── Screen-off animation → radio page
-            └── Boot animation → radio page with a gear
+            ├── Boot animation → radio page with a gear
+            └── Fold animation → radio page (foldables only)
 ```
 
 Use one category per domain, one row per feature, and one focused feature page.
@@ -146,6 +162,9 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-11 — Boot animation hierarchy:** **YRRPs → Animations → Boot animation**, a page with a non-searchable intro, a non-searchable **Style** category holding the **Matrix** and **LineageOS** radio rows, and a non-searchable footer. Approved by the user.
 - **2026-10-11 — Finish intro gear:** Finish intro sits behind the Matrix row's gear as an OK/Cancel dialog with one checkbox. The gear works in either style and never changes the style; OK writes only `full_intro`.
 - **2026-10-11 — No property observer:** property-backed rows refresh on resume and after their own writes; there is no live observer for properties.
+- **2026-10-12 — Fold animation hierarchy:** YRRPs → Animations → Fold animation, radio page with intro, Style category, and footer; foldables only. Approved by the user.
+- **2026-10-12 — Fold animation default:** Stock, preserving today's behavior.
+- **2026-10-12 — Fold animation device scope:** shown only on a hinge-driven foldable: both unfold configs on and a hinge-angle sensor present. Approved by the user.
 - **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
 
 ## Release

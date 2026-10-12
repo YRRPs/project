@@ -1,0 +1,17 @@
+25c6446b4427317c2351efffeb1bb63628b4b8782560c6e2c779b4d67753ba48  0001-Shell-add-a-Duo-stretch-mode-to-the-fullscreen-unfol.patch
+c4498e30cb329851f39d03a17aac97e4bc22f426bbbab449f10c5446d4434436  0002-Shell-reset-home-surfaces-only-after-a-Duo-stretch.patch
+080fcfbd33088d2ceadd37f5eaca700257cb8db9ae2b6110dc813376b6aa0248  0003-SystemUI-let-an-optional-style-gate-drop-whole-unfol.patch
+44badaee9828d359dff095722a6941a061e84febf073e231bdf21f2e427d1248  0004-SystemUI-add-the-YRRP-fold-animation-style-selector.patch
+14b6a96e18d5acba49f9b71278ecc1df1bb04ccdb7767e9c0976b5d5b1d84005  0005-SystemUI-observe-the-fold-animation-setting-with-a-d.patch
+bb210dfbcab740b4428a90b555099c463d711c16977a07d854537027396a4f01  0006-SystemUI-play-AOSP-fold-reveals-and-Launcher-unfold-.patch
+6a67124e54693cc22e9f517ba9612784c7b34376d472711516b64a5ade9991c7  0007-SystemUI-add-the-Duo-fold-animation-blur-overlay.patch
+4e27f1bd6b2975aa84ac6ac60660fe9506303e23d866d6f8cd05b573c11ad94f  0008-SystemUI-bound-the-Duo-cover-reveal-and-harden-its-e.patch
+a76c580b804c68a32531336394f4f12a49ac63abae0b9cff185d1f825d21f335  0009-SystemUI-mark-unfold-handled-in-every-fold-animation.patch
+42fa4e3e64bf54ccaed53a1dce7778320ed5f8825fd6fda53b16cca8568692c4  0010-SystemUI-release-the-fold-animation-latch-on-sleep-a.patch
+c502ee30c1337697c5cb6beb5fd84c212f240a189d451c778fa3a0c50464cd02  0011-SystemUI-harden-Duo-overlay-timeouts-and-pending-sta.patch
+e40a149bc103516cb3aab3bc9ef1fbadc310e00ac240dc743f976137d893de5a  0012-SystemUI-keep-the-Duo-unfold-pending-across-sleep.patch
+11816f88daaec93be86c8cdd81a84a8f8d112860fefb629d2f450bbf3b4a8992  0013-SystemUI-run-the-fold-animation-only-on-a-hinge-driv.patch
+f6d32c884f8c0d0b95bb1530382fe4e1c0c18d02a99e7d2b24218148731650b2  0014-SystemUI-skip-the-fold-to-AOD-animation-in-the-Stock.patch
+a7e63f177d122e712dc6c0342532bccfc1971a23b502fd389de7a39d87757195  0015-SystemUI-put-the-Duo-blur-in-the-overlay-s-first-fra.patch
+b0ed1fe33e11124bf32fbd3bd79040fa1a75eaf421d1fa107b081908b76f3c04  0016-Shell-squeeze-Duo-tasks-in-the-unfold-start-transact.patch
+6b959f0afe50d460b1b72aefcb66cfca3ce04ab509a05544b72d40967802ee50  0017-SystemUI-let-a-latch-timeout-release-only-its-own-la.patch

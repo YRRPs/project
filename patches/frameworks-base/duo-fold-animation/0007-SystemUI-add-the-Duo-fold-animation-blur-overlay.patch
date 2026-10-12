@@ -1,0 +1,747 @@
+From 22078eec3f1b77c6645a886c35b151a2e2f99210 Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:20:19 +0200
+Subject: [PATCH 07/17] SystemUI: add the Duo fold animation blur overlay
+
+On unfold the inner screen turns on blurred and clears with hinge
+progress while Shell stretches tasks; on fold the inner screen blurs as
+it closes and the cover screen clears from a blur over 350 ms. Every
+exit removes the overlay, and a refused blur leaves the stretch.
+---
+ .../systemui/unfold/yrrp/DuoBlurCurveTest.kt  |  49 +++
+ .../yrrp/DuoFoldOverlayAnimationTest.kt       | 283 ++++++++++++++++++
+ .../unfold/FullscreenLightRevealAnimation.kt  |  18 ++
+ .../systemui/unfold/SysUIUnfoldModule.kt      |   8 +
+ .../systemui/unfold/yrrp/DuoBlurCurve.kt      |  32 ++
+ .../unfold/yrrp/DuoFoldOverlayAnimation.kt    | 279 +++++++++++++++++
+ 6 files changed, 669 insertions(+)
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoBlurCurveTest.kt
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoBlurCurve.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoBlurCurveTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoBlurCurveTest.kt
+new file mode 100644
+index 000000000000..7c239cd19b1f
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoBlurCurveTest.kt
+@@ -0,0 +1,49 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.google.common.truth.Truth.assertThat
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class DuoBlurCurveTest : SysuiTestCase() {
++    @Test
++    fun fullBlurAtStart_noneFromClearPoint() {
++        assertThat(DuoBlurCurve.radiusFor(0f)).isEqualTo(120)
++        assertThat(DuoBlurCurve.radiusFor(0.85f)).isEqualTo(0)
++        assertThat(DuoBlurCurve.radiusFor(1f)).isEqualTo(0)
++    }
++
++    @Test
++    fun deceleratesBetween() {
++        // t = 0.5 / 0.85; decelerate 1 - (1 - t)^2; radius = 120 * (1 - that)
++        val t = 0.5f / 0.85f
++        val expected = Math.round(120 * (1 - t) * (1 - t))
++        assertThat(DuoBlurCurve.radiusFor(0.5f)).isEqualTo(expected)
++    }
++
++    @Test
++    fun clampsOutOfRange() {
++        assertThat(DuoBlurCurve.radiusFor(-1f)).isEqualTo(120)
++        assertThat(DuoBlurCurve.radiusFor(2f)).isEqualTo(0)
++    }
++}
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+new file mode 100644
+index 000000000000..b99404a46889
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+@@ -0,0 +1,283 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import android.hardware.devicestate.DeviceStateManager
++import android.os.Handler
++import android.testing.TestableLooper
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.internal.R
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.animation.AnimatorTestRule
++import com.android.systemui.foldedDeviceStateList
++import com.android.systemui.kosmos.Kosmos
++import com.android.systemui.log.logcatLogBuffer
++import com.android.systemui.power.domain.interactor.PowerInteractor
++import com.android.systemui.power.shared.model.ScreenPowerState
++import com.android.systemui.unfold.FakeUnfoldTransitionProvider
++import com.android.systemui.unfold.FullscreenLightRevealAnimationController
++import com.android.systemui.unfold.FullscreenLightRevealAnimationController.Companion.ALPHA_TRANSPARENT
++import com.android.systemui.unfoldedDeviceState
++import com.android.systemui.util.concurrency.ThreadFactory
++import com.google.common.truth.Truth.assertThat
++import java.util.concurrent.CountDownLatch
++import java.util.concurrent.Executor
++import java.util.concurrent.TimeUnit
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.test.TestScope
++import kotlinx.coroutines.test.UnconfinedTestDispatcher
++import org.junit.Before
++import org.junit.Rule
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.mockito.ArgumentCaptor
++import org.mockito.Mockito.atLeastOnce
++import org.mockito.Mockito.never
++import org.mockito.Mockito.verify
++import org.mockito.kotlin.any
++import org.mockito.kotlin.anyOrNull
++import org.mockito.kotlin.eq
++import org.mockito.kotlin.mock
++import org.mockito.kotlin.whenever
++
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++@TestableLooper.RunWithLooper(setAsMainLooper = true)
++class DuoFoldOverlayAnimationTest : SysuiTestCase() {
++    @get:Rule val animatorTestRule = AnimatorTestRule(this)
++
++    private val kosmos = Kosmos()
++    private val foldedState = kosmos.foldedDeviceStateList.first()
++    private val unfoldedState = kosmos.unfoldedDeviceState
++
++    private val selector = FoldAnimationStyleSelector()
++    private val runtime = FoldAnimationRuntimeState()
++    private val innerController = mock<FullscreenLightRevealAnimationController>()
++    private val coverController = mock<FullscreenLightRevealAnimationController>()
++    private val factory = mock<FullscreenLightRevealAnimationController.Factory>()
++    private val deviceStateManager = mock<DeviceStateManager>()
++    private val threadFactory = mock<ThreadFactory>()
++    private val powerInteractor = mock<PowerInteractor>()
++    private val screenPowerState = MutableStateFlow(ScreenPowerState.SCREEN_OFF)
++    private val isAsleep = MutableStateFlow(false)
++    private val progressProvider = FakeUnfoldTransitionProvider()
++    private val scope = TestScope(UnconfinedTestDispatcher())
++    private lateinit var testableLooper: TestableLooper
++    private lateinit var underTest: DuoFoldOverlayAnimation
++    private lateinit var foldListener: DeviceStateManager.DeviceStateCallback
++
++    @Before
++    fun setUp() {
++        testableLooper = TestableLooper.get(this)
++        mContext.orCreateTestableResources.addOverride(
++            R.array.config_foldedDeviceStates,
++            intArrayOf(foldedState.identifier),
++        )
++        whenever(innerController.setBackgroundBlurRadius(any())).thenReturn(true)
++        whenever(coverController.setBackgroundBlurRadius(any())).thenReturn(true)
++        whenever(factory.create(any(), any(), any()))
++            .thenReturn(innerController)
++            .thenReturn(coverController)
++        whenever(threadFactory.buildDelayableExecutorOnHandler(any())).thenReturn(mock())
++        whenever(powerInteractor.screenPowerState).thenReturn(screenPowerState)
++        whenever(powerInteractor.isAsleep).thenReturn(isAsleep)
++
++        underTest = createUnderTest()
++        underTest.init()
++        foldListener = captureDeviceStateCallback()
++        selector.onSettingChanged(FoldAnimationStyle.DUO)
++    }
++
++    @Test
++    fun duoUnfold_attachesBlurredBeforeReady_thenClearsWithProgress() {
++        reportFolded(true)
++        reportFolded(false)
++        selector.onGatedTransitionStarted(progressProvider)
++        val ready = CountDownLatch(1)
++
++        underTest.onScreenTurningOn { ready.countDown() }
++        processAll()
++
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++        verify(innerController).setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
++        progressProvider.onTransitionStarted()
++        progressProvider.onTransitionProgress(0.9f)
++        processAll()
++        verify(innerController).setBackgroundBlurRadius(0)
++        verify(innerController).isTouchBlocked = false
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.UNFOLDING)
++
++        progressProvider.onTransitionFinished()
++        processAll()
++        verify(innerController, atLeastOnce()).ensureOverlayRemoved()
++        assertThat(runtime.overlayAttached).isFalse()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++    }
++
++    @Test
++    fun pixel_neverAttaches_andReportsReady() {
++        selector.onSettingChanged(FoldAnimationStyle.PIXEL)
++        reportFolded(true)
++        reportFolded(false)
++        val ready = CountDownLatch(1)
++
++        underTest.onScreenTurningOn { ready.countDown() }
++        processAll()
++
++        assertThat(ready.await(1, TimeUnit.SECONDS)).isTrue()
++        verify(innerController, never()).addOverlay(any(), anyOrNull())
++        verify(coverController, never()).addOverlay(any(), anyOrNull())
++    }
++
++    @Test
++    fun foldMidUnfold_removesOverlay_andRecordsCancel() {
++        reportFolded(true)
++        reportFolded(false)
++        underTest.onScreenTurningOn {}
++        processAll()
++
++        reportFolded(true)
++        processAll()
++
++        verify(innerController, atLeastOnce()).ensureOverlayRemoved()
++        assertThat(runtime.cancellations).isEqualTo(1)
++        assertThat(runtime.lastCancelReason).isEqualTo("FOLDED")
++    }
++
++    @Test
++    fun blurRefused_marksBlurUnavailable_butKeepsRunning() {
++        whenever(innerController.setBackgroundBlurRadius(any())).thenReturn(false)
++        reportFolded(true)
++        reportFolded(false)
++
++        underTest.onScreenTurningOn {}
++        processAll()
++
++        assertThat(runtime.blurAvailable).isFalse()
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++    }
++
++    @Test
++    fun coverReveal_afterFold_attachesOnCover_thenRemovesAfterReveal() {
++        reportFolded(false)
++        reportFolded(true)
++        val ready = CountDownLatch(1)
++
++        underTest.onScreenTurningOn { ready.countDown() }
++        processAll()
++
++        verify(coverController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++        verify(coverController).setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.COVER_REVEAL)
++
++        underTest.onCoverScreenOn() // test hook = what the SCREEN_ON collector calls
++        animatorTestRule.advanceTimeBy(DuoFoldOverlayAnimation.COVER_REVEAL_MS)
++        processAll()
++
++        verify(coverController).setBackgroundBlurRadius(0)
++        verify(coverController, atLeastOnce()).ensureOverlayRemoved()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++    }
++
++    @Test
++    fun coverReveal_startsWhenCoverScreenReportsOn() {
++        reportFolded(false)
++        reportFolded(true)
++        underTest.onScreenTurningOn {}
++        processAll()
++
++        screenPowerState.value = ScreenPowerState.SCREEN_ON
++        animatorTestRule.advanceTimeBy(DuoFoldOverlayAnimation.COVER_REVEAL_MS)
++        processAll()
++
++        verify(coverController).setBackgroundBlurRadius(0)
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++    }
++
++    @Test
++    fun asleepMidUnfold_removesOverlay_andRecordsCancel() {
++        reportFolded(true)
++        reportFolded(false)
++        underTest.onScreenTurningOn {}
++        processAll()
++
++        isAsleep.value = true
++        processAll()
++
++        verify(innerController, atLeastOnce()).ensureOverlayRemoved()
++        assertThat(runtime.lastCancelReason).isEqualTo("ASLEEP")
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++    }
++
++    @Test
++    fun foldOnInner_attachesOnTransitionStarted_andBlursWithoutUnblockingTouch() {
++        selector.onGatedTransitionStarted(progressProvider)
++
++        progressProvider.onTransitionStarted()
++        processAll()
++
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.FOLDING)
++        progressProvider.onTransitionProgress(0.9f)
++        processAll()
++        verify(innerController, never()).isTouchBlocked = false
++    }
++
++    @Test
++    fun foldCompletes_removesInnerOverlay() {
++        selector.onGatedTransitionStarted(progressProvider)
++        progressProvider.onTransitionStarted()
++        processAll()
++
++        reportFolded(true)
++        processAll()
++
++        verify(innerController, atLeastOnce()).ensureOverlayRemoved()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++        assertThat(runtime.overlayAttached).isFalse()
++    }
++
++    private fun createUnderTest() =
++        DuoFoldOverlayAnimation(
++            mContext,
++            mContext.contentResolver,
++            Handler(testableLooper.looper),
++            progressProvider,
++            deviceStateManager,
++            threadFactory,
++            factory,
++            selector,
++            runtime,
++            powerInteractor,
++            scope,
++            logcatLogBuffer("YrrpFoldAnimationLog"),
++        )
++
++    private fun captureDeviceStateCallback(): DeviceStateManager.DeviceStateCallback {
++        val captor = ArgumentCaptor.forClass(DeviceStateManager.DeviceStateCallback::class.java)
++        verify(deviceStateManager).registerCallback(any<Executor>(), captor.capture())
++        return captor.value
++    }
++
++    private fun reportFolded(folded: Boolean) {
++        foldListener.onDeviceStateChanged(if (folded) foldedState else unfoldedState)
++        processAll()
++    }
++
++    private fun processAll() = testableLooper.processAllMessages()
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt
+index 7705205e83e2..08af65e634e3 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt
+@@ -152,6 +152,24 @@ constructor(
+         scrimView?.revealAmount = revealAmount
+     }
+ 
++    /**
++     * Blurs everything below the overlay window. Returns false when no overlay is attached or
++     * cross-window blur is unavailable (for example under Battery Saver).
++     */
++    fun setBackgroundBlurRadius(radiusPx: Int): Boolean {
++        ensureInBackground()
++        val surface = scrimView?.viewRootImpl?.surfaceControl ?: return false
++        if (!surface.isValid) return false
++        if (
++            radiusPx > 0 &&
++                !context.getSystemService(WindowManager::class.java)!!.isCrossWindowBlurEnabled
++        ) {
++            return false
++        }
++        SurfaceControl.Transaction().setBackgroundBlurRadius(surface, radiusPx).apply()
++        return true
++    }
++
+     private fun buildSurface(onUpdated: Consumer<SurfaceControl.Builder>) {
+         val containerBuilder =
+             SurfaceControl.Builder(SurfaceSession())
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt b/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt
+index 11de4c2cbd63..fc518855f985 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt
+@@ -28,6 +28,7 @@ import com.android.systemui.unfold.domain.interactor.FoldableDisplaySwitchTracki
+ import com.android.systemui.unfold.util.NaturalRotationUnfoldProgressProvider
+ import com.android.systemui.unfold.util.ScopedUnfoldTransitionProgressProvider
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityManager
++import com.android.systemui.unfold.yrrp.DuoFoldOverlayAnimation
+ import com.android.systemui.unfold.yrrp.YrrpFoldAnimationStartable
+ import com.android.systemui.util.kotlin.getOrNull
+ import dagger.Binds
+@@ -142,6 +143,13 @@ abstract class SysUIUnfoldInternalModule {
+         anim: FoldLightRevealOverlayAnimation
+     ): FullscreenLightRevealAnimation
+ 
++    @Binds
++    @IntoSet
++    @SysUIUnfoldScope
++    abstract fun bindsDuoFoldOverlayAnimation(
++        anim: DuoFoldOverlayAnimation
++    ): FullscreenLightRevealAnimation
++
+     @Binds
+     @NaturalRotation
+     @SysUIUnfoldScope
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoBlurCurve.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoBlurCurve.kt
+new file mode 100644
+index 000000000000..51924d1d0427
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoBlurCurve.kt
+@@ -0,0 +1,32 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import kotlin.math.roundToInt
++
++/** Duo blur over unfold progress: full at 0, decelerating to none at [BLUR_CLEAR_PROGRESS]. */
++object DuoBlurCurve {
++    const val MAX_BLUR_PX = 120
++    const val BLUR_CLEAR_PROGRESS = 0.85f
++    const val TOUCH_UNBLOCK_PROGRESS = 0.8f
++
++    fun radiusFor(progress: Float): Int {
++        val t = (progress / BLUR_CLEAR_PROGRESS).coerceIn(0f, 1f)
++        val remaining = (1f - t) * (1f - t)
++        return (MAX_BLUR_PX * remaining).roundToInt()
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+new file mode 100644
+index 000000000000..41c87c291324
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+@@ -0,0 +1,279 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import android.animation.Animator
++import android.animation.AnimatorListenerAdapter
++import android.animation.ValueAnimator
++import android.annotation.BinderThread
++import android.content.ContentResolver
++import android.content.Context
++import android.hardware.devicestate.DeviceStateManager
++import android.os.Handler
++import android.view.animation.DecelerateInterpolator
++import com.android.app.tracing.coroutines.launchTraced as launch
++import com.android.systemui.dagger.qualifiers.Background
++import com.android.systemui.log.LogBuffer
++import com.android.systemui.log.core.LogLevel
++import com.android.systemui.log.dagger.YrrpFoldAnimationLog
++import com.android.systemui.power.domain.interactor.PowerInteractor
++import com.android.systemui.power.shared.model.ScreenPowerState
++import com.android.systemui.statusbar.LinearLightRevealEffect
++import com.android.systemui.unfold.FullscreenLightRevealAnimation
++import com.android.systemui.unfold.FullscreenLightRevealAnimationController
++import com.android.systemui.unfold.FullscreenLightRevealAnimationController.Companion.ALPHA_TRANSPARENT
++import com.android.systemui.unfold.FullscreenLightRevealAnimationController.Companion.isVerticalRotation
++import com.android.systemui.unfold.SysUIUnfoldScope
++import com.android.systemui.unfold.UnfoldTransitionProgressProvider
++import com.android.systemui.unfold.dagger.UnfoldBg
++import com.android.systemui.unfold.util.ScaleAwareTransitionProgressProvider.Companion.areAnimationsEnabled
++import com.android.systemui.util.concurrency.ThreadFactory
++import java.util.function.Consumer
++import javax.inject.Inject
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.flow.filter
++import kotlinx.coroutines.flow.first
++
++/**
++ * The Duo fold animation's blur. Unfolding: the inner screen turns on fully blurred and clears
++ * with hinge progress while Shell stretches the tasks. Folding: the inner screen blurs as the
++ * hinge closes, then the cover screen turns on blurred and clears over [COVER_REVEAL_MS]. Runs
++ * only while the latched style is Duo; every exit removes the overlay.
++ */
++@SysUIUnfoldScope
++class DuoFoldOverlayAnimation
++@Inject
++constructor(
++    private val context: Context,
++    private val contentResolver: ContentResolver,
++    @UnfoldBg private val bgHandler: Handler,
++    @UnfoldBg private val bgProgressProvider: UnfoldTransitionProgressProvider,
++    private val deviceStateManager: DeviceStateManager,
++    private val threadFactory: ThreadFactory,
++    private val controllerFactory: FullscreenLightRevealAnimationController.Factory,
++    private val selector: FoldAnimationStyleSelector,
++    private val runtimeState: FoldAnimationRuntimeState,
++    private val powerInteractor: PowerInteractor,
++    @Background private val applicationScope: CoroutineScope,
++    @YrrpFoldAnimationLog private val logBuffer: LogBuffer,
++) : FullscreenLightRevealAnimation {
++
++    private lateinit var inner: FullscreenLightRevealAnimationController
++    private lateinit var cover: FullscreenLightRevealAnimationController
++    private var isFolded = false
++    private var pendingUnfold = false
++    private var pendingCoverReveal = false
++    private var coverAnimator: ValueAnimator? = null
++
++    override fun init() {
++        inner =
++            controllerFactory.create(
++                displaySelector = { maxByOrNull { it.naturalWidth } },
++                effectFactory = { LinearLightRevealEffect(it.isVerticalRotation()) },
++                overlayContainerName = INNER_OVERLAY_TITLE,
++            )
++        cover =
++            controllerFactory.create(
++                displaySelector = { minByOrNull { it.naturalWidth } },
++                effectFactory = { LinearLightRevealEffect(it.isVerticalRotation()) },
++                overlayContainerName = COVER_OVERLAY_TITLE,
++            )
++        inner.init()
++        cover.init()
++        deviceStateManager.registerCallback(
++            threadFactory.buildDelayableExecutorOnHandler(bgHandler),
++            FoldListener(),
++        )
++        bgProgressProvider.addCallback(ProgressListener())
++        applicationScope.launch {
++            powerInteractor.isAsleep.collect { asleep -> if (asleep) onBg { cancel("ASLEEP") } }
++        }
++    }
++
++    private fun isDuo() =
++        selector.currentStyle() == FoldAnimationStyle.DUO && contentResolver.areAnimationsEnabled()
++
++    @BinderThread
++    override fun onScreenTurningOn(onOverlayReady: Runnable) = onBg {
++        // Consume the pending flags whatever the style, so a stale flag never leaks into a later
++        // Duo transition.
++        val unfold = !isFolded && pendingUnfold
++        val coverReveal = isFolded && pendingCoverReveal
++        if (unfold) pendingUnfold = false
++        if (coverReveal) pendingCoverReveal = false
++        when {
++            unfold && isDuo() -> {
++                attach(inner, FoldAnimationPhase.UNFOLDING, onOverlayReady)
++                inner.isTouchBlocked = true
++            }
++            coverReveal && isDuo() -> {
++                attach(cover, FoldAnimationPhase.COVER_REVEAL, onOverlayReady)
++                applicationScope.launch {
++                    powerInteractor.screenPowerState
++                        .filter { it == ScreenPowerState.SCREEN_ON }
++                        .first()
++                    onBg { onCoverScreenOn() }
++                }
++            }
++            else -> onOverlayReady.run()
++        }
++    }
++
++    private fun attach(
++        controller: FullscreenLightRevealAnimationController,
++        phase: FoldAnimationPhase,
++        onOverlayReady: Runnable,
++    ) {
++        try {
++            controller.addOverlay(ALPHA_TRANSPARENT, onOverlayReady)
++            runtimeState.blurAvailable =
++                controller.setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
++            runtimeState.overlayAttached = true
++            runtimeState.phase = phase
++            log("overlay added phase=$phase blur=${runtimeState.blurAvailable}")
++        } catch (e: RuntimeException) {
++            controller.ensureOverlayRemoved()
++            onOverlayReady.run()
++            log("failed stage=attach exception=${e.javaClass.simpleName}")
++        }
++    }
++
++    /** Runs the timed cover-screen clear once the cover panel is on. */
++    fun onCoverScreenOn() {
++        if (runtimeState.phase != FoldAnimationPhase.COVER_REVEAL) return
++        coverAnimator?.cancel()
++        coverAnimator =
++            ValueAnimator.ofFloat(0f, 1f).apply {
++                duration = COVER_REVEAL_MS
++                interpolator = DecelerateInterpolator()
++                addUpdateListener {
++                    cover.setBackgroundBlurRadius(
++                        DuoBlurCurve.radiusFor(
++                            it.animatedFraction * DuoBlurCurve.BLUR_CLEAR_PROGRESS
++                        )
++                    )
++                }
++                addListener(
++                    object : AnimatorListenerAdapter() {
++                        private var cancelled = false
++
++                        override fun onAnimationCancel(animation: Animator) {
++                            cancelled = true
++                        }
++
++                        override fun onAnimationEnd(animation: Animator) {
++                            // A cancel already cleaned up or superseded this run.
++                            if (!cancelled) onBg { detach(cover) }
++                        }
++                    }
++                )
++                start()
++            }
++    }
++
++    private fun detach(controller: FullscreenLightRevealAnimationController) {
++        controller.ensureOverlayRemoved()
++        runtimeState.overlayAttached = false
++        runtimeState.phase = FoldAnimationPhase.IDLE
++        log("overlay removed")
++    }
++
++    private fun cancel(reason: String) {
++        coverAnimator?.cancel()
++        if (runtimeState.overlayAttached) runtimeState.recordCancel(reason)
++        inner.ensureOverlayRemoved()
++        cover.ensureOverlayRemoved()
++        runtimeState.overlayAttached = false
++        runtimeState.phase = FoldAnimationPhase.IDLE
++        log("cancelled reason=$reason")
++    }
++
++    private inner class ProgressListener :
++        UnfoldTransitionProgressProvider.TransitionProgressListener {
++        override fun onTransitionStarted() = onBg {
++            // Folding on the inner screen: the overlay is not attached yet. A pending unfold means
++            // this transition is the unfold whose screen-on has not arrived, not a fold.
++            if (isDuo() && !isFolded && !pendingUnfold && !runtimeState.overlayAttached) {
++                attach(inner, FoldAnimationPhase.FOLDING, Runnable {})
++                inner.isTouchBlocked = true
++            }
++        }
++
++        override fun onTransitionProgress(progress: Float) = onBg {
++            if (
++                runtimeState.phase != FoldAnimationPhase.UNFOLDING &&
++                    runtimeState.phase != FoldAnimationPhase.FOLDING
++            ) {
++                return@onBg
++            }
++            if (runtimeState.blurAvailable) {
++                runtimeState.blurAvailable =
++                    inner.setBackgroundBlurRadius(DuoBlurCurve.radiusFor(progress))
++            }
++            inner.isTouchBlocked =
++                runtimeState.phase == FoldAnimationPhase.FOLDING ||
++                    progress < DuoBlurCurve.TOUCH_UNBLOCK_PROGRESS
++        }
++
++        override fun onTransitionFinished() = onBg {
++            if (
++                runtimeState.phase == FoldAnimationPhase.UNFOLDING ||
++                    runtimeState.phase == FoldAnimationPhase.FOLDING
++            ) {
++                detach(inner)
++            }
++        }
++    }
++
++    private inner class FoldListener :
++        DeviceStateManager.FoldStateListener(
++            context,
++            Consumer { folded ->
++                if (folded == isFolded) return@Consumer
++                if (folded && runtimeState.phase == FoldAnimationPhase.UNFOLDING) {
++                    cancel("FOLDED")
++                } else if (folded) {
++                    inner.ensureOverlayRemoved()
++                    runtimeState.overlayAttached = false
++                    runtimeState.phase = FoldAnimationPhase.IDLE
++                }
++                isFolded = folded
++                if (folded) {
++                    // The next screen-on is the cover screen's; the one after the unfold is the
++                    // inner screen's.
++                    pendingUnfold = true
++                    pendingCoverReveal = true
++                } else {
++                    pendingCoverReveal = false
++                }
++            },
++        )
++
++    private fun onBg(f: () -> Unit) {
++        if (bgHandler.looper.isCurrentThread) f() else bgHandler.post(f)
++    }
++
++    private fun log(message: String) =
++        logBuffer.log(TAG, LogLevel.DEBUG, { str1 = message }, { str1!! })
++
++    companion object {
++        private const val TAG = "YrrpFoldAnimation"
++        private const val INNER_OVERLAY_TITLE = "yrrp-duo-unfold-overlay"
++        private const val COVER_OVERLAY_TITLE = "yrrp-duo-cover-overlay"
++        const val COVER_REVEAL_MS = 350L
++    }
++}
+-- 
+2.56.0
+

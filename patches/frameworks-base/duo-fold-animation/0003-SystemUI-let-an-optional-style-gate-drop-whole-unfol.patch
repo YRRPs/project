@@ -1,0 +1,340 @@
+From ffe3fcece6b77451e56b76c2d12a2741f91035d2 Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:06:49 +0200
+Subject: [PATCH 03/17] SystemUI: let an optional style gate drop whole unfold
+ transitions
+
+---
+ ...tedUnfoldTransitionProgressProviderTest.kt | 116 ++++++++++++++++++
+ .../systemui/unfold/UnfoldSharedModule.kt     |  18 ++-
+ ...leGatedUnfoldTransitionProgressProvider.kt |  75 +++++++++++
+ .../unfold/util/UnfoldTransitionStyleGate.kt  |  29 +++++
+ 4 files changed, 237 insertions(+), 1 deletion(-)
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt
+ create mode 100644 packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt
+ create mode 100644 packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt
+new file mode 100644
+index 000000000000..daa3498aa5e2
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProviderTest.kt
+@@ -0,0 +1,116 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.util
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.unfold.FakeUnfoldTransitionProvider
++import com.android.systemui.unfold.UnfoldTransitionProgressProvider.TransitionProgressListener
++import com.google.common.truth.Truth.assertThat
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class StyleGatedUnfoldTransitionProgressProviderTest : SysuiTestCase() {
++    private val source = FakeUnfoldTransitionProvider()
++    private val gate = FakeGate()
++    private val events = mutableListOf<String>()
++    private val underTest = StyleGatedUnfoldTransitionProgressProvider(source, gate)
++
++    init {
++        underTest.addCallback(
++            object : TransitionProgressListener {
++                override fun onTransitionStarted() {
++                    events += "start"
++                }
++
++                override fun onTransitionProgress(progress: Float) {
++                    events += "p$progress"
++                }
++
++                override fun onTransitionFinishing() {
++                    events += "finishing"
++                }
++
++                override fun onTransitionFinished() {
++                    events += "finish"
++                }
++            }
++        )
++    }
++
++    @Test
++    fun allowed_forwardsEverything() {
++        gate.allow = true
++        source.onTransitionStarted()
++        source.onTransitionProgress(0.5f)
++        source.onTransitionFinishing()
++        source.onTransitionFinished()
++
++        assertThat(events).containsExactly("start", "p0.5", "finishing", "finish").inOrder()
++        assertThat(gate.started).isEqualTo(1)
++        assertThat(gate.finished).isEqualTo(1)
++    }
++
++    @Test
++    fun denied_swallowsEverythingButStillReleasesGate() {
++        gate.allow = false
++        source.onTransitionStarted()
++        source.onTransitionProgress(0.5f)
++        source.onTransitionFinished()
++
++        assertThat(events).isEmpty()
++        assertThat(gate.finished).isEqualTo(1)
++    }
++
++    @Test
++    fun finishWithoutStart_forwardsNothingAndDoesNotReleaseGate() {
++        gate.allow = true
++        source.onTransitionFinished()
++
++        assertThat(events).isEmpty()
++        assertThat(gate.finished).isEqualTo(0)
++    }
++
++    @Test
++    fun decisionHoldsForWholeTransitionEvenIfGateFlips() {
++        gate.allow = true
++        source.onTransitionStarted()
++        gate.allow = false
++        source.onTransitionProgress(0.3f)
++        source.onTransitionFinished()
++
++        assertThat(events).containsExactly("start", "p0.3", "finish").inOrder()
++    }
++
++    private class FakeGate : UnfoldTransitionStyleGate {
++        var allow = true
++        var started = 0
++        var finished = 0
++
++        override fun onGatedTransitionStarted(token: Any): Boolean {
++            started++
++            return allow
++        }
++
++        override fun onGatedTransitionFinished(token: Any) {
++            finished++
++        }
++    }
++}
+diff --git a/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt b/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt
+index f83ea845809c..f3b2682a4676 100644
+--- a/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt
++++ b/packages/SystemUI/unfold/src/com/android/systemui/unfold/UnfoldSharedModule.kt
+@@ -35,7 +35,9 @@ import com.android.systemui.unfold.util.ATraceLoggerTransitionProgressListener
+ import com.android.systemui.unfold.util.ScaleAwareTransitionProgressProvider
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityManager
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityManagerImpl
++import com.android.systemui.unfold.util.StyleGatedUnfoldTransitionProgressProvider
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityProvider
++import com.android.systemui.unfold.util.UnfoldTransitionStyleGate
+ import dagger.BindsOptionalOf
+ import dagger.Module
+ import dagger.Provides
+@@ -76,6 +78,9 @@ abstract class UnfoldFlagsModule {
+      * background events in the main handler).
+      */
+     @BindsOptionalOf @UnfoldBgProgressFlag abstract fun unfoldBgProgressFlag(): Boolean
++
++    /** Optional per-transition style gate; SystemUI binds the YRRP fold animation selector. */
++    @BindsOptionalOf abstract fun unfoldTransitionStyleGate(): UnfoldTransitionStyleGate
+ }
+ 
+ /**
+@@ -100,6 +105,7 @@ internal class UnfoldSharedInternalModule {
+             MainThreadUnfoldTransitionProgressProvider.Factory,
+         @UnfoldBg bgProvider: Provider<Optional<UnfoldTransitionProgressProvider>>,
+         @UnfoldBgProgressFlag unfoldBgProgressFlag: Optional<Boolean>,
++        styleGate: Optional<UnfoldTransitionStyleGate>,
+     ): Optional<UnfoldTransitionProgressProvider> {
+         if (unfoldBgProgressFlag.getOrDefault(false)) {
+             // In this case, we wrap the background progress provider
+@@ -122,6 +128,7 @@ internal class UnfoldSharedInternalModule {
+                 fixedTimingTransitionProgressProvider = fixedTimingTransitionProgressProvider,
+                 foldStateProvider = foldStateProvider,
+                 progressHandler = mainHandler,
++                styleGate = styleGate,
+             )
+         }
+     }
+@@ -138,6 +145,7 @@ internal class UnfoldSharedInternalModule {
+         fixedTimingTransitionProgressProvider: Provider<FixedTimingTransitionProgressProvider>,
+         @UnfoldBg bgFoldStateProvider: FoldStateProvider,
+         @UnfoldBg bgHandler: Handler,
++        styleGate: Optional<UnfoldTransitionStyleGate>,
+     ): Optional<UnfoldTransitionProgressProvider> {
+         return createOptionalUnfoldTransitionProgressProvider(
+             config = config,
+@@ -148,6 +156,7 @@ internal class UnfoldSharedInternalModule {
+             fixedTimingTransitionProgressProvider = fixedTimingTransitionProgressProvider,
+             foldStateProvider = bgFoldStateProvider,
+             progressHandler = bgHandler,
++            styleGate = styleGate,
+         )
+     }
+ 
+@@ -160,6 +169,7 @@ internal class UnfoldSharedInternalModule {
+         fixedTimingTransitionProgressProvider: Provider<FixedTimingTransitionProgressProvider>,
+         foldStateProvider: FoldStateProvider,
+         progressHandler: Handler,
++        styleGate: Optional<UnfoldTransitionStyleGate>,
+     ): Optional<UnfoldTransitionProgressProvider> {
+         if (!config.isEnabled) {
+             return Optional.empty()
+@@ -174,11 +184,17 @@ internal class UnfoldSharedInternalModule {
+                 fixedTimingTransitionProgressProvider.get()
+             }
+ 
+-        return Optional.of(
++        val scaleAware =
+             scaleAwareProviderFactory.wrap(baseProgressProvider).apply {
+                 // Always present callback that logs animation beginning and end.
+                 addCallback(tracingListener)
+             }
++        return Optional.of(
++            styleGate
++                .map<UnfoldTransitionProgressProvider> {
++                    StyleGatedUnfoldTransitionProgressProvider(scaleAware, it)
++                }
++                .orElse(scaleAware)
+         )
+     }
+ 
+diff --git a/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt
+new file mode 100644
+index 000000000000..5defe2c4ecfc
+--- /dev/null
++++ b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/StyleGatedUnfoldTransitionProgressProvider.kt
+@@ -0,0 +1,75 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.util
++
++import com.android.systemui.unfold.UnfoldTransitionProgressProvider
++import com.android.systemui.unfold.UnfoldTransitionProgressProvider.TransitionProgressListener
++import java.util.concurrent.CopyOnWriteArrayList
++
++/**
++ * Forwards a whole transition or none of it, as decided by [gate] when the transition starts. A
++ * finish with no start forwards nothing and leaves the gate untouched. All callbacks arrive on
++ * the source's progress thread.
++ */
++class StyleGatedUnfoldTransitionProgressProvider(
++    private val source: UnfoldTransitionProgressProvider,
++    private val gate: UnfoldTransitionStyleGate,
++) : UnfoldTransitionProgressProvider, TransitionProgressListener {
++    private val listeners = CopyOnWriteArrayList<TransitionProgressListener>()
++    private var running = false
++    private var passing = false
++
++    init {
++        source.addCallback(this)
++    }
++
++    override fun onTransitionStarted() {
++        if (running) return
++        running = true
++        passing = gate.onGatedTransitionStarted(this)
++        if (passing) listeners.forEach { it.onTransitionStarted() }
++    }
++
++    override fun onTransitionProgress(progress: Float) {
++        if (passing) listeners.forEach { it.onTransitionProgress(progress) }
++    }
++
++    override fun onTransitionFinishing() {
++        if (passing) listeners.forEach { it.onTransitionFinishing() }
++    }
++
++    override fun onTransitionFinished() {
++        if (!running) return
++        running = false
++        if (passing) listeners.forEach { it.onTransitionFinished() }
++        passing = false
++        gate.onGatedTransitionFinished(this)
++    }
++
++    override fun addCallback(listener: TransitionProgressListener) {
++        listeners += listener
++    }
++
++    override fun removeCallback(listener: TransitionProgressListener) {
++        listeners -= listener
++    }
++
++    override fun destroy() {
++        source.removeCallback(this)
++        source.destroy()
++    }
++}
+diff --git a/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt
+new file mode 100644
+index 000000000000..6b15d968b3b3
+--- /dev/null
++++ b/packages/SystemUI/unfold/src/com/android/systemui/unfold/util/UnfoldTransitionStyleGate.kt
+@@ -0,0 +1,29 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.util
++
++/**
++ * Decides per transition whether unfold progress reaches any listener. SystemUI binds the YRRP
++ * fold animation selector; when unbound, every transition passes (AOSP behaviour).
++ */
++interface UnfoldTransitionStyleGate {
++    /** Called on the progress thread when [token]'s transition starts. True lets it through. */
++    fun onGatedTransitionStarted(token: Any): Boolean
++
++    /** Called on the progress thread when [token]'s transition finishes. */
++    fun onGatedTransitionFinished(token: Any)
++}
+-- 
+2.56.0
+

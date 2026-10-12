@@ -1,0 +1,151 @@
+From 2ac66f44208b4f201329a8ae1d800d8b13fa2f3b Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 17:19:39 +0200
+Subject: [PATCH 14/17] SystemUI: skip the fold-to-AOD animation in the Stock
+ fold style
+
+Turning the unfold framework on creates FoldAodAnimationController, which
+decides from fold state and sleep reason, not unfold progress, so the style
+gate never reached it. In Stock it played the AOSP fold-to-AOD animation and
+held screen-on for the opaque scrim, which build 20261011-112111 never did.
+Require a non-Stock style in both the not-dozing and dozing paths.
+---
+ .../unfold/FoldAodAnimationController.kt      | 13 +++++-
+ .../unfold/FoldAodAnimationControllerTest.kt  | 42 +++++++++++++++++++
+ 2 files changed, 53 insertions(+), 2 deletions(-)
+
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/FoldAodAnimationController.kt b/packages/SystemUI/src/com/android/systemui/unfold/FoldAodAnimationController.kt
+index 3c5a0323dc38..b377694b1e68 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/FoldAodAnimationController.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/FoldAodAnimationController.kt
+@@ -33,6 +33,8 @@ import com.android.systemui.statusbar.phone.CentralSurfaces
+ import com.android.systemui.statusbar.phone.ScreenOffAnimation
+ import com.android.systemui.statusbar.policy.CallbackController
+ import com.android.systemui.unfold.FoldAodAnimationController.FoldAodAnimationStatus
++import com.android.systemui.unfold.yrrp.FoldAnimationStyle
++import com.android.systemui.unfold.yrrp.FoldAnimationStyleSelector
+ import com.android.systemui.util.concurrency.DelayableExecutor
+ import com.android.systemui.util.settings.GlobalSettings
+ import dagger.Lazy
+@@ -55,6 +57,7 @@ constructor(
+     private val latencyTracker: LatencyTracker,
+     private val keyguardInteractor: Lazy<KeyguardInteractor>,
+     private val foldTransitionInteractor: Lazy<ToAodFoldTransitionInteractor>,
++    private val foldAnimationStyleSelector: FoldAnimationStyleSelector,
+ ) : CallbackController<FoldAodAnimationStatus>, ScreenOffAnimation, WakefulnessLifecycle.Observer {
+ 
+     private lateinit var shadeViewController: ShadeViewController
+@@ -96,8 +99,13 @@ constructor(
+     /** Returns true if we should run fold to AOD animation */
+     override fun shouldPlayAnimation(): Boolean = shouldPlayAnimation
+ 
++    // YRRP: Stock keeps the pre-unfold-framework behavior, so no fold-to-AOD animation either.
++    private fun isStockStyle(): Boolean =
++        foldAnimationStyleSelector.currentStyle() == FoldAnimationStyle.STOCK
++
+     private fun shouldStartAnimation(): Boolean =
+-        alwaysOnEnabled &&
++        !isStockStyle() &&
++            alwaysOnEnabled &&
+             wakefulnessLifecycle.lastSleepReason == PowerManager.GO_TO_SLEEP_REASON_DEVICE_FOLD &&
+             globalSettings.getFloat(Settings.Global.ANIMATOR_DURATION_SCALE, 1f) != 0f
+ 
+@@ -150,7 +158,8 @@ constructor(
+                     pendingScrimReadyCallback = onReady
+                 }
+             } else if (
+-                isFolded &&
++                !isStockStyle() &&
++                    isFolded &&
+                     !isFoldHandled &&
+                     alwaysOnEnabled &&
+                     keyguardInteractor.get().isDozing.value
+diff --git a/packages/SystemUI/tests/src/com/android/systemui/unfold/FoldAodAnimationControllerTest.kt b/packages/SystemUI/tests/src/com/android/systemui/unfold/FoldAodAnimationControllerTest.kt
+index 1135a5f86952..0908b8f1ce91 100644
+--- a/packages/SystemUI/tests/src/com/android/systemui/unfold/FoldAodAnimationControllerTest.kt
++++ b/packages/SystemUI/tests/src/com/android/systemui/unfold/FoldAodAnimationControllerTest.kt
+@@ -33,11 +33,14 @@ import com.android.systemui.shade.ShadeViewController
+ import com.android.systemui.statusbar.LightRevealScrim
+ import com.android.systemui.statusbar.phone.CentralSurfaces
+ import com.android.systemui.unfold.util.FoldableDeviceStates
++import com.android.systemui.unfold.yrrp.FoldAnimationStyle
++import com.android.systemui.unfold.yrrp.FoldAnimationStyleSelector
+ import com.android.systemui.unfold.util.FoldableTestUtils
+ import com.android.systemui.util.concurrency.FakeExecutor
+ import com.android.systemui.util.mockito.any
+ import com.android.systemui.util.settings.GlobalSettings
+ import com.android.systemui.util.time.FakeSystemClock
++import com.google.common.truth.Truth.assertThat
+ import kotlinx.coroutines.Dispatchers
+ import kotlinx.coroutines.runBlocking
+ import kotlinx.coroutines.yield
+@@ -47,6 +50,8 @@ import org.junit.runner.RunWith
+ import org.mockito.ArgumentCaptor
+ import org.mockito.Captor
+ import org.mockito.Mock
++import org.mockito.Mockito.anyFloat
++import org.mockito.Mockito.anyString
+ import org.mockito.Mockito.never
+ import org.mockito.Mockito.reset
+ import org.mockito.Mockito.verify
+@@ -84,6 +89,8 @@ class FoldAodAnimationControllerTest : SysuiTestCase() {
+ 
+     lateinit var underTest: FoldAodAnimationController
+     private val fakeExecutor = FakeExecutor(FakeSystemClock())
++    private val styleSelector =
++        FoldAnimationStyleSelector().apply { onSettingChanged(FoldAnimationStyle.PIXEL) }
+ 
+     @Before
+     fun setup() {
+@@ -116,6 +123,7 @@ class FoldAodAnimationControllerTest : SysuiTestCase() {
+                         latencyTracker,
+                         { keyguardInteractor },
+                         { foldTransitionInteractor },
++                        styleSelector,
+                     )
+                     .apply { initialize(centralSurfaces, shadeViewController, lightRevealScrim) }
+ 
+@@ -205,6 +213,40 @@ class FoldAodAnimationControllerTest : SysuiTestCase() {
+             verify(latencyTracker).onActionCancel(any())
+         }
+ 
++    @Test
++    fun onFolded_stockStyle_dozing_doesNotPrepareAnimation() =
++        runBlocking(IMMEDIATE) {
++            styleSelector.onSettingChanged(FoldAnimationStyle.STOCK)
++            keyguardRepository.setIsDozing(true)
++            setAodEnabled(enabled = true)
++
++            fold()
++            simulateScreenTurningOn()
++
++            verify(shadeFoldAnimator, never()).prepareFoldToAodAnimation()
++            verifyNoMoreInteractions(latencyTracker)
++        }
++
++    @Test
++    fun startAnimation_stockStyle_returnsFalse() =
++        runBlocking(IMMEDIATE) {
++            whenever(globalSettings.getFloat(anyString(), anyFloat())).thenReturn(1f)
++            styleSelector.onSettingChanged(FoldAnimationStyle.STOCK)
++
++            assertThat(underTest.startAnimation()).isFalse()
++            verify(shadeFoldAnimator, never()).prepareFoldToAodAnimation()
++        }
++
++    @Test
++    fun startAnimation_duoStyle_prepares() =
++        runBlocking(IMMEDIATE) {
++            whenever(globalSettings.getFloat(anyString(), anyFloat())).thenReturn(1f)
++            styleSelector.onSettingChanged(FoldAnimationStyle.DUO)
++
++            assertThat(underTest.startAnimation()).isTrue()
++            verify(shadeFoldAnimator).prepareFoldToAodAnimation()
++        }
++
+     private fun simulateScreenTurningOn() {
+         underTest.onScreenTurningOn({})
+         underTest.onScreenTurnedOn()
+-- 
+2.56.0
+

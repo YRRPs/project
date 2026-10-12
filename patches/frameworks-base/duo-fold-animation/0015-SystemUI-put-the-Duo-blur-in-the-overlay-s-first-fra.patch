@@ -1,0 +1,281 @@
+From 018512ae5482ccc896f8827c0391ec79394f96a1 Mon Sep 17 00:00:00 2001
+From: Yimura <24669514+Yimura@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 17:20:58 +0200
+Subject: [PATCH 15/17] SystemUI: put the Duo blur in the overlay's first frame
+
+addOverlay only queues the view, so the immediate setBackgroundBlurRadius
+found no valid surface and returned false. The inner screen turned on
+sharp, the cover reveal flashed sharp before jumping to full blur, and the
+dump reported blurAvailable=false as if Battery Saver were on. Pass the
+initial radius into addOverlay and set it on the relayout transaction that
+carries the first frame, before ready is reported.
+---
+ .../UnfoldLightRevealOverlayAnimationTest.kt  | 10 +++---
+ .../yrrp/DuoFoldOverlayAnimationTest.kt       | 36 +++++++++++--------
+ .../unfold/FullscreenLightRevealAnimation.kt  | 21 +++++++----
+ .../unfold/yrrp/DuoFoldOverlayAnimation.kt    |  5 +--
+ 4 files changed, 43 insertions(+), 29 deletions(-)
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
+index 8ba5c3e4c74c..46d54301144a 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
+@@ -104,7 +104,7 @@ class UnfoldLightRevealOverlayAnimationTest : SysuiTestCase() {
+         testableLooper.processAllMessages()
+ 
+         verify(onOverlayReady).run()
+-        verify(controller, never()).addOverlay(any(), anyOrNull())
++        verify(controller, never()).addOverlay(any(), anyOrNull(), any())
+     }
+ 
+     @Test
+@@ -116,7 +116,7 @@ class UnfoldLightRevealOverlayAnimationTest : SysuiTestCase() {
+         testableLooper.processAllMessages()
+ 
+         verify(onOverlayReady).run()
+-        verify(controller, never()).addOverlay(any(), anyOrNull())
++        verify(controller, never()).addOverlay(any(), anyOrNull(), any())
+     }
+ 
+     @Test
+@@ -127,7 +127,7 @@ class UnfoldLightRevealOverlayAnimationTest : SysuiTestCase() {
+         underTest.onScreenTurningOn(onOverlayReady)
+         testableLooper.processAllMessages()
+ 
+-        verify(controller).addOverlay(any(), eq(onOverlayReady))
++        verify(controller).addOverlay(any(), eq(onOverlayReady), eq(0))
+     }
+ 
+     @Test
+@@ -142,7 +142,7 @@ class UnfoldLightRevealOverlayAnimationTest : SysuiTestCase() {
+         underTest.onScreenTurningOn(onOverlayReady)
+         testableLooper.processAllMessages()
+ 
+-        verify(controller, never()).addOverlay(any(), anyOrNull())
++        verify(controller, never()).addOverlay(any(), anyOrNull(), any())
+         verify(onOverlayReady, times(2)).run()
+     }
+ 
+@@ -157,7 +157,7 @@ class UnfoldLightRevealOverlayAnimationTest : SysuiTestCase() {
+         underTest.onScreenTurningOn(onOverlayReady)
+         testableLooper.processAllMessages()
+ 
+-        verify(controller, never()).addOverlay(any(), anyOrNull())
++        verify(controller, never()).addOverlay(any(), anyOrNull(), any())
+     }
+ 
+     @Test
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+index c530fed1e8f4..4f2d2dd3a23d 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+@@ -91,6 +91,8 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         )
+         whenever(innerController.setBackgroundBlurRadius(any())).thenReturn(true)
+         whenever(coverController.setBackgroundBlurRadius(any())).thenReturn(true)
++        whenever(innerController.isBlurAvailable()).thenReturn(true)
++        whenever(coverController.isBlurAvailable()).thenReturn(true)
+         whenever(factory.create(any(), any(), any()))
+             .thenReturn(innerController)
+             .thenReturn(coverController)
+@@ -114,8 +116,10 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         underTest.onScreenTurningOn { ready.countDown() }
+         processAll()
+ 
+-        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
+-        verify(innerController).setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
++        verify(innerController)
++            .addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull(), eq(DuoBlurCurve.MAX_BLUR_PX))
++        verify(innerController, never()).setBackgroundBlurRadius(any())
++        assertThat(runtime.blurAvailable).isTrue()
+         progressProvider.onTransitionStarted()
+         progressProvider.onTransitionProgress(0.9f)
+         processAll()
+@@ -143,7 +147,7 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         assertThat(selector.starts).isEqualTo(1)
+         selector.onGatedTransitionStarted(progressProvider)
+         assertThat(selector.starts).isEqualTo(1)
+-        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull(), any())
+     }
+ 
+     @Test
+@@ -157,8 +161,8 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         processAll()
+ 
+         assertThat(ready.await(1, TimeUnit.SECONDS)).isTrue()
+-        verify(innerController, never()).addOverlay(any(), anyOrNull())
+-        verify(coverController, never()).addOverlay(any(), anyOrNull())
++        verify(innerController, never()).addOverlay(any(), anyOrNull(), any())
++        verify(coverController, never()).addOverlay(any(), anyOrNull(), any())
+     }
+ 
+     @Test
+@@ -178,6 +182,7 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+ 
+     @Test
+     fun blurRefused_marksBlurUnavailable_thenRetriesOnProgress() {
++        whenever(innerController.isBlurAvailable()).thenReturn(false)
+         whenever(innerController.setBackgroundBlurRadius(any())).thenReturn(false)
+         reportFolded(true)
+         reportFolded(false)
+@@ -186,7 +191,7 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         processAll()
+ 
+         assertThat(runtime.blurAvailable).isFalse()
+-        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull(), any())
+ 
+         whenever(innerController.setBackgroundBlurRadius(any())).thenReturn(true)
+         progressProvider.onTransitionProgress(0.5f)
+@@ -199,10 +204,10 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+     @Test
+     fun attachFailure_reportsReadyExactlyOnce() {
+         var readyCount = 0
+-        whenever(innerController.addOverlay(any(), anyOrNull())).thenAnswer {
++        whenever(innerController.addOverlay(any(), anyOrNull(), any())).thenAnswer {
+             (it.arguments[1] as Runnable).run()
+         }
+-        whenever(innerController.setBackgroundBlurRadius(any())).thenThrow(RuntimeException())
++        whenever(innerController.isBlurAvailable()).thenThrow(RuntimeException())
+         reportFolded(true)
+         reportFolded(false)
+ 
+@@ -267,8 +272,8 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         underTest.onScreenTurningOn { ready.countDown() }
+         processAll()
+ 
+-        verify(coverController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
+-        verify(coverController).setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
++        verify(coverController)
++            .addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull(), eq(DuoBlurCurve.MAX_BLUR_PX))
+         assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.COVER_REVEAL)
+ 
+         underTest.onCoverScreenOn() // test hook = what the SCREEN_ON collector calls
+@@ -317,7 +322,7 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         progressProvider.onTransitionStarted()
+         processAll()
+ 
+-        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull(), any())
+         assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.FOLDING)
+         progressProvider.onTransitionProgress(0.9f)
+         processAll()
+@@ -336,13 +341,13 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         underTest.onScreenTurningOn {}
+         processAll()
+         assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.UNFOLDING)
+-        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++        verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull(), any())
+ 
+         progressProvider.onTransitionStarted()
+         processAll()
+ 
+         // No second, FOLDING attach for the real unfold.
+-        verify(innerController, times(1)).addOverlay(any(), anyOrNull())
++        verify(innerController, times(1)).addOverlay(any(), anyOrNull(), any())
+         assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.UNFOLDING)
+     }
+ 
+@@ -353,7 +358,8 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         progressProvider.onTransitionStarted()
+         processAll()
+ 
+-        verify(innerController).setBackgroundBlurRadius(DuoBlurCurve.radiusFor(1f))
++        verify(innerController)
++            .addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull(), eq(DuoBlurCurve.radiusFor(1f)))
+         verify(innerController, never()).setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
+     }
+ 
+@@ -416,7 +422,7 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+         processAll()
+ 
+         assertThat(ready).isTrue()
+-        verify(coverController, never()).addOverlay(any(), anyOrNull())
++        verify(coverController, never()).addOverlay(any(), anyOrNull(), any())
+         assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
+     }
+ 
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt
+index 08af65e634e3..61307a7d5d63 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/FullscreenLightRevealAnimation.kt
+@@ -123,6 +123,7 @@ constructor(
+     fun addOverlay(
+         initialAlpha: Float,
+         onOverlayReady: Runnable? = null,
++        initialBlurPx: Int = 0,
+     ) {
+         if (!::wwm.isInitialized) {
+             // Surface overlay is not created yet on the first SysUI launch
+@@ -131,7 +132,7 @@ constructor(
+         }
+         ensureInBackground()
+         ensureOverlayRemoved()
+-        prepareOverlay(onOverlayReady, wwm, bgExecutor, initialAlpha)
++        prepareOverlay(onOverlayReady, wwm, bgExecutor, initialAlpha, initialBlurPx)
+     }
+ 
+     fun ensureOverlayRemoved() {
+@@ -160,16 +161,15 @@ constructor(
+         ensureInBackground()
+         val surface = scrimView?.viewRootImpl?.surfaceControl ?: return false
+         if (!surface.isValid) return false
+-        if (
+-            radiusPx > 0 &&
+-                !context.getSystemService(WindowManager::class.java)!!.isCrossWindowBlurEnabled
+-        ) {
+-            return false
+-        }
++        if (radiusPx > 0 && !isBlurAvailable()) return false
+         SurfaceControl.Transaction().setBackgroundBlurRadius(surface, radiusPx).apply()
+         return true
+     }
+ 
++    /** Whether cross-window blur is on now; Battery Saver and thermal limits turn it off. */
++    fun isBlurAvailable(): Boolean =
++        context.getSystemService(WindowManager::class.java)!!.isCrossWindowBlurEnabled
++
+     private fun buildSurface(onUpdated: Consumer<SurfaceControl.Builder>) {
+         val containerBuilder =
+             SurfaceControl.Builder(SurfaceSession())
+@@ -186,6 +186,7 @@ constructor(
+         wwm: WindowlessWindowManager,
+         bgExecutor: Executor,
+         initialAlpha: Float,
++        initialBlurPx: Int = 0,
+     ) {
+         val newRoot = SurfaceControlViewHost(context, context.display, wwm, javaClass.simpleName)
+ 
+@@ -209,6 +210,12 @@ constructor(
+ 
+             newRoot.relayout(params) { transaction ->
+                 val vsyncId = Choreographer.getSfInstance().vsyncId
++                // YRRP: blur in the same transaction as the first frame, so the overlay is never
++                // presented unblurred. The surface is valid once the first frame is drawn.
++                val surface = newView.viewRootImpl?.surfaceControl
++                if (initialBlurPx > 0 && surface?.isValid == true && isBlurAvailable()) {
++                    transaction.setBackgroundBlurRadius(surface, initialBlurPx)
++                }
+                 transaction.setFrameTimelineVsync(vsyncId).apply()
+ 
+                 transaction
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+index 2f01ee4e440a..dbcc3d74fa98 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+@@ -166,8 +166,9 @@ constructor(
+             if (reported.compareAndSet(false, true)) onOverlayReady.run()
+         }
+         try {
+-            controller.addOverlay(ALPHA_TRANSPARENT, readyOnce)
+-            runtimeState.blurAvailable = controller.setBackgroundBlurRadius(initialBlurPx)
++            // The blur rides in the overlay's first committed frame, before ready is reported.
++            controller.addOverlay(ALPHA_TRANSPARENT, readyOnce, initialBlurPx)
++            runtimeState.blurAvailable = initialBlurPx == 0 || controller.isBlurAvailable()
+             runtimeState.overlayAttached = true
+             runtimeState.phase = phase
+             armSafetyTimeout(phase)
+-- 
+2.56.0
+
