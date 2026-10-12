@@ -99,7 +99,7 @@ Private per-user `Settings.Secure` keys, shared with SystemUI:
 | `lineage_pulse_bar_gap_percent` | 30 | clamp 0–80 | clamp, then snap to 5n |
 | `lineage_screen_off_animation` | 0 | only 1 is CRT | 0 or 1, other values rejected |
 | `lineage_fold_animation` | 0 (Stock) | 1 Pixel, 2 Duo; other values Stock | 0–2, other values rejected |
-| `yrrp_fold_lock_before_duo` | absent | string, the fold-lock value from before Duo | written on selecting Duo only when absent; deleted on leaving Duo |
+| `yrrp_fold_lock_before_duo` (Settings only; SystemUI never reads it) | absent | string, the fold-lock value from before Duo | written on selecting Duo only when absent; deleted on leaving Duo |
 
 Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The Solid row summary and the picker show `#RRGGBB`; confirming the picker writes only the color, then re-reads it. The boost summary explains the effect before the value; the slider label and state description show the value alone. The opacity slider covers 26–255 in steps of 1 and shows a rounded percentage of 255.
 

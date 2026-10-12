@@ -99,7 +99,7 @@ On an unsupported device the Settings row and page are hidden and unsearchable. 
 Settings and SystemUI use identical defaults and normalization. Settings never rewrites a stored value on read. No migration: absent means Stock.
 
 ```bash
-adb shell settings put secure lineage_fold_animation 2     # Duo
+adb shell settings put secure lineage_fold_animation 2     # Duo; skips the fold-lock backup, see Fold lock
 adb shell settings delete secure lineage_fold_animation    # restore, then Stock
 ```
 
@@ -116,12 +116,16 @@ Duo forces **Always**:
 | Another writer changes the value while Duo is on | SystemUI | Rewrites `stay_awake_on_fold_key` for the selected user and logs it. |
 | The user leaves Duo | Settings | Writes the new style first, so SystemUI stops forcing, then restores the stored value, or `selective_stay_awake_key` when none exists, and deletes the key. |
 
-Settings also restores when it finds a stored value while the style is not Duo, which repairs an interrupted switch. Selecting Stock or Pixel when Duo was not on, and no value is stored, leaves the fold-lock setting alone.
+Settings restores the fold lock only when leaving Duo. Selecting Stock or Pixel when Duo was not on leaves the fold-lock setting alone, even if a stored value is left over. If the style write fails after entering Duo, Settings restores the value at once. Selecting Duo while Duo is already on changes nothing, so SystemUI's Always is never stored as the user's value.
+
+SystemUI reads the fold-lock value before the style, and re-reads the style just before it writes. Leaving Duo, Settings writes the style first, so SystemUI never forces Always over a value Settings has just restored.
 
 | Key | Scope | Owner | Values |
 |---|---|---|---|
 | `fold_lock_behavior_setting` | per-user `Settings.System` (AOSP) | Android, Settings; SystemUI while Duo is on | `stay_awake_on_fold_key` (Always), `selective_stay_awake_key` (Swipe up to continue, default), `sleep_on_fold_key` (Never) |
 | `yrrp_fold_lock_before_duo` | private per-user `Settings.Secure` | Settings | The value from before Duo; absent while Duo is off |
+
+Setting Duo with `adb` skips Settings, so no value is stored: SystemUI forces Always, and leaving Duo in Settings writes Swipe up to continue.
 
 ```bash
 adb shell settings get system fold_lock_behavior_setting
