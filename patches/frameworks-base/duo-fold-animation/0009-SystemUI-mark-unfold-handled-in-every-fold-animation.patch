@@ -1,0 +1,77 @@
+From cbb66a87935f855462e85f0ebdd46bfb55f30df0 Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:39:34 +0200
+Subject: [PATCH 09/12] SystemUI: mark unfold handled in every fold animation
+ style
+
+---
+ .../UnfoldLightRevealOverlayAnimationTest.kt  | 31 +++++++++++++++++++
+ .../UnfoldLightRevealOverlayAnimation.kt      |  3 ++
+ 2 files changed, 34 insertions(+)
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
+index fa1210f33505..e36bc8dc8db3 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimationTest.kt
+@@ -36,6 +36,7 @@ import org.junit.Test
+ import org.junit.runner.RunWith
+ import org.mockito.ArgumentCaptor
+ import org.mockito.Mockito.never
++import org.mockito.Mockito.times
+ import org.mockito.Mockito.verify
+ import org.mockito.kotlin.any
+ import org.mockito.kotlin.anyOrNull
+@@ -128,6 +129,36 @@ class UnfoldLightRevealOverlayAnimationTest : SysuiTestCase() {
+         verify(controller).addOverlay(any(), eq(onOverlayReady))
+     }
+ 
++    @Test
++    fun stockUnfold_thenSwitchToPixel_nextScreenOnAddsNoOverlay() {
++        selector.onSettingChanged(FoldAnimationStyle.STOCK)
++        unfoldAfterFold()
++        underTest.onScreenTurningOn(onOverlayReady)
++        testableLooper.processAllMessages()
++
++        // Lock and wake after the user switched to Pixel: the unfold was already handled.
++        selector.onSettingChanged(FoldAnimationStyle.PIXEL)
++        underTest.onScreenTurningOn(onOverlayReady)
++        testableLooper.processAllMessages()
++
++        verify(controller, never()).addOverlay(any(), anyOrNull())
++        verify(onOverlayReady, times(2)).run()
++    }
++
++    @Test
++    fun duoUnfold_thenSwitchToPixel_nextScreenOnAddsNoOverlay() {
++        selector.onSettingChanged(FoldAnimationStyle.DUO)
++        unfoldAfterFold()
++        underTest.onScreenTurningOn(onOverlayReady)
++        testableLooper.processAllMessages()
++
++        selector.onSettingChanged(FoldAnimationStyle.PIXEL)
++        underTest.onScreenTurningOn(onOverlayReady)
++        testableLooper.processAllMessages()
++
++        verify(controller, never()).addOverlay(any(), anyOrNull())
++    }
++
+     private fun unfoldAfterFold() {
+         foldStateCallback.onDeviceStateChanged(foldedState)
+         foldStateCallback.onDeviceStateChanged(unfoldedState)
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt
+index 12a2aee8d486..c3aa5a476ffe 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/UnfoldLightRevealOverlayAnimation.kt
+@@ -110,6 +110,9 @@ constructor(
+                     isUnfoldHandled = true
+                 } else {
+                     // No unfold transition, immediately report that overlay is ready
++                    // This screen-on consumed the unfold whatever the style, so a later switch to
++                    // Pixel cannot add an opaque overlay no transition will remove.
++                    if (!isFolded) isUnfoldHandled = true
+                     controller.ensureOverlayRemoved()
+                     onOverlayReady.run()
+                 }
+-- 
+2.56.0
+

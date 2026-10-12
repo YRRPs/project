@@ -1,0 +1,598 @@
+From 6dede5adf318385a79da0fc370674f82b7a54dc4 Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:11:11 +0200
+Subject: [PATCH 05/12] SystemUI: observe the fold animation setting with a
+ dump and log
+
+---
+ .../FoldAnimationSettingsRepositoryTest.kt    |  95 +++++++++++++
+ .../yrrp/YrrpFoldAnimationStartableTest.kt    | 124 +++++++++++++++++
+ .../systemui/log/dagger/LogModule.java        |   8 ++
+ .../log/dagger/YrrpFoldAnimationLog.kt        |  25 ++++
+ .../systemui/unfold/SysUIUnfoldModule.kt      |   6 +
+ .../unfold/yrrp/FoldAnimationRuntimeState.kt  |  53 ++++++++
+ .../yrrp/FoldAnimationSettingsRepository.kt   |  70 ++++++++++
+ .../unfold/yrrp/YrrpFoldAnimationStartable.kt | 126 ++++++++++++++++++
+ 8 files changed, 507 insertions(+)
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepositoryTest.kt
+ create mode 100644 packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/log/dagger/YrrpFoldAnimationLog.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationRuntimeState.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepository.kt
+ create mode 100644 packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepositoryTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepositoryTest.kt
+new file mode 100644
+index 000000000000..e43c8245ac53
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepositoryTest.kt
+@@ -0,0 +1,95 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.shared.settings.data.repository.FakeSecureSettingsRepository
++import com.android.systemui.shared.settings.data.repository.SecureSettingsRepository
++import com.google.common.truth.Truth.assertThat
++import kotlinx.coroutines.ExperimentalCoroutinesApi
++import kotlinx.coroutines.flow.Flow
++import kotlinx.coroutines.flow.emitAll
++import kotlinx.coroutines.flow.flow
++import kotlinx.coroutines.test.StandardTestDispatcher
++import kotlinx.coroutines.test.TestScope
++import kotlinx.coroutines.test.runCurrent
++import kotlinx.coroutines.test.runTest
++import org.junit.Test
++import org.junit.runner.RunWith
++
++@OptIn(ExperimentalCoroutinesApi::class)
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class FoldAnimationSettingsRepositoryTest : SysuiTestCase() {
++    private val secureSettingsRepository = FakeSecureSettingsRepository()
++
++    @Test
++    fun missingSetting_isZero() = runTest {
++        val underTest = createRepository()
++        runCurrent()
++        assertThat(underTest.setting.value).isEqualTo(0)
++    }
++
++    @Test
++    fun storedValue_isPublishedRaw() = runTest {
++        secureSettingsRepository.setInt(FoldAnimationSettingsRepository.SETTING_KEY, 2)
++        val underTest = createRepository()
++        runCurrent()
++        assertThat(underTest.setting.value).isEqualTo(2)
++    }
++
++    @Test
++    fun unknownValue_isPublishedRawAndNormalizedByStyle() = runTest {
++        secureSettingsRepository.setInt(FoldAnimationSettingsRepository.SETTING_KEY, 9)
++        val underTest = createRepository()
++        runCurrent()
++        assertThat(underTest.setting.value).isEqualTo(9)
++        assertThat(FoldAnimationStyle.fromRaw(underTest.setting.value))
++            .isEqualTo(FoldAnimationStyle.STOCK)
++    }
++
++    @Test
++    fun readFailure_isZero() = runTest {
++        val underTest = createRepository(FailingSecureSettingsRepository(failures = Int.MAX_VALUE))
++        runCurrent()
++        assertThat(underTest.setting.value).isEqualTo(0)
++    }
++
++    private fun TestScope.createRepository(
++        repo: SecureSettingsRepository = secureSettingsRepository
++    ): FoldAnimationSettingsRepository {
++        val dispatcher = StandardTestDispatcher(testScheduler)
++        return FoldAnimationSettingsRepository(repo, backgroundScope, dispatcher)
++    }
++
++    /** A secure-settings source whose first [failures] reads fail, then delegate. */
++    private class FailingSecureSettingsRepository(
++        private val failures: Int,
++        private val delegate: SecureSettingsRepository = FakeSecureSettingsRepository(),
++    ) : SecureSettingsRepository by delegate {
++        var reads = 0
++            private set
++
++        override fun intSetting(name: String, defaultValue: Int): Flow<Int> = flow {
++            reads++
++            if (reads <= failures) throw IllegalStateException("unreadable")
++            emitAll(delegate.intSetting(name, defaultValue))
++        }
++    }
++}
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt
+new file mode 100644
+index 000000000000..da46ad2feb1e
+--- /dev/null
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartableTest.kt
+@@ -0,0 +1,124 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import androidx.test.ext.junit.runners.AndroidJUnit4
++import androidx.test.filters.SmallTest
++import com.android.systemui.SysuiTestCase
++import com.android.systemui.dump.DumpManager
++import com.android.systemui.log.logcatLogBuffer
++import com.android.systemui.unfold.config.UnfoldTransitionConfig
++import com.google.common.truth.Truth.assertThat
++import java.io.PrintWriter
++import java.io.StringWriter
++import kotlinx.coroutines.ExperimentalCoroutinesApi
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.test.TestScope
++import kotlinx.coroutines.test.runCurrent
++import kotlinx.coroutines.test.runTest
++import org.junit.Test
++import org.junit.runner.RunWith
++import org.mockito.kotlin.doReturn
++import org.mockito.kotlin.mock
++import org.mockito.kotlin.verify
++import org.mockito.kotlin.whenever
++
++@OptIn(ExperimentalCoroutinesApi::class)
++@SmallTest
++@RunWith(AndroidJUnit4::class)
++class YrrpFoldAnimationStartableTest : SysuiTestCase() {
++    private val selector = FoldAnimationStyleSelector()
++    private val runtime = FoldAnimationRuntimeState()
++    private val raw = MutableStateFlow(0)
++    private val repository = mock<FoldAnimationSettingsRepository>()
++    private val dumpManager = mock<DumpManager>()
++    private val config =
++        mock<UnfoldTransitionConfig> {
++            on { isEnabled } doReturn true
++            on { isHingeAngleEnabled } doReturn true
++        }
++
++    @Test
++    fun pushesSettingIntoSelector_andRegistersDumpable() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        val underTest = create(this)
++        underTest.start()
++        runCurrent()
++        verify(dumpManager).registerNormalDumpable(YrrpFoldAnimationStartable.TAG, underTest)
++
++        raw.value = 2
++        runCurrent()
++        assertThat(selector.settingStyle()).isEqualTo(FoldAnimationStyle.DUO)
++    }
++
++    @Test
++    fun dump_listsEveryGate_andBlockedByStockForZero() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        val underTest = create(this)
++        underTest.start()
++        runCurrent()
++
++        val out = StringWriter()
++        underTest.dump(PrintWriter(out), emptyArray())
++        val text = out.toString()
++        listOf(
++                "settingValue=0",
++                "selectedStyle=STOCK",
++                "latchedStyle=none",
++                "configEnabled=true",
++                "hingeAngleEnabled=true",
++                "animationsEnabled=",
++                "blurAvailable=",
++                "eligible=false",
++                "blockedBy=STYLE_STOCK",
++                "phase=IDLE",
++                "overlayAttached=false",
++                "starts=0",
++                "completions=0",
++                "cancellations=0",
++                "lastCancelReason=none",
++            )
++            .forEach { assertThat(text).contains(it) }
++    }
++
++    @Test
++    fun dump_duoWithAnimationsOn_isEligible() = runTest {
++        whenever(repository.setting).thenReturn(raw)
++        raw.value = 2
++        val underTest = create(this, animationsEnabled = true)
++        underTest.start()
++        runCurrent()
++
++        val out = StringWriter()
++        underTest.dump(PrintWriter(out), emptyArray())
++        assertThat(out.toString()).contains("eligible=true")
++        assertThat(out.toString()).contains("blockedBy=NONE")
++    }
++
++    private fun create(scope: TestScope, animationsEnabled: Boolean = true) =
++        YrrpFoldAnimationStartable(
++            repository = repository,
++            selector = selector,
++            runtimeState = runtime,
++            config = config,
++            dumpManager = dumpManager,
++            // A real buffer: a bare mock returns null from obtain() and the inline log() NPEs.
++            logBuffer = logcatLogBuffer("YrrpFoldAnimationLog"),
++            backgroundScope = scope.backgroundScope,
++            animationsEnabled = { animationsEnabled },
++        )
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java b/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java
+index 6db37bff9921..71f93f5c2cc4 100644
+--- a/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java
++++ b/packages/SystemUI/src/com/android/systemui/log/dagger/LogModule.java
+@@ -686,6 +686,14 @@ public abstract class LogModule {
+         return factory.create("CrtScreenOffAnimationLog", 100);
+     }
+ 
++    /** Provides a {@link LogBuffer} for YRRP fold animation selection and lifecycle. */
++    @Provides
++    @SysUISingleton
++    @YrrpFoldAnimationLog
++    public static LogBuffer provideYrrpFoldAnimationLogBuffer(LogBufferFactory factory) {
++        return factory.create("YrrpFoldAnimationLog", 100);
++    }
++
+     /**
+      * Registers the clear log buffers ADB command.
+      */
+diff --git a/packages/SystemUI/src/com/android/systemui/log/dagger/YrrpFoldAnimationLog.kt b/packages/SystemUI/src/com/android/systemui/log/dagger/YrrpFoldAnimationLog.kt
+new file mode 100644
+index 000000000000..02ba6644c7ba
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/log/dagger/YrrpFoldAnimationLog.kt
+@@ -0,0 +1,25 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.log.dagger
++
++import javax.inject.Qualifier
++
++/** A [com.android.systemui.log.LogBuffer] for YRRP fold animation selection and lifecycle. */
++@Qualifier
++@MustBeDocumented
++@Retention(AnnotationRetention.RUNTIME)
++annotation class YrrpFoldAnimationLog
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt b/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt
+index 08143eb0c046..11de4c2cbd63 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/SysUIUnfoldModule.kt
+@@ -28,6 +28,7 @@ import com.android.systemui.unfold.domain.interactor.FoldableDisplaySwitchTracki
+ import com.android.systemui.unfold.util.NaturalRotationUnfoldProgressProvider
+ import com.android.systemui.unfold.util.ScopedUnfoldTransitionProgressProvider
+ import com.android.systemui.unfold.util.UnfoldKeyguardVisibilityManager
++import com.android.systemui.unfold.yrrp.YrrpFoldAnimationStartable
+ import com.android.systemui.util.kotlin.getOrNull
+ import dagger.Binds
+ import dagger.BindsInstance
+@@ -118,6 +119,11 @@ interface SysUIUnfoldStartableModule {
+     @IntoMap
+     @ClassKey(PendingDisplayChangeController::class)
+     fun bindShadeDisplayController(pendingDisplayChangeController: PendingDisplayChangeController): CoreStartable
++
++    @Binds
++    @IntoMap
++    @ClassKey(YrrpFoldAnimationStartable::class)
++    fun bindsYrrpFoldAnimationStartable(impl: YrrpFoldAnimationStartable): CoreStartable
+ }
+ 
+ @Module
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationRuntimeState.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationRuntimeState.kt
+new file mode 100644
+index 000000000000..da92b5854ff5
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationRuntimeState.kt
+@@ -0,0 +1,53 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import com.android.systemui.dagger.SysUISingleton
++import java.util.concurrent.atomic.AtomicInteger
++import javax.inject.Inject
++
++enum class FoldAnimationPhase {
++    IDLE,
++    UNFOLDING,
++    FOLDING,
++    COVER_REVEAL,
++}
++
++/** State the Duo overlay owns and the dump reads; written on the unfold bg thread. */
++@SysUISingleton
++class FoldAnimationRuntimeState @Inject constructor() {
++    @Volatile var phase = FoldAnimationPhase.IDLE
++    @Volatile var overlayAttached = false
++    @Volatile var blurAvailable = true
++    @Volatile
++    var lastCancelReason = NONE
++        private set
++
++    private val cancelCount = AtomicInteger()
++
++    val cancellations: Int
++        get() = cancelCount.get()
++
++    fun recordCancel(reason: String) {
++        lastCancelReason = reason
++        cancelCount.incrementAndGet()
++    }
++
++    companion object {
++        const val NONE = "none"
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepository.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepository.kt
+new file mode 100644
+index 000000000000..98b036df221d
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/FoldAnimationSettingsRepository.kt
+@@ -0,0 +1,70 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import android.util.Log
++import com.android.systemui.dagger.SysUISingleton
++import com.android.systemui.dagger.qualifiers.Background
++import com.android.systemui.shared.settings.data.repository.SecureSettingsRepository
++import javax.inject.Inject
++import kotlinx.coroutines.CoroutineDispatcher
++import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.delay
++import kotlinx.coroutines.flow.SharingStarted
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.catch
++import kotlinx.coroutines.flow.distinctUntilChanged
++import kotlinx.coroutines.flow.flowOn
++import kotlinx.coroutines.flow.retryWhen
++import kotlinx.coroutines.flow.stateIn
++
++/**
++ * Observes the private per-user [SETTING_KEY] secure setting as its raw value. A failed read
++ * publishes 0 (Stock) and is retried a bounded number of times.
++ */
++@SysUISingleton
++class FoldAnimationSettingsRepository
++@Inject
++constructor(
++    secureSettingsRepository: SecureSettingsRepository,
++    @Background backgroundScope: CoroutineScope,
++    @Background backgroundDispatcher: CoroutineDispatcher,
++) {
++    val setting: StateFlow<Int> =
++        secureSettingsRepository
++            .intSetting(SETTING_KEY, defaultValue = STOCK_VALUE)
++            .retryWhen { cause, attempt ->
++                Log.w(TAG, "setting read failed exception=${cause.javaClass.simpleName}")
++                emit(STOCK_VALUE)
++                val retry = attempt < MAX_READ_RETRIES
++                if (retry) delay(READ_RETRY_DELAY_MS)
++                retry
++            }
++            // Retries exhausted: keep Stock rather than failing the background scope.
++            .catch { Log.w(TAG, "setting read retries exhausted, using stock") }
++            .distinctUntilChanged()
++            .flowOn(backgroundDispatcher)
++            .stateIn(backgroundScope, SharingStarted.Eagerly, STOCK_VALUE)
++
++    companion object {
++        const val SETTING_KEY = "lineage_fold_animation"
++        private const val TAG = "FoldAnimationSettings"
++        private const val MAX_READ_RETRIES = 3L
++        private const val READ_RETRY_DELAY_MS = 1_000L
++        private const val STOCK_VALUE = 0
++    }
++}
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt
+new file mode 100644
+index 000000000000..092d8df49a29
+--- /dev/null
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/YrrpFoldAnimationStartable.kt
+@@ -0,0 +1,126 @@
++/*
++ * Copyright (C) 2026 The Android Open Source Project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *      http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++package com.android.systemui.unfold.yrrp
++
++import android.content.ContentResolver
++import com.android.app.tracing.coroutines.launchTraced as launch
++import com.android.systemui.CoreStartable
++import com.android.systemui.Dumpable
++import com.android.systemui.dagger.SysUISingleton
++import com.android.systemui.dagger.qualifiers.Background
++import com.android.systemui.dump.DumpManager
++import com.android.systemui.log.LogBuffer
++import com.android.systemui.log.core.LogLevel
++import com.android.systemui.log.dagger.YrrpFoldAnimationLog
++import com.android.systemui.unfold.config.UnfoldTransitionConfig
++import com.android.systemui.unfold.util.ScaleAwareTransitionProgressProvider.Companion.areAnimationsEnabled
++import java.io.PrintWriter
++import javax.inject.Inject
++import kotlinx.coroutines.CoroutineScope
++
++/**
++ * Feeds the per-user setting into [FoldAnimationStyleSelector], logs latch transitions, and dumps
++ * every gate. Dump: `dumpsys activity service com.android.systemui/.SystemUIService
++ * YrrpFoldAnimation YrrpFoldAnimationLog`.
++ */
++@SysUISingleton
++class YrrpFoldAnimationStartable(
++    private val repository: FoldAnimationSettingsRepository,
++    private val selector: FoldAnimationStyleSelector,
++    private val runtimeState: FoldAnimationRuntimeState,
++    private val config: UnfoldTransitionConfig,
++    private val dumpManager: DumpManager,
++    private val logBuffer: LogBuffer,
++    private val backgroundScope: CoroutineScope,
++    private val animationsEnabled: () -> Boolean,
++) : CoreStartable, Dumpable {
++
++    @Inject
++    constructor(
++        repository: FoldAnimationSettingsRepository,
++        selector: FoldAnimationStyleSelector,
++        runtimeState: FoldAnimationRuntimeState,
++        config: UnfoldTransitionConfig,
++        dumpManager: DumpManager,
++        @YrrpFoldAnimationLog logBuffer: LogBuffer,
++        @Background backgroundScope: CoroutineScope,
++        contentResolver: ContentResolver,
++    ) : this(
++        repository,
++        selector,
++        runtimeState,
++        config,
++        dumpManager,
++        logBuffer,
++        backgroundScope,
++        { contentResolver.areAnimationsEnabled() },
++    )
++
++    override fun start() {
++        dumpManager.registerNormalDumpable(TAG, this)
++        selector.listener =
++            object : FoldAnimationStyleSelector.Listener {
++                override fun onLatched(style: FoldAnimationStyle) = log("latched style=$style")
++
++                override fun onReleased(style: FoldAnimationStyle) = log("released style=$style")
++            }
++        backgroundScope.launch {
++            repository.setting.collect { raw ->
++                val style = FoldAnimationStyle.fromRaw(raw)
++                selector.onSettingChanged(style)
++                log("setting raw=$raw style=$style")
++            }
++        }
++    }
++
++    private fun log(message: String) {
++        logBuffer.log(TAG, LogLevel.DEBUG, { str1 = message }, { str1!! })
++    }
++
++    /** The first false gate in evaluation order, or `NONE`. */
++    private fun blockedBy(animations: Boolean): String =
++        when {
++            !config.isEnabled -> "CONFIG_DISABLED"
++            selector.currentStyle() == FoldAnimationStyle.STOCK -> "STYLE_STOCK"
++            !animations -> "ANIMATIONS_DISABLED"
++            else -> "NONE"
++        }
++
++    override fun dump(pw: PrintWriter, args: Array<out String>) {
++        val animations = animationsEnabled()
++        val blocked = blockedBy(animations)
++        pw.println("settingValue=${repository.setting.value}")
++        pw.println("selectedStyle=${selector.settingStyle()}")
++        pw.println("latchedStyle=${selector.latchedStyle() ?: "none"}")
++        pw.println("configEnabled=${config.isEnabled}")
++        pw.println("hingeAngleEnabled=${config.isHingeAngleEnabled}")
++        pw.println("animationsEnabled=$animations")
++        pw.println("blurAvailable=${runtimeState.blurAvailable}")
++        pw.println("eligible=${blocked == "NONE"}")
++        pw.println("blockedBy=$blocked")
++        pw.println("phase=${runtimeState.phase}")
++        pw.println("overlayAttached=${runtimeState.overlayAttached}")
++        pw.println("starts=${selector.starts}")
++        pw.println("completions=${selector.completions}")
++        pw.println("cancellations=${runtimeState.cancellations}")
++        pw.println("lastCancelReason=${runtimeState.lastCancelReason}")
++    }
++
++    companion object {
++        const val TAG = "YrrpFoldAnimation"
++    }
++}
+-- 
+2.56.0
+

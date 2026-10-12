@@ -1,0 +1,273 @@
+From db882a807c28ba3dbb3c66b09a2aeace57dd6c7f Mon Sep 17 00:00:00 2001
+From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
+Date: Mon, 12 Oct 2026 16:24:01 +0200
+Subject: [PATCH 08/12] SystemUI: bound the Duo cover reveal and harden its
+ exits
+
+The cover reveal now gives up after the 2000 ms ready timeout and
+removes its overlay. Unfolding during a reveal cancels it instead of
+resetting the unfold state, the overlay-ready callback runs once even
+when attaching fails, and the blur is retried on every update instead of
+latching off after one early refusal. The cover clear uses a single
+decelerate, and exits release the touch block.
+---
+ .../yrrp/DuoFoldOverlayAnimationTest.kt       | 71 ++++++++++++++++++-
+ .../unfold/yrrp/DuoFoldOverlayAnimation.kt    | 68 +++++++++++++-----
+ 2 files changed, 121 insertions(+), 18 deletions(-)
+
+diff --git a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+index b99404a46889..7ec9a3c829ce 100644
+--- a/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
++++ b/packages/SystemUI/multivalentTests/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimationTest.kt
+@@ -160,7 +160,7 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+     }
+ 
+     @Test
+-    fun blurRefused_marksBlurUnavailable_butKeepsRunning() {
++    fun blurRefused_marksBlurUnavailable_thenRetriesOnProgress() {
+         whenever(innerController.setBackgroundBlurRadius(any())).thenReturn(false)
+         reportFolded(true)
+         reportFolded(false)
+@@ -170,6 +170,75 @@ class DuoFoldOverlayAnimationTest : SysuiTestCase() {
+ 
+         assertThat(runtime.blurAvailable).isFalse()
+         verify(innerController).addOverlay(eq(ALPHA_TRANSPARENT), anyOrNull())
++
++        whenever(innerController.setBackgroundBlurRadius(any())).thenReturn(true)
++        progressProvider.onTransitionProgress(0.5f)
++        processAll()
++
++        verify(innerController).setBackgroundBlurRadius(DuoBlurCurve.radiusFor(0.5f))
++        assertThat(runtime.blurAvailable).isTrue()
++    }
++
++    @Test
++    fun attachFailure_reportsReadyExactlyOnce() {
++        var readyCount = 0
++        whenever(innerController.addOverlay(any(), anyOrNull())).thenAnswer {
++            (it.arguments[1] as Runnable).run()
++        }
++        whenever(innerController.setBackgroundBlurRadius(any())).thenThrow(RuntimeException())
++        reportFolded(true)
++        reportFolded(false)
++
++        underTest.onScreenTurningOn { readyCount++ }
++        processAll()
++
++        assertThat(readyCount).isEqualTo(1)
++        verify(innerController, atLeastOnce()).ensureOverlayRemoved()
++    }
++
++    @Test
++    fun coverReveal_timesOutWithoutScreenOn_removesOverlay() {
++        reportFolded(false)
++        reportFolded(true)
++        underTest.onScreenTurningOn {}
++        processAll()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.COVER_REVEAL)
++
++        scope.testScheduler.advanceTimeBy(DuoFoldOverlayAnimation.READY_TIMEOUT_MS + 1)
++        scope.testScheduler.runCurrent()
++        processAll()
++
++        verify(coverController, atLeastOnce()).ensureOverlayRemoved()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++        assertThat(runtime.lastCancelReason).isEqualTo("COVER_TIMEOUT")
++    }
++
++    @Test
++    fun unfoldDuringCoverReveal_cancelsCover_andUnfoldCompletesCleanly() {
++        reportFolded(false)
++        reportFolded(true)
++        underTest.onScreenTurningOn {}
++        processAll()
++        underTest.onCoverScreenOn()
++        animatorTestRule.advanceTimeBy(100)
++        processAll()
++
++        reportFolded(false)
++        assertThat(runtime.lastCancelReason).isEqualTo("UNFOLDED")
++        verify(coverController, atLeastOnce()).ensureOverlayRemoved()
++        selector.onGatedTransitionStarted(progressProvider)
++        underTest.onScreenTurningOn {}
++        processAll()
++        animatorTestRule.advanceTimeBy(DuoFoldOverlayAnimation.COVER_REVEAL_MS)
++        processAll()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.UNFOLDING)
++
++        progressProvider.onTransitionFinished()
++        processAll()
++
++        verify(innerController, atLeastOnce()).ensureOverlayRemoved()
++        assertThat(runtime.phase).isEqualTo(FoldAnimationPhase.IDLE)
++        assertThat(runtime.overlayAttached).isFalse()
+     }
+ 
+     @Test
+diff --git a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+index 41c87c291324..a25729c90c5a 100644
+--- a/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
++++ b/packages/SystemUI/src/com/android/systemui/unfold/yrrp/DuoFoldOverlayAnimation.kt
+@@ -42,11 +42,16 @@ import com.android.systemui.unfold.UnfoldTransitionProgressProvider
+ import com.android.systemui.unfold.dagger.UnfoldBg
+ import com.android.systemui.unfold.util.ScaleAwareTransitionProgressProvider.Companion.areAnimationsEnabled
+ import com.android.systemui.util.concurrency.ThreadFactory
++import java.util.concurrent.atomic.AtomicBoolean
+ import java.util.function.Consumer
+ import javax.inject.Inject
++import kotlin.math.roundToInt
+ import kotlinx.coroutines.CoroutineScope
++import kotlinx.coroutines.Job
++import kotlinx.coroutines.TimeoutCancellationException
+ import kotlinx.coroutines.flow.filter
+ import kotlinx.coroutines.flow.first
++import kotlinx.coroutines.withTimeout
+ 
+ /**
+  * The Duo fold animation's blur. Unfolding: the inner screen turns on fully blurred and clears
+@@ -78,6 +83,7 @@ constructor(
+     private var pendingUnfold = false
+     private var pendingCoverReveal = false
+     private var coverAnimator: ValueAnimator? = null
++    private var coverWaitJob: Job? = null
+ 
+     override fun init() {
+         inner =
+@@ -122,12 +128,24 @@ constructor(
+             }
+             coverReveal && isDuo() -> {
+                 attach(cover, FoldAnimationPhase.COVER_REVEAL, onOverlayReady)
+-                applicationScope.launch {
+-                    powerInteractor.screenPowerState
+-                        .filter { it == ScreenPowerState.SCREEN_ON }
+-                        .first()
+-                    onBg { onCoverScreenOn() }
+-                }
++                coverWaitJob?.cancel()
++                coverWaitJob =
++                    applicationScope.launch {
++                        try {
++                            withTimeout(READY_TIMEOUT_MS) {
++                                powerInteractor.screenPowerState
++                                    .filter { it == ScreenPowerState.SCREEN_ON }
++                                    .first()
++                            }
++                            onBg { onCoverScreenOn() }
++                        } catch (e: TimeoutCancellationException) {
++                            onBg {
++                                if (runtimeState.phase == FoldAnimationPhase.COVER_REVEAL) {
++                                    cancel("COVER_TIMEOUT")
++                                }
++                            }
++                        }
++                    }
+             }
+             else -> onOverlayReady.run()
+         }
+@@ -138,8 +156,13 @@ constructor(
+         phase: FoldAnimationPhase,
+         onOverlayReady: Runnable,
+     ) {
++        // The commit listener and the failure path must not both report ready.
++        val reported = AtomicBoolean(false)
++        val readyOnce = Runnable {
++            if (reported.compareAndSet(false, true)) onOverlayReady.run()
++        }
+         try {
+-            controller.addOverlay(ALPHA_TRANSPARENT, onOverlayReady)
++            controller.addOverlay(ALPHA_TRANSPARENT, readyOnce)
+             runtimeState.blurAvailable =
+                 controller.setBackgroundBlurRadius(DuoBlurCurve.MAX_BLUR_PX)
+             runtimeState.overlayAttached = true
+@@ -147,7 +170,7 @@ constructor(
+             log("overlay added phase=$phase blur=${runtimeState.blurAvailable}")
+         } catch (e: RuntimeException) {
+             controller.ensureOverlayRemoved()
+-            onOverlayReady.run()
++            readyOnce.run()
+             log("failed stage=attach exception=${e.javaClass.simpleName}")
+         }
+     }
+@@ -161,11 +184,11 @@ constructor(
+                 duration = COVER_REVEAL_MS
+                 interpolator = DecelerateInterpolator()
+                 addUpdateListener {
+-                    cover.setBackgroundBlurRadius(
+-                        DuoBlurCurve.radiusFor(
+-                            it.animatedFraction * DuoBlurCurve.BLUR_CLEAR_PROGRESS
++                    // animatedFraction is already eased by the decelerate interpolator.
++                    runtimeState.blurAvailable =
++                        cover.setBackgroundBlurRadius(
++                            (DuoBlurCurve.MAX_BLUR_PX * (1f - it.animatedFraction)).roundToInt()
+                         )
+-                    )
+                 }
+                 addListener(
+                     object : AnimatorListenerAdapter() {
+@@ -177,7 +200,13 @@ constructor(
+ 
+                         override fun onAnimationEnd(animation: Animator) {
+                             // A cancel already cleaned up or superseded this run.
+-                            if (!cancelled) onBg { detach(cover) }
++                            if (!cancelled) {
++                                onBg {
++                                    if (runtimeState.phase == FoldAnimationPhase.COVER_REVEAL) {
++                                        detach(cover)
++                                    }
++                                }
++                            }
+                         }
+                     }
+                 )
+@@ -187,6 +216,7 @@ constructor(
+ 
+     private fun detach(controller: FullscreenLightRevealAnimationController) {
+         controller.ensureOverlayRemoved()
++        controller.isTouchBlocked = false
+         runtimeState.overlayAttached = false
+         runtimeState.phase = FoldAnimationPhase.IDLE
+         log("overlay removed")
+@@ -194,8 +224,10 @@ constructor(
+ 
+     private fun cancel(reason: String) {
+         coverAnimator?.cancel()
++        coverWaitJob?.cancel()
+         if (runtimeState.overlayAttached) runtimeState.recordCancel(reason)
+         inner.ensureOverlayRemoved()
++        inner.isTouchBlocked = false
+         cover.ensureOverlayRemoved()
+         runtimeState.overlayAttached = false
+         runtimeState.phase = FoldAnimationPhase.IDLE
+@@ -220,10 +252,9 @@ constructor(
+             ) {
+                 return@onBg
+             }
+-            if (runtimeState.blurAvailable) {
+-                runtimeState.blurAvailable =
+-                    inner.setBackgroundBlurRadius(DuoBlurCurve.radiusFor(progress))
+-            }
++            // Retry every callback: the first apply can precede a valid surface.
++            runtimeState.blurAvailable =
++                inner.setBackgroundBlurRadius(DuoBlurCurve.radiusFor(progress))
+             inner.isTouchBlocked =
+                 runtimeState.phase == FoldAnimationPhase.FOLDING ||
+                     progress < DuoBlurCurve.TOUCH_UNBLOCK_PROGRESS
+@@ -246,6 +277,8 @@ constructor(
+                 if (folded == isFolded) return@Consumer
+                 if (folded && runtimeState.phase == FoldAnimationPhase.UNFOLDING) {
+                     cancel("FOLDED")
++                } else if (!folded && runtimeState.phase == FoldAnimationPhase.COVER_REVEAL) {
++                    cancel("UNFOLDED")
+                 } else if (folded) {
+                     inner.ensureOverlayRemoved()
+                     runtimeState.overlayAttached = false
+@@ -275,5 +308,6 @@ constructor(
+         private const val INNER_OVERLAY_TITLE = "yrrp-duo-unfold-overlay"
+         private const val COVER_OVERLAY_TITLE = "yrrp-duo-cover-overlay"
+         const val COVER_REVEAL_MS = 350L
++        const val READY_TIMEOUT_MS = 2000L
+     }
+ }
+-- 
+2.56.0
+

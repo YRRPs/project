@@ -1,0 +1,12 @@
+bea7d9c0b0d236355a45eb4a3d503ded504ec189dcc45b39132708806814181a  0001-Shell-add-a-Duo-stretch-mode-to-the-fullscreen-unfol.patch
+3808635d38e8535cda1eae99ab5ec29b9037b427912fee78ddef57030983d48d  0002-Shell-reset-home-surfaces-only-after-a-Duo-stretch.patch
+c56de45162ebbbda3e5f9355feef3dbe2c870d80f952bd600b07a9baade54f6a  0003-SystemUI-let-an-optional-style-gate-drop-whole-unfol.patch
+976b82cc79b7986b8b8177bed55e6b480c4770d897ed6b27b82e06cc78eca2cb  0004-SystemUI-add-the-YRRP-fold-animation-style-selector.patch
+6caab2d701524abf302cf6da5e89a0a65315b78d34d42387450a652de04b1626  0005-SystemUI-observe-the-fold-animation-setting-with-a-d.patch
+cd590fce29a5c92d451b6d8fdcad14ac16ebb7373b03134712a1eda77969bdf0  0006-SystemUI-play-AOSP-fold-reveals-and-Launcher-unfold-.patch
+050d3d18330e32299866fd7229630a2f510de4a1364973fd64763144c613a1d3  0007-SystemUI-add-the-Duo-fold-animation-blur-overlay.patch
+54d396b1a9b33d4e09d2ef979e567232a3795e7a5af01698f65816e86b5833f3  0008-SystemUI-bound-the-Duo-cover-reveal-and-harden-its-e.patch
+c83f283a9b360220586c52a79f96b29614d616cbb9e87f4b87efea3692b80efe  0009-SystemUI-mark-unfold-handled-in-every-fold-animation.patch
+8edc205618c34cb80fc7d75fabc323eea967dbe629a8532c4536a66cc5b6871e  0010-SystemUI-release-the-fold-animation-latch-on-sleep-a.patch
+06636dd0b4f97e4ca171af7d0ae1a5ceb6eb43d78f4270ab975396fff679fb7d  0011-SystemUI-harden-Duo-overlay-timeouts-and-pending-sta.patch
+12a9f43be64cb6a65f514e8e8e728cdf630d3158c59e1843182571bf317694bd  0012-SystemUI-keep-the-Duo-unfold-pending-across-sleep.patch
