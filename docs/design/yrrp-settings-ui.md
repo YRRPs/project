@@ -8,6 +8,7 @@ The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, t
 - YRRPs hub (`YrrpSettings`, root key `yrrp_settings_screen`):
   - **Audio** → **Pulse** (On/Off), opening `YrrpPulseSettings`.
   - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`, and **Boot animation** (Matrix/LineageOS), opening `YrrpBootAnimationSettings`, and **Fold animation** (Stock/Pixel/Duo), opening `YrrpFoldAnimationSettings`. The Fold animation row and page exist on foldables only.
+  - **Network** → **Ad blocking** (On/Off), opening `YrrpAdBlockSettings`.
   - Category headers are `searchable="false"`.
 - Pulse page (`yrrp_pulse_settings_screen`), laid out like **System > Gestures > Navigation mode**:
 
@@ -58,7 +59,27 @@ The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, t
 
   Available only when `config_unfoldTransitionEnabled` and `config_unfoldTransitionHingeAngle` are `true` and the device reports a `TYPE_HINGE_ANGLE` sensor (`YrrpFoldAnimationAvailability`); otherwise the controller returns `UNSUPPORTED_ON_DEVICE` and search does not index the row or page. The hub row summary names the stored style. See `fold-animation.md`.
 
-All five fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
+- Ad blocking page (`yrrp_ad_block_settings_screen`):
+
+  ```text
+  Ad blocking
+  ├ intro                              non-searchable
+  ├ Use ad blocking                    main switch; same path as the QS tile
+  ├ Update lists now                   "Updated <time> · <n> blocked hosts" or the failure
+  ├ Update automatically               switch, weekly on an unmetered network while idle
+  ├ [Lists]                            non-searchable category, rows built at runtime
+  │ ├ adaway.org          status · n   | switch; tap → Remove dialog
+  │ ├ …
+  │ └ Add list                         one-line dialog, https:// only
+  ├ [Allowed hosts]                    non-searchable category, rows built at runtime
+  │ ├ <host>                           tap → Remove dialog
+  │ └ Add allowed host
+  └ footer                             non-searchable, what the hosts file cannot block
+  ```
+
+  Rows below the switch stay enabled while blocking is off, so lists can be prepared first. Only the primary user can use the page. See `adblock.md`.
+
+All six fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
 
 ## Setting contract
 
@@ -109,10 +130,12 @@ Settings home
     └── YRRPs hub
         ├── Audio
         │   └── Pulse → Pulse page
-        └── Animations
-            ├── Screen-off animation → radio page
-            ├── Boot animation → radio page with a gear
-            └── Fold animation → radio page (foldables only)
+        ├── Animations
+        │   ├── Screen-off animation → radio page
+        │   ├── Boot animation → radio page with a gear
+        │   └── Fold animation → radio page (foldables only)
+        └── Network
+            └── Ad blocking → switch page with list categories
 ```
 
 Use one category per domain, one row per feature, and one focused feature page.
@@ -165,6 +188,7 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-12 — Fold animation hierarchy:** YRRPs → Animations → Fold animation, radio page with intro, Style category, and footer; foldables only. Approved by the user.
 - **2026-10-12 — Fold animation default:** Stock, preserving today's behavior.
 - **2026-10-12 — Fold animation device scope:** shown only on a hinge-driven foldable: both unfold configs on and a hinge-angle sensor present. Approved by the user.
+- **2026-10-12 — Network category and Ad blocking page:** **YRRPs → Network → Ad blocking**, approved by the user. Device-wide `persist.yrrp.adblock.enabled`, because `init` acts on it; another approved exception to the per-user Secure-key rule. Rows below the main switch stay enabled while it is off, unlike Pulse, so lists can be prepared first. Errors from the add dialogs show as a toast after OK.
 - **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
 
 ## Release
