@@ -71,12 +71,14 @@ property trigger ran in relative to the seed. Copying the same file twice is har
 
 | Repository | Files |
 |---|---|
-| `android_vendor_extra` | `init/yrrp_adblock.rc` (installed to `/product/etc/init`), `sepolicy/private/{file.te,file_contexts,init.te,netd.te,system_app.te,shell.te,property.te,property_contexts}` |
+| `android_vendor_extra` | `init/yrrp_adblock.rc` (installed to `/product/etc/init`), `sepolicy/private/{file.te,file_contexts,init.te,coredomain.te,system_app.te,shell.te,property.te,property_contexts}` |
 | `android_packages_apps_Settings` | `src/com/android/settings/yrrp/YrrpAdBlock*.java`, `res/xml/yrrp_ad_block_settings.xml`, the Network category in `res/xml/yrrp_settings.xml`, strings, tile icon, manifest services |
 
 SELinux: `init` gets `mounton` on `system_file:file` and writes both `yrrp_*` types. Every
-platform domain (`coredomain`) reads `yrrp_hosts_file`, as it read the stock `system_file`.
-Vendor domains cannot, because a neverallow bars them from core data files. `system_app`
+platform domain (`coredomain`) reads `yrrp_hosts_file`, as it read the stock `system_file`,
+except `mediaextractor`, `perfetto`, `traced`, and `traced_probes`. AOSP neverallows those
+four from opening data files, and none of them is a `net_domain`, so none resolves names.
+Vendor domains cannot read it, because a neverallow bars them from core data files. `system_app`
 sets the property and writes `yrrp_adblock_data_file`. `shell` may set the property for adb
 acceptance.
 
