@@ -53,12 +53,12 @@ Settings (system uid):
 same inode; a rename would leave the mount on the old file. Settings never writes the live file.
 Every boot reseeds it from stock, so a bad file cannot survive a reboot.
 
-Persist properties can load before the `post-fs-data` seed and be overwritten by it. The
-`on boot` action copies the blocklist again before `netd` starts.
+The `on boot` action copies the blocklist once more as a safety net, whatever order the
+property trigger ran in relative to the seed. Copying the same file twice is harmless.
 
 | Property | Type | Writer | Meaning |
 |---|---|---|---|
-| `persist.yrrp.adblock.enabled` | bool | Settings, shell | `1` or `true` blocks; anything else is off |
+| `persist.yrrp.adblock.enabled` | bool | Settings, shell | `1` blocks, `0` restores stock; init ignores other values, and Settings reads them as off |
 | `sys.yrrp.adblock.apply` | int | Settings, shell | A new value re-copies `hosts.blocked` while enabled |
 
 | File | Label | Writer |
@@ -74,9 +74,11 @@ Persist properties can load before the `post-fs-data` seed and be overwritten by
 | `android_vendor_extra` | `init/yrrp_adblock.rc` (installed to `/product/etc/init`), `sepolicy/private/{file.te,file_contexts,init.te,netd.te,system_app.te,shell.te,property.te,property_contexts}` |
 | `android_packages_apps_Settings` | `src/com/android/settings/yrrp/YrrpAdBlock*.java`, `res/xml/yrrp_ad_block_settings.xml`, the Network category in `res/xml/yrrp_settings.xml`, strings, tile icon, manifest services |
 
-SELinux: `init` gets `mounton` on `system_file:file` and writes both `yrrp_*` types. `netd`
-reads `yrrp_hosts_file`. `system_app` sets the property, writes `yrrp_adblock_data_file`, and
-only reads `yrrp_hosts_file`. `shell` may set the property for adb acceptance.
+SELinux: `init` gets `mounton` on `system_file:file` and writes both `yrrp_*` types. Every
+platform domain (`coredomain`) reads `yrrp_hosts_file`, as it read the stock `system_file`.
+Vendor domains cannot, because a neverallow bars them from core data files. `system_app`
+sets the property and writes `yrrp_adblock_data_file`. `shell` may set the property for adb
+acceptance.
 
 ## Settings units
 
@@ -84,10 +86,10 @@ only reads `yrrp_hosts_file`. `shell` may set the property for adb acceptance.
 |---|---|
 | `YrrpAdBlockHostnames` | Name rules: Guava `InternetDomainName` syntax (as Private DNS uses), ASCII only, dotted, no trailing dot, no reserved local names, no addresses |
 | `YrrpAdBlockHostsParser` | Keeps only `0.0.0.0`, `127.0.0.1`, and `::` entries; counts and drops redirect entries, invalid names, and lines over 1024 characters |
-| `YrrpAdBlockHostsBuilder` | Stock localhost lines, then sorted unique `0.0.0.0` lines minus the allowlist; refuses more than 2,000,000 entries before writing |
+| `YrrpAdBlockHostsBuilder` | Stock localhost lines, then sorted unique `0.0.0.0` lines |
 | `YrrpAdBlockStore` | Lists, allowlist, and status in `state.tsv` under device-encrypted Settings storage; per-list cache files; https-only lists, at most 20 lists and 1000 allowed hosts |
-| `YrrpAdBlockFetcher` | Conditional GET (`If-None-Match`, `If-Modified-Since`); https on the first URL and every redirect hop, followed by hand; 10 MiB cap; 15 s connect and 30 s read timeouts; platform TLS trust |
-| `YrrpAdBlockUpdater` | One lock for updates and page edits; keeps the last good `hosts.blocked` on failure |
+| `YrrpAdBlockFetcher` | Conditional GET (`If-None-Match`, `If-Modified-Since`); https on the first URL and every redirect hop, followed by hand; 10 MiB cap; 15 s connect and 30 s read timeouts and a 2-minute total deadline (`TIMEOUT`); platform TLS trust |
+| `YrrpAdBlockUpdater` | One update at a time; downloads run outside the state lock, so page edits never wait for the network; merges with a 1,000,000-entry cap checked as the set grows; never throws, and keeps the last good `hosts.blocked` on failure |
 | `YrrpAdBlockState` | The two properties |
 | `YrrpAdBlockEventLog` | Last 50 transitions in a file, so they survive process death |
 | `YrrpAdBlockDump`, `YrrpAdBlockStatusService` | The dump below |
@@ -96,8 +98,12 @@ only reads `yrrp_hosts_file`. `shell` may set the property for adb acceptance.
 ## Failure rules
 
 - A list that fails to download keeps its previous cache, and the build still uses it.
-- If no enabled list has a cache, or the build fails, `hosts.blocked` keeps its last good
-  content and `init` is not asked to copy.
+- A list that answers 200 with no block entries, while it had entries before, is `EMPTY` and
+  keeps its previous cache too. This catches error pages and empty bodies.
+- With every list off, the blocklist becomes the localhost lines and `init` applies it.
+- If enabled lists exist but none has a cache, or the update fails for any reason, out of
+  memory included, `hosts.blocked` keeps its last good content and `init` is not asked to copy.
+- An unreadable `state.tsv` fails the operation; Settings never saves the defaults over it.
 - `hosts.blocked` and `state.tsv` change only by temp file, fsync, and rename.
 - Redirect entries are never written; the per-list `droppedRedirects` count shows them.
 - Settings allows cleartext traffic, so the fetcher enforces https itself.
@@ -138,5 +144,7 @@ entries, or looked-up names.
 - Robolectric tests (`YrrpAdBlockSettingsTest`, `YrrpSettingsTest`): `SettingsRoboTests` runs
   no test in this tree today.
 - Real TLS, real servers, the lookup cost of the full lists, and Private DNS behavior.
+- That no platform process hits `avc: denied … yrrp_hosts_file`, and that no vendor process
+  reads the hosts file directly.
 
 The release handoff carries the device proof plan.
