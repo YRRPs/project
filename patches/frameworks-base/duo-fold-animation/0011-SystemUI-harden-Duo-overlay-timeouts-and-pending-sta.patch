@@ -1,7 +1,7 @@
 From 6c18d139b31ae794307271630b146c70367fe4fb Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:41:43 +0200
-Subject: [PATCH 11/12] SystemUI: harden Duo overlay timeouts and pending state
+Subject: [PATCH 11/17] SystemUI: harden Duo overlay timeouts and pending state
 
 Remove the inner overlay after 5 s if the transition never finishes, clear
 the pending unfold and cover reveal flags on cancel, and start the fold blur

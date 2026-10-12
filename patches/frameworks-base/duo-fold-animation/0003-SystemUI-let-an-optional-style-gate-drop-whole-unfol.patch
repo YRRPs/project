@@ -1,7 +1,7 @@
 From ffe3fcece6b77451e56b76c2d12a2741f91035d2 Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:06:49 +0200
-Subject: [PATCH 03/12] SystemUI: let an optional style gate drop whole unfold
+Subject: [PATCH 03/17] SystemUI: let an optional style gate drop whole unfold
  transitions
 
 ---

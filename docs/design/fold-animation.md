@@ -11,7 +11,7 @@ Not yet built, released or device-tested. The host tests (SystemUI, Shell, Setti
 
 ## What it looks like
 
-- **Unfold, Duo (inner screen, follows the hinge).** Every visible fullscreen task, home included, starts as a centered column `COVER_WIDTH_FRACTION = 1116 / 2268` of the task width (horizontal scale only) and stretches to full width as the hinge opens. A blur of `MAX_BLUR_PX = 120` clears with a decelerate curve by progress `BLUR_CLEAR_PROGRESS = 0.85`. Touches are blocked while progress is below `TOUCH_UNBLOCK_PROGRESS = 0.8`. Pausing or reversing the hinge holds or reverses both effects.
+- **Unfold, Duo (inner screen, follows the hinge).** Every visible fullscreen task, home included, starts as a centered column `COVER_WIDTH_FRACTION = 1116 / 2268` of the task width (horizontal scale only) and stretches to full width as the hinge opens. A blur of `MAX_BLUR_PX = 120` clears with a decelerate curve by progress `BLUR_CLEAR_PROGRESS = 0.85`. Touch handling matches Pixel: AOSP's `UnfoldLightRevealOverlayAnimation` cancels the current touch when the transition starts, and the overlay window itself never takes touches. Pausing or reversing the hinge holds or reverses both effects. A pause of 1 s or longer settles the transition to fully open, see Known risks.
 - **Fold, Duo.** The inner screen blurs as progress falls. There is no stretch. On the cover screen the blur starts at `MAX_BLUR_PX` and clears over `COVER_REVEAL_MS = 350` with one decelerate interpolator after screen-on.
 - **Pixel.** The AOSP inner reveal, app inset and Launcher3 icon motion. No cover reveal, see below.
 - **Stock.** No fold animation: no progress reaches any consumer.
@@ -66,11 +66,27 @@ The code is the source of record. These points differ from the design document:
 - The cover reveal uses a single decelerate over `COVER_REVEAL_MS` (radius `MAX_BLUR_PX * (1 - fraction)`), not the progress-curve mapping.
 - `isUnfoldHandled` is set in every style, so a style switch to Pixel cannot leave a stuck black overlay.
 - A fold attach starts at the current progress radius (unblurred), so there is no blur flash before the first progress callback.
+- `FoldAodAnimationController` skips the fold-to-AOD animation in Stock. Turning the unfold framework on creates it, and it decides from fold state and sleep reason rather than unfold progress, so the progress gate alone did not stop it.
+- The Duo overlay's initial blur is set on the relayout transaction that carries the overlay's first frame, so it is never presented unblurred.
+- Shell squeezes Duo tasks to progress 0 in the start transaction, so the first unfolded frame is already at the cover width.
+- The latch timeout releases only the latch it was armed for (`latchGeneration`), never a later one.
 - Sleep clears only the pending cover reveal. The pending unfold stays set while folded, so fold, sleep, unfold, wake still plays the unfold.
+
+## Device scope
+
+LineageOS scopes device features in two layers, and this feature uses both:
+
+1. **Build time.** The device opts in through overlays. `android_vendor_extra` installs `YrrpXueyingUnfold` only for `lineage_xueying`, which turns on `config_unfoldTransitionEnabled` and `config_unfoldTransitionHingeAngle`. No other product gets the overlay. A sensor cannot be checked at build time, because the sensor HAL reports it at run time.
+2. **Run time.** The SystemUI and Settings code ships on every device, as all framework code does, and stays idle unless the device is supported. `FoldAnimationSupport` (SystemUI) and `YrrpFoldAnimationAvailability` (Settings) apply the same three conditions:
+   - `config_unfoldTransitionEnabled` is `true`.
+   - `config_unfoldTransitionHingeAngle` is `true`.
+   - `SensorManager.getDefaultSensor(Sensor.TYPE_HINGE_ANGLE)` returns a sensor.
+
+On an unsupported device the Settings row and page are hidden and unsearchable. `YrrpFoldAnimationStartable` registers its dump only, observes neither the setting nor sleep, and the selector stays Stock. The dump names the first failed condition in `blockedBy`. AOSP's unfold chain is not built at all when `config_unfoldTransitionEnabled` is `false`, so on `salami` none of the Shell or overlay code runs.
 
 ## Setting
 
-**Settings → YRRPs → Animations → Fold animation**, shown only when `config_unfoldTransitionEnabled` is `true`. Radio rows **Stock**, **Pixel** and **Duo** under a **Style** category. See `yrrp-settings-ui.md`.
+**Settings → YRRPs → Animations → Fold animation**, shown only on a supported foldable, see Device scope. Radio rows **Stock**, **Pixel** and **Duo** under a **Style** category. See `yrrp-settings-ui.md`.
 
 | Key | Scope | Default | Read | Write |
 |---|---|---|---|---|
@@ -90,7 +106,7 @@ adb shell settings delete secure lineage_fold_animation    # restore, then Stock
 | `COVER_WIDTH_FRACTION` | `1116f / 2268f` |
 | `MAX_BLUR_PX` | 120 |
 | `BLUR_CLEAR_PROGRESS` | 0.85 |
-| `TOUCH_UNBLOCK_PROGRESS` | 0.8 |
+| `TOUCH_UNBLOCK_PROGRESS` | 0.8 (relayout hint only; the overlay is never touchable) |
 | `COVER_REVEAL_MS` | 350 |
 | `READY_TIMEOUT_MS` | 2000 |
 | `SAFETY_TIMEOUT_MS` (Duo inner overlay) | 5000 |
@@ -108,7 +124,8 @@ adb shell settings delete secure lineage_fold_animation    # restore, then Stock
 Dumpable `YrrpFoldAnimation`, one `name=value` per line:
 
 - Inputs: `settingValue`, `selectedStyle`, `latchedStyle`, `configEnabled`, `hingeAngleEnabled`, `animationsEnabled`, `blurAvailable`.
-- Decision: `eligible`, `blockedBy` (`CONFIG_DISABLED`, `STYLE_STOCK`, `ANIMATIONS_DISABLED`, `NONE`).
+- Device: `hingeSensorPresent`.
+- Decision: `eligible`, `blockedBy` (`CONFIG_DISABLED`, `HINGE_ANGLE_DISABLED`, `NO_HINGE_SENSOR`, `STYLE_STOCK`, `ANIMATIONS_DISABLED`, `NONE`).
 - Lifecycle: `phase` (`IDLE`, `UNFOLDING`, `FOLDING`, `COVER_REVEAL`), `overlayAttached`, `starts`, `completions`, `cancellations`, `lastCancelReason`.
 
 LogBuffer `YrrpFoldAnimationLog` (100 entries) records transitions only: style latched or released (forced, with reason), overlay added or removed, Shell reset, cancel reason, failure stage plus exception class. Nothing per frame, and no package names, task names or UIDs.
@@ -120,10 +137,10 @@ adb shell dumpsys activity service com.android.systemui/.SystemUIService \
 
 ## Status of the change
 
-- Frameworks: `YRRPs/android_frameworks_base` branch `feat/duo-fold-animation`, base `b048326c7224`, head `b893cff4b819` (12 commits).
-- Settings: `YRRPs/android_packages_apps_Settings` branch `feat/duo-fold-animation`, base `bf9f23729658`, head `f6be55cc3eaf`.
+- Frameworks: `YRRPs/android_frameworks_base` branch `feat/duo-fold-animation`, base `b048326c7224`, head `e73f7f2609fd` (17 commits).
+- Settings: `YRRPs/android_packages_apps_Settings` branch `feat/duo-fold-animation`, base `bf9f23729658`, head `24e19c95d813`.
 - vendor/extra: `YRRPs/android_vendor_extra` branch `feat/duo-fold-animation`, base `b0e16f041466`, head `fb524c6795e6`.
-- Framework patch series: `patches/frameworks-base/duo-fold-animation/` (12 patches), checksums in `SHA256SUMS.txt`.
+- Framework patch series: `patches/frameworks-base/duo-fold-animation/` (17 patches), checksums in `SHA256SUMS.txt`.
 - Tests, not executed locally: `atest SystemUiRoboTests:com.android.systemui.unfold.yrrp`, `atest SystemUiRoboTests:com.android.systemui.unfold.UnfoldLightRevealOverlayAnimationTest`, `atest SystemUiRoboTests:com.android.systemui.unfold.util.StyleGatedUnfoldTransitionProgressProviderTest`, plus the Shell and Settings test classes named in the PRs. The shared SystemUI Robolectric target may fail on unrelated baseline fixtures.
 - Device acceptance: pending the first release with all PRs.
 
@@ -134,6 +151,7 @@ adb shell dumpsys activity service com.android.systemui/.SystemUIService \
 - Sleep with the Duo overlay attached records two cancellations (overlay `ASLEEP`, selector `SLEEP`); `lastCancelReason` depends on order.
 - A handshake latch with no gated start is held 10 s and then counted as a `LATCH_TIMEOUT` cancellation.
 - Booting folded triggers a first cover reveal.
+- **Hinge pause.** AOSP's `config_unfoldTransitionHalfFoldedTimeout` (1000 ms, unchanged) finishes a transition when the hinge stops for 1 s. A longer pause settles to fully stretched and unblurred, and closing again then starts a fold. Pixel behaves the same. Raising the timeout would collide with the 5 s Duo safety timeout, so the device check pauses for under 1 s.
 - One `SurfaceControl.Transaction` per progress frame, and the Stock provider runs on a background handler; check cost in Perfetto.
 
 ## Local tests cannot prove
@@ -143,6 +161,6 @@ adb shell dumpsys activity service com.android.systemui/.SystemUIService \
 - Frame rate at 120 Hz.
 - That Stock matches the previous build, including Launcher3.
 - Interrupted transitions (sleep mid-unfold, reversal) leaving no blur, squeeze or blocked touch.
-- Hub row hidden on `salami`.
+- Hub row hidden on `salami`, and the dump there showing `blockedBy=CONFIG_DISABLED`.
 - `cmd overlay list android | grep yrrp.overlay.xueying.unfold` shows `[x]` on xueying.
 - `Settings.apk` contains `YrrpFoldAnimationSettings`; the signed `SystemUI.apk` dex contains `DuoFoldOverlayAnimation`, `FoldAnimationStyleSelector`, `StyleGatedUnfoldTransitionProgressProvider` and `DuoUnfoldGeometry`.

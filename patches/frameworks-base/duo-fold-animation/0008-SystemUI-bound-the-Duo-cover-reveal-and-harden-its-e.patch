@@ -1,7 +1,7 @@
 From db882a807c28ba3dbb3c66b09a2aeace57dd6c7f Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:24:01 +0200
-Subject: [PATCH 08/12] SystemUI: bound the Duo cover reveal and harden its
+Subject: [PATCH 08/17] SystemUI: bound the Duo cover reveal and harden its
  exits
 
 The cover reveal now gives up after the 2000 ms ready timeout and

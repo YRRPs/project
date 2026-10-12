@@ -1,7 +1,7 @@
 From 92b5ea9c1d93b855fda6c0b4b683fddfbdc2eef9 Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:08:38 +0200
-Subject: [PATCH 04/12] SystemUI: add the YRRP fold animation style selector
+Subject: [PATCH 04/17] SystemUI: add the YRRP fold animation style selector
 
 Latches Stock, Pixel or Duo when the first gated unfold provider starts
 and releases it when the last one finishes. It gates root unfold

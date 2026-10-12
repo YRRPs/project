@@ -1,7 +1,7 @@
 From 5c7c9e3d5ce7a96f5df1e038fdfdb6a5f91e145d Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:05:13 +0200
-Subject: [PATCH 02/12] Shell: reset home surfaces only after a Duo stretch
+Subject: [PATCH 02/17] Shell: reset home surfaces only after a Duo stretch
 
 Home tasks are now always tracked by the fullscreen unfold animator,
 so Pixel and Stock would have written crop, corner radius, matrix and

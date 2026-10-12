@@ -1,7 +1,7 @@
 From 22078eec3f1b77c6645a886c35b151a2e2f99210 Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:20:19 +0200
-Subject: [PATCH 07/12] SystemUI: add the Duo fold animation blur overlay
+Subject: [PATCH 07/17] SystemUI: add the Duo fold animation blur overlay
 
 On unfold the inner screen turns on blurred and clears with hinge
 progress while Shell stretches tasks; on fold the inner screen blurs as

@@ -1,7 +1,7 @@
 From b7734899bc398ed350e573a1ce51b6195fb533e5 Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:41:11 +0200
-Subject: [PATCH 10/12] SystemUI: release the fold animation latch on sleep and
+Subject: [PATCH 10/17] SystemUI: release the fold animation latch on sleep and
  timeout
 
 Release the latched style when the device sleeps or 10 s after a latch, and

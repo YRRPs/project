@@ -1,7 +1,7 @@
 From b893cff4b8199b5da774271321a7de13c95cdd7f Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:47:08 +0200
-Subject: [PATCH 12/12] SystemUI: keep the Duo unfold pending across sleep
+Subject: [PATCH 12/17] SystemUI: keep the Duo unfold pending across sleep
 
 Cancel only clears the pending cover reveal. Clearing the pending unfold made
 a fold, sleep, unfold, wake sequence skip the inner overlay and treat the

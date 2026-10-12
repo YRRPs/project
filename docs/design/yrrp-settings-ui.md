@@ -56,7 +56,7 @@ The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, t
   └ footer                             non-searchable, "Applies the next time you fold or unfold"
   ```
 
-  Available only when `config_unfoldTransitionEnabled` is `true`; otherwise the controller returns `UNSUPPORTED_ON_DEVICE` and search does not index the row or page. The hub row summary names the stored style. See `fold-animation.md`.
+  Available only when `config_unfoldTransitionEnabled` and `config_unfoldTransitionHingeAngle` are `true` and the device reports a `TYPE_HINGE_ANGLE` sensor (`YrrpFoldAnimationAvailability`); otherwise the controller returns `UNSUPPORTED_ON_DEVICE` and search does not index the row or page. The hub row summary names the stored style. See `fold-animation.md`.
 
 All five fragments are in `SettingsGateway.ENTRY_FRAGMENTS` and are `@SearchIndexable`. Code lives in `com.android.settings.yrrp`; resources use the `yrrp_` prefix.
 
@@ -164,6 +164,7 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-11 — No property observer:** property-backed rows refresh on resume and after their own writes; there is no live observer for properties.
 - **2026-10-12 — Fold animation hierarchy:** YRRPs → Animations → Fold animation, radio page with intro, Style category, and footer; foldables only. Approved by the user.
 - **2026-10-12 — Fold animation default:** Stock, preserving today's behavior.
+- **2026-10-12 — Fold animation device scope:** shown only on a hinge-driven foldable: both unfold configs on and a hinge-angle sensor present. Approved by the user.
 - **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
 
 ## Release

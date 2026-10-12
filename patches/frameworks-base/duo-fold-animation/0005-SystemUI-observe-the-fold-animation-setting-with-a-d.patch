@@ -1,7 +1,7 @@
 From 6dede5adf318385a79da0fc370674f82b7a54dc4 Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:11:11 +0200
-Subject: [PATCH 05/12] SystemUI: observe the fold animation setting with a
+Subject: [PATCH 05/17] SystemUI: observe the fold animation setting with a
  dump and log
 
 ---

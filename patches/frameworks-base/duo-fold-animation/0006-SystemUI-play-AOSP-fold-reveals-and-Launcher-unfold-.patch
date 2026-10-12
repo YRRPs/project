@@ -1,7 +1,7 @@
 From 163ae157ea2e2a53e19ca1dc92e6957ea8d0f265 Mon Sep 17 00:00:00 2001
 From: Jonas Faber <72028327+Jonohas@users.noreply.github.com>
 Date: Mon, 12 Oct 2026 16:15:51 +0200
-Subject: [PATCH 06/12] SystemUI: play AOSP fold reveals and Launcher unfold
+Subject: [PATCH 06/17] SystemUI: play AOSP fold reveals and Launcher unfold
  only in Pixel
 
 In Stock and Duo the black reveal overlays report ready at once and
