@@ -12,16 +12,19 @@ Wi-Fi hotspot
 ├ [Connected devices]            yrrp_hotspot_clients; non-searchable; hidden while the hotspot is off
 │ ├ <hostname | Unknown device>  "<IPv4> · <MAC>" or "<MAC>"; tap → details, Block
 │ └ No devices connected
-├ Maximum connected devices      yrrp_hotspot_max_clients; slider 1…cap, top = No limit
-│                                "Up to N devices · Set by you | Set by your carrier | Device maximum"
-└ Blocked devices                yrrp_hotspot_blocked_entry → YrrpHotspotBlockedSettings
-    ├ intro
-    └ [MAC addresses]            one row per blocked MAC; tap → Unblock
+└ [Client controls]              yrrp_hotspot_controls; non-searchable; hidden while neither row shows
+  ├ Maximum connected devices    yrrp_hotspot_max_clients; slider 1…cap, top = No limit
+  │                              "Up to N devices · Set by you | Set by your carrier | Device maximum"
+  └ Blocked devices              yrrp_hotspot_blocked_entry → YrrpHotspotBlockedSettings
+      ├ intro
+      └ [MAC addresses]          one row per blocked MAC; tap → Unblock
 ```
 
 **Blocked devices** sits at the same depth as the stock **Security** and **Speed** sub-pages. The hierarchy was approved on 2026-10-13. It applies the hotspot page's restrictions: admin users only, `DISALLOW_CONFIG_TETHERING`, and the tethering and Wi-Fi tethering policies. Search indexes it only where the hotspot page is usable.
 
 Row keys on both pages are indexes such as `yrrp_hotspot_client_0`, never MACs. `DashboardFragment` logs the key of every clicked preference to the events buffer and statsd.
+
+`YrrpHotspotRowKeys` owns those keys. A tap resolves the device by key alone, and the rows are rebuilt only when their content changes. A rebuild with unchanged content strands the visible rows: `PreferenceGroup` reuses a removed row's id by key, and `DashboardFragment`'s `SimplePreferenceComparisonCallback` then treats the new row as unchanged and keeps the view bound to the old, detached `Preference`. Settings#14 compared the tapped object with the one in the group, so every tap failed on salami.
 
 ## State
 
@@ -67,7 +70,7 @@ Known gaps:
 
 All in `com.android.settings.yrrp`:
 
-- Pure, plain-JUnit tested: `YrrpHotspotMac`, `YrrpHotspotBlockList`, `YrrpHotspotLimit`, `YrrpHotspotClients`, `YrrpHotspotDump`, `YrrpHotspotEventLog`.
+- Pure, plain-JUnit tested: `YrrpHotspotMac`, `YrrpHotspotBlockList`, `YrrpHotspotLimit`, `YrrpHotspotClients`, `YrrpHotspotDump`, `YrrpHotspotEventLog`, `YrrpHotspotRowKeys`.
 - Android-bound: `YrrpHotspotMonitor` (callbacks between `onStart` and `onStop`), `YrrpHotspotConfigWriter`, `YrrpHotspotControls` (the one entry point `WifiTetherSettings` calls), three controllers on the hotspot page, and `YrrpHotspotBlockedSettings` with its list controller.
 
 ## Observability
@@ -102,4 +105,5 @@ It holds counts, booleans, and enum names only. It never prints a MAC address, h
 - **2026-10-13 — Placement:** inline **Connected devices** category, limit slider row, and a **Blocked devices** sub-page on the stock hotspot page.
 - **2026-10-13 — Limit widget:** a slider from 1 to the cap whose top position is **No limit** and stores 0, so the device maximum follows the capability.
 - **2026-10-13 — Block flow:** tapping a device opens a details dialog with **Block**; no one-tap block.
+- **2026-10-13 — Client controls category:** **Maximum connected devices** and **Blocked devices** move into a titled, non-searchable **Client controls** category. Without a header they read as entries in the **Connected devices** list. Keys, search entries, and the sub-page depth are unchanged.
 - **2026-10-13 — Cause of the 2-client limit on salami:** the stored user value `MaxClient = 2`, restored from a backup; `MaximumSupportedClientNumber=32` rules out the carrier path. The slider's **No limit** position clears it.
