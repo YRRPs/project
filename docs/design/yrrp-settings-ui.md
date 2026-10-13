@@ -59,6 +59,8 @@ The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, t
 
   Available only when `config_unfoldTransitionEnabled` and `config_unfoldTransitionHingeAngle` are `true` and the device reports a `TYPE_HINGE_ANGLE` sensor (`YrrpFoldAnimationAvailability`); otherwise the controller returns `UNSUPPORTED_ON_DEVICE` and search does not index the row or page. The hub row summary names the stored style. See `fold-animation.md`.
 
+  Duo owns AOSP's **Display → Continue using apps on fold** (`fold_lock_behavior_setting`): selecting Duo stores the current value in `yrrp_fold_lock_before_duo` and writes Always, and leaving Duo restores it. While Duo is on, that Display row is disabled and reads "Always · Set by Duo fold animation". The row exists only where `config_fold_lock_behavior` is `true`, which is `xueying`. See `fold-animation.md`, Fold lock.
+
 - Ad blocking page (`yrrp_ad_block_settings_screen`):
 
   ```text
@@ -97,6 +99,7 @@ Private per-user `Settings.Secure` keys, shared with SystemUI:
 | `lineage_pulse_bar_gap_percent` | 30 | clamp 0–80 | clamp, then snap to 5n |
 | `lineage_screen_off_animation` | 0 | only 1 is CRT | 0 or 1, other values rejected |
 | `lineage_fold_animation` | 0 (Stock) | 1 Pixel, 2 Duo; other values Stock | 0–2, other values rejected |
+| `yrrp_fold_lock_before_duo` (Settings only; SystemUI never reads it) | absent | string, the fold-lock value from before Duo | written on selecting Duo only when absent; deleted on leaving Duo |
 
 Settings never rewrites a stored value on read. The height slider thumb sits on the nearest 4 dp step, while the row text shows the exact stored value, because the Material slider throws on off-step values. The Solid row summary and the picker show `#RRGGBB`; confirming the picker writes only the color, then re-reads it. The boost summary explains the effect before the value; the slider label and state description show the value alone. The opacity slider covers 26–255 in steps of 1 and shows a rounded percentage of 255.
 
@@ -188,6 +191,7 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-12 — Fold animation hierarchy:** YRRPs → Animations → Fold animation, radio page with intro, Style category, and footer; foldables only. Approved by the user.
 - **2026-10-12 — Fold animation default:** Stock, preserving today's behavior.
 - **2026-10-12 — Fold animation device scope:** shown only on a hinge-driven foldable: both unfold configs on and a hinge-angle sensor present. Approved by the user.
+- **2026-10-12 — Duo forces Always (#65):** selecting Duo stores **Continue using apps on fold** and forces Always; leaving Duo restores it. The Display row stays in place, disabled while Duo is on. No YRRPs hierarchy change. Decided by the user in issue #65.
 - **2026-10-12 — Network category and Ad blocking page:** **YRRPs → Network → Ad blocking**, approved by the user. Device-wide `persist.yrrp.adblock.enabled`, because `init` acts on it; another approved exception to the per-user Secure-key rule. Rows below the main switch stay enabled while it is off, unlike Pulse, so lists can be prepared first. Errors from the add dialogs show as a toast after OK.
 - **2026-10-07 — Accessibility scope:** TalkBack-specific acceptance is excluded by user preference.
 

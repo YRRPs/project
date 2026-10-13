@@ -20,7 +20,8 @@ Not yet built, released or device-tested. The host tests (SystemUI, Shell, Setti
 
 | Repository | Component | Purpose |
 |---|---|---|
-| `android_vendor_extra` | RRO `YrrpXueyingUnfold` | Sets `config_unfoldTransitionEnabled` and `config_unfoldTransitionHingeAngle` to `true` on `xueying` only (`TARGET_PRODUCT == lineage_xueying`, priority `360`, above the device overlay at `350`). Haptics stay off. |
+| `android_vendor_extra` | RRO `YrrpXueyingUnfold` | Sets `config_unfoldTransitionEnabled`, `config_unfoldTransitionHingeAngle` and `config_fold_lock_behavior` to `true` on `xueying` only (`TARGET_PRODUCT == lineage_xueying`, priority `360`, above the device overlay at `350`). Haptics stay off. |
+| | `persist.fold_lock_setting_enabled=true` | Product property for `lineage_xueying` only. Passes the fold-lock flag gate on `eng` and `userdebug` builds, see Fold lock. |
 | `android_frameworks_base` SystemUI | `FoldAnimationStyle`, `FoldAnimationStyleRepository` | Reads `lineage_fold_animation` for the current user and normalizes it. |
 | | `FoldAnimationStyleSelector` | Latches the style for one transition; every consumer reads the latched style. |
 | | `StyleGatedUnfoldTransitionProgressProvider` | Wraps the root progress provider. Stock swallows every event; Pixel and Duo forward. |
@@ -28,8 +29,11 @@ Not yet built, released or device-tested. The host tests (SystemUI, Shell, Setti
 | | `DuoFoldOverlayAnimation` | Duo blur overlay and the cover reveal, with its own cover screen-on handshake. |
 | | Launcher forward gate | Forwards remote progress to Launcher3 only in Pixel. |
 | | `YrrpFoldAnimationStartable`, `FoldAnimationRuntimeState`, `YrrpFoldAnimationDumper`, `YrrpFoldAnimationLog` | Sleep and timeout releases, dump state, log buffer. |
+| | `DuoFoldLockEnforcer`, `FoldLockSettingsRepository` | Keep **Continue using apps on fold** at Always while Duo is on, see Fold lock. |
+| | `YRRP_AOSP_FOLD_REVEAL` (`false`) | Keeps AOSP's `FoldLightRevealOverlayAnimation` off, so Pixel has no cover reveal although the fold-lock gate is open. |
 | `android_frameworks_base` WM Shell | `DuoUnfoldTaskAnimator`, `DuoUnfoldGeometry` | The Duo stretch, chosen instead of `FullscreenUnfoldTaskAnimator` when the latched style is Duo. |
 | `android_packages_apps_Settings` | `YrrpFoldAnimationSettings`, controllers, `YrrpSettingsStore` key | The page and the writes. |
+| | `YrrpFoldLockStore`, `FoldLockBehaviorPreferenceController` | Store and restore the fold-lock value around Duo; disable the Display row while Duo is on. |
 
 WM Shell runs in the SystemUI process, so Shell and SystemUI share one selector through Dagger.
 
@@ -57,7 +61,7 @@ WM Shell runs in the SystemUI process, so Shell and SystemUI share one selector 
 The code is the source of record. These points differ from the design document:
 
 - `shellAnimatingTasks` is absent from the dump.
-- The cover reveal uses Duo's own screen-on handshake with `READY_TIMEOUT_MS = 2000`. `config_fold_lock_behavior` is `false` on xueying, which disables the AOSP fold reveal, so Pixel has no cover reveal here.
+- The cover reveal uses Duo's own screen-on handshake with `READY_TIMEOUT_MS = 2000`. Pixel has no cover reveal here: `YRRP_AOSP_FOLD_REVEAL` keeps AOSP's fold reveal off, now that `config_fold_lock_behavior` is `true` on xueying (#65).
 - Stock also stops Shell from claiming the unfold transition, so `UnfoldTransitionHandler` never holds an unanswered claim for 5 s.
 - Shell resets the home leash only after a Duo stretch, so Pixel and Stock keep today's reset behavior.
 - The latch is also taken at the screen-on handshake, and is released on finish, on sleep, or by the 10 s timeout. A Stock unfold therefore also latches Stock at the handshake.
@@ -95,8 +99,37 @@ On an unsupported device the Settings row and page are hidden and unsearchable. 
 Settings and SystemUI use identical defaults and normalization. Settings never rewrites a stored value on read. No migration: absent means Stock.
 
 ```bash
-adb shell settings put secure lineage_fold_animation 2     # Duo
+adb shell settings put secure lineage_fold_animation 2     # Duo; skips the fold-lock backup, see Fold lock
 adb shell settings delete secure lineage_fold_animation    # restore, then Stock
+```
+
+## Fold lock
+
+Folding an unlocked phone used to show the lock screen in every style (#65). With the fold-lock gate closed, `FoldSettingProvider` forces **Swipe up to continue**, and `PowerManagerService` then shows a dismissible keyguard on fold. Two changes open the gate on `xueying`: `config_fold_lock_behavior=true` in `YrrpXueyingUnfold`, and `persist.fold_lock_setting_enabled=true` for `eng` and `userdebug` builds, because the build-time value of the read-only flag `fold_lock_setting_enabled` is unverified. **Settings → Display → Continue using apps on fold** then appears, and Android honors it in every style.
+
+Duo forces **Always**:
+
+| Event | Owner | Effect |
+|---|---|---|
+| The user selects Duo | Settings | Stores the current `fold_lock_behavior_setting` in `yrrp_fold_lock_before_duo` unless a stored value exists (`selective_stay_awake_key` when unset), writes `stay_awake_on_fold_key`, then `lineage_fold_animation=2`. A failed backup changes nothing. |
+| Duo is on | Settings | **Continue using apps on fold** is disabled and reads "Always · Set by Duo fold animation". |
+| Another writer changes the value while Duo is on | SystemUI | Rewrites `stay_awake_on_fold_key` for the selected user and logs it. |
+| The user leaves Duo | Settings | Writes the new style first, so SystemUI stops forcing, then restores the stored value, or `selective_stay_awake_key` when none exists, and deletes the key. |
+
+Settings restores the fold lock only when leaving Duo. Selecting Stock or Pixel when Duo was not on leaves the fold-lock setting alone, even if a stored value is left over. If the style write fails after entering Duo, Settings restores the value at once. Selecting Duo while Duo is already on changes nothing, so SystemUI's Always is never stored as the user's value.
+
+SystemUI reads the fold-lock value before the style, and re-reads the style just before it writes. Leaving Duo, Settings writes the style first, so SystemUI never forces Always over a value Settings has just restored.
+
+| Key | Scope | Owner | Values |
+|---|---|---|---|
+| `fold_lock_behavior_setting` | per-user `Settings.System` (AOSP) | Android, Settings; SystemUI while Duo is on | `stay_awake_on_fold_key` (Always), `selective_stay_awake_key` (Swipe up to continue, default), `sleep_on_fold_key` (Never) |
+| `yrrp_fold_lock_before_duo` | private per-user `Settings.Secure` | Settings | The value from before Duo; absent while Duo is off |
+
+Setting Duo with `adb` skips Settings, so no value is stored: SystemUI forces Always, and leaving Duo in Settings writes Swipe up to continue.
+
+```bash
+adb shell settings get system fold_lock_behavior_setting
+adb shell settings get secure yrrp_fold_lock_before_duo
 ```
 
 ## Constants
@@ -127,8 +160,9 @@ Dumpable `YrrpFoldAnimation`, one `name=value` per line:
 - Device: `hingeSensorPresent`.
 - Decision: `eligible`, `blockedBy` (`CONFIG_DISABLED`, `HINGE_ANGLE_DISABLED`, `NO_HINGE_SENSOR`, `STYLE_STOCK`, `ANIMATIONS_DISABLED`, `NONE`).
 - Lifecycle: `phase` (`IDLE`, `UNFOLDING`, `FOLDING`, `COVER_REVEAL`), `overlayAttached`, `starts`, `completions`, `cancellations`, `lastCancelReason`.
+- Fold lock: `foldLockValue` (the selected user's value, `null` when unset or on an unsupported device), `foldLockForced` (Duo is on and SystemUI rewrote the value at least once since boot).
 
-LogBuffer `YrrpFoldAnimationLog` (100 entries) records transitions only: style latched or released (forced, with reason), overlay added or removed, Shell reset, cancel reason, failure stage plus exception class. Nothing per frame, and no package names, task names or UIDs.
+LogBuffer `YrrpFoldAnimationLog` (100 entries) records transitions only: style latched or released (forced, with reason), overlay added or removed, Shell reset, cancel reason, failure stage plus exception class, and each fold-lock rewrite (`foldLock forced from=<value> user=<id>` or `foldLock force failed ...`). Nothing per frame, and no package names, task names or UIDs.
 
 ```bash
 adb shell dumpsys activity service com.android.systemui/.SystemUIService \
