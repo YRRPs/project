@@ -20,7 +20,7 @@ Not yet built, released or device-tested. The host tests (SystemUI, Shell, Setti
 
 ### Cover blur
 
-- The cover listens to the hinge only while the device is folded, the screen is on and the style is Duo. The unfold library does not report the hinge in that state.
+- The cover listens to the hinge only while the device is folded, awake and the style is Duo. The unfold library does not report the hinge in that state.
 - An open arms only after a closed reading. A slow close can report closed at 4-24 degrees, so the end of a close never starts an open.
 - When the hinge first reads 1° or more, SystemUI captures the cover and blurs it in from the right edge. The whole-degree reading is the first reading above closed on `xueying`.
 - The blurred share of the width is `1 - (1 - p)^2`, with `p = angle / 165°`. The blur strength is `MAX_BLUR_PX * share`, so it fades in with the share up to 220 px. No dim layer is added.
@@ -188,7 +188,7 @@ adb shell settings get secure yrrp_fold_lock_before_duo
 
 - Animator scale 0: Duo runs no visuals and reports ready at once. system_server does not keep both panels lit.
 - Cross-window blur unavailable (Battery Saver, thermal): no blur runs and the dump shows `blurAvailable=false`.
-- A failed cover frame ends the cover part and logs `cover frame failed`. A failed cover overlay attach logs `failed stage=attach`.
+- A failed cover frame ends the cover part and logs `cover frame failed` and `cover overlay removed reason=FRAME_FAILED`. A failed cover overlay attach logs `failed stage=attach`.
 - An exception while attaching the overlay removes it, reports ready, resets Shell and logs the stage and exception class.
 - On finish, sleep or timeout the overlay is removed and Shell surfaces are reset.
 
@@ -205,20 +205,34 @@ Dumpable `YrrpFoldAnimation`, one `name=value` per line:
 
 LogBuffer `YrrpFoldAnimationLog` (100 entries) records transitions only: style latched or released (forced, with reason), overlay added or removed, Shell reset, cancel reason, failure stage plus exception class, and each fold-lock rewrite (`foldLock forced from=<value> user=<id>` or `foldLock force failed ...`). Nothing per frame, and no package names, task names or UIDs.
 
-SystemUI log lines for the cover:
+SystemUI log lines for the cover, in `YrrpFoldAnimationLog`:
 
 - `cover hinge first angle=<degrees> state=<state>`: the first reading after listening starts. Arming decides on it.
 - `cover hinge unavailable`: the hinge source did not start.
-- `cover frame attach display=<id> attempts=<n> ok=<bool>`, then `cover frame display=<id> shown=true`: the frozen picture is attached.
-- `cover frame failed display=<id>`: the frame did not attach, and the cover part ends.
+- `cover opening skipped display0 not cover`: the default display was no longer the cover when the open started. Nothing was captured.
+- `overlay added phase=COVER_OPENING`: the cover overlay is attached.
+- `failed stage=attach exception=<class>`: the cover overlay did not attach.
+- `cover frame capture failed exception=<class>` or `cover frame capture failed exception=none`: the capture threw, or returned nothing.
+- `cover frame skipped rotated w=<w> h=<h> rotation=<rotation>`: the cover was rotated at capture, or the capture is not the cover's natural size, so the frame is skipped.
+- `cover frame attach display=<id> attempts=<n> ok=<bool>`: the result of attaching the frozen picture.
+- `cover frame display=<id> shown=true`: the frozen picture is shown.
+- `cover frame failed display=<id>`: the frame did not attach.
+- `cover display rejected id=<id> type=<type> w=<width>`: a new display is not the cover's own display.
+- `cover opening cancelled reason=<reason>`: an external cancel, such as `FOLDED`, `STYLE`, `NOT_DUO`, `COVER_REVEAL` or `ASLEEP`.
+- `cover overlay removed reason=<reason>`: the cover part ended. The reason is `HINGE_CLOSED`, `DISPLAY_REMOVED`, `UNFOLD_FINISHED`, `FRAME_FAILED` or the cancel reason.
+
+Other SystemUI lines in the same buffer: `overlay added phase=<phase> blur=<bool>`, `failed stage=attach exception=<class>`, `overlay removed`, `cancelled reason=<reason>`, `unsupported device blockedBy=<value>`, `latched style=<style>`, `released style=<style>`, `released style=<style> forced reason=<reason>` and `setting raw=<raw> style=<style>`. The fold-lock lines are `foldLock forced from=<value> user=<id>` and `foldLock force failed from=<value> user=<id>`.
 
 system_server logs these lines under the tag `YrrpDualPanel` in `LogicalDisplayMapper`, and `dumpsys display` prints `yrrpDualPanel=<state> display=<id> lastEnd=<reason>`:
 
-- Gate: `YrrpDualPanel: gate duo=<bool> interactive=<bool> started=<bool> session=<state>`
+- Gate: `YrrpDualPanel: gate duo=<true|false|unread> interactive=<bool> started=<bool> reason=<snap-to-opened|not-interactive|duo-off|session-active|no-cover|armed> session=<IDLE|LIT|POWERING_OFF>`
 - Start: `YrrpDualPanel: start from=<state> to=<state> display=<id>`
+- Not started (warning): `YrrpDualPanel: not started display=<id|none> state=<state>`
+- Retarget: `YrrpDualPanel: retarget display=<id> state=<state>`
+- Pending open dropped: `YrrpDualPanel: pending open dropped on sleep display=<id|none>`
 - End reason: `YrrpDualPanel: end reason=<OPENED|TIMEOUT|CANCEL|CLOSED> display=<id>`
 - Power-off done: `YrrpDualPanel: power-off done display=<id>`
-- Power-off overdue: `YrrpDualPanel: power-off overdue display=<id>`
+- Power-off overdue (warning): `YrrpDualPanel: power-off overdue display=<id>`
 
 To read all three sources, run:
 
@@ -230,10 +244,8 @@ adb -s bc43bee5 logcat -d | grep YrrpDualPanel
 
 ## Status of the change
 
-- Frameworks: `YRRPs/android_frameworks_base` branch `feat/duo-fold-animation`, base `b048326c7224`, head `e73f7f2609fd` (17 commits).
-- Settings: `YRRPs/android_packages_apps_Settings` branch `feat/duo-fold-animation`, base `bf9f23729658`, head `24e19c95d813`.
-- vendor/extra: `YRRPs/android_vendor_extra` branch `feat/duo-fold-animation`, base `b0e16f041466`, head `fb524c6795e6`.
-- Framework patch series: `patches/frameworks-base/duo-fold-animation/` (17 patches), checksums in `SHA256SUMS.txt`.
+- Directional blur and dual-panel open: branch `feat/duo-fold-directional-blur` in `android_frameworks_base` and in `project`. The pull requests are pending.
+- History: the earlier Duo stretch and blur lived on `feat/duo-fold-animation` in `android_frameworks_base`, `android_packages_apps_Settings` and `android_vendor_extra`. The head SHAs and patch count recorded for it no longer match the code, so they are removed.
 - Tests, not executed locally: `atest SystemUiRoboTests:com.android.systemui.unfold.yrrp`, `atest SystemUiRoboTests:com.android.systemui.unfold.UnfoldLightRevealOverlayAnimationTest`, `atest SystemUiRoboTests:com.android.systemui.unfold.util.StyleGatedUnfoldTransitionProgressProviderTest`, plus the Shell and Settings test classes named in the PRs. The shared SystemUI Robolectric target may fail on unrelated baseline fixtures.
 - Device acceptance: pending the first release with all PRs.
 
@@ -242,6 +254,10 @@ adb -s bc43bee5 logcat -d | grep YrrpDualPanel
 - **Launcher3 preemptive progress (Stock).** Launcher3 may animate on a display change before SystemUI's progress arrives. Device claim: Stock looks identical to build `20261011-112111`.
 - **Blur cost at 120 Hz.** Compare Pixel and Duo in Perfetto after release; tune `MAX_BLUR_PX` if needed.
 - **Cover frame gap.** The cover's own display can show a black frame or a mirror for an instant before the frozen picture attaches.
+- **Snap to OPENED.** A direct change from closed to OPENED uses the stock swap, so the cover is not kept lit. The gate logs `reason=snap-to-opened`.
+- **Rotated cover.** A rotated cover skips the frozen frame. The cover's own display then shows a mirror or black until the power-off. The cover overlay's blur rows follow the overlay's rotation.
+- **Battery Saver.** The frozen frame shows sharp, with no blur, because system_server cannot see blur availability. SystemUI checks it and skips the rows.
+- **Style or scale change.** Changing the style or the animator scale cancels a running open with `NOT_DUO`.
 - **Slow open.** The 1500 ms timeout turns the cover off during a slow open, so the cover goes dark before the inner screen finishes clearing.
 - Sleep with the Duo overlay attached records two cancellations (overlay `ASLEEP`, selector `SLEEP`); `lastCancelReason` depends on order.
 - A handshake latch with no gated start is held 10 s and then counted as a `LATCH_TIMEOUT` cancellation.
