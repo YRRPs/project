@@ -12,7 +12,7 @@ Wi-Fi hotspot
 ├ [Connected devices]            yrrp_hotspot_clients; non-searchable; hidden while the hotspot is off
 │ ├ <hostname | Unknown device>  "<IPv4> · <MAC>" or "<MAC>"; tap → details, Block
 │ └ No devices connected
-└ [Client controls]              yrrp_hotspot_controls; non-searchable; always shown
+└ [Client controls]              yrrp_hotspot_controls; non-searchable; hidden while neither row shows
   ├ Maximum connected devices    yrrp_hotspot_max_clients; slider 1…cap, top = No limit
   │                              "Up to N devices · Set by you | Set by your carrier | Device maximum"
   └ Blocked devices              yrrp_hotspot_blocked_entry → YrrpHotspotBlockedSettings
