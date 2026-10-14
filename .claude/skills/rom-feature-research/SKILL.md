@@ -43,7 +43,7 @@ controller procedure in the Settings skill.
 
 - Before the first device build, add a Dumpable and a LogBuffer for the feature's gates and lifecycle. Use rom-feature-observability for this.
 
-- Commit in the org fork of the touched repo, with one commit per logical step. Export the series to `patches/<repo>/<feature>/` with `SHA256SUMS.txt`. See yrrp-manifest-and-forks.
+- Commit each logical step in the touched YRRPs target repository, push the feature branch, and open a reviewed pull request against its integration branch. Keep implementation history in Git; do not export patch payloads into `project`. See yrrp-manifest-and-forks.
 - The shared Ravenwood and Robolectric SystemUI test targets fail on unrelated existing fixtures. Do not report that as your breakage. Run locally available focused checks in the feature worktree, then put these merged-source checks in the `FEATURE_READY` proof plan for `yrrp-release-manager`:
   1. `m SystemUI-core`
   2. `m SystemUI`

@@ -9,7 +9,6 @@ Plan: `docs/superpowers/plans/2026-10-06-crt-screen-off-animation.md`.
 
 - `YRRPs/android_frameworks_base` branch `lineage-23.2`, commit `224468bd4cd3d437b5376b7cece3506bc5d96038` ("SystemUI: add CRT screen-off animation"), fast-forwarded from `bb07b63193ca6b435c52ceebecfbf970c4ee8fe4` after device acceptance. `git ls-remote` confirms the remote SHA.
 - The builder has no GitHub push credentials. The commit travelled as a thin `git bundle` into a shallow local clone, which pushed it.
-- Patch backup: `patches/frameworks-base/crt-screen-off-animation/0001-SystemUI-add-CRT-screen-off-animation.patch`, SHA-256 `18f24f3f923ffe3464d25e2264926ba0c6854025811e0b25a1698241dda5fac6`. Its `git patch-id --stable` matches the commit (`fdb6eb8249d74bb8b8064dbd175aa1bceac49d52`).
 
 ## Deviations from the plan
 
