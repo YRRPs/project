@@ -19,15 +19,17 @@ The inventory covers shipped feature families only:
 - Fold animations
 - Ad blocking
 - Hotspot client management
+- Full theming
 - Indoor auto-brightness tuning
 - OnePlus Camera integration
+- OnePlus Gallery
 - GApps integration and build flavor
 
 The inventory excludes live preference values, planned work, and unmerged branches.
 
 ## Settings architecture
 
-Add a read-only page at **Settings → YRRP → Misc → Features** in `android_packages_apps_Settings`.
+Add a read-only page at **Settings → YRRPs → Misc → Features** in `android_packages_apps_Settings`.
 
 A Settings-owned registry defines each feature through a stable ID, localized title, localized description, category, and availability resolver. The registry preserves display order. Resolvers return one of two user-facing states:
 
@@ -44,12 +46,13 @@ The page and feature-family names participate in Settings search. Search opens t
 
 Resolvers inspect installed-build facts and reuse existing eligibility logic where it exists:
 
-- Pulse visualizer, screen-off effects, and Matrix boot/shutdown animation are available on every supported build.
+- Pulse visualizer, screen-off effects, Matrix boot/shutdown animation, and full theming are available on every supported build.
 - Fold animations reuse `YrrpFoldAnimationAvailability`. Availability requires both unfold configuration booleans and a `TYPE_HINGE_ANGLE` sensor. A non-foldable reports that its hardware does not support fold animations.
 - Ad blocking requires the primary user. A secondary user reports that only the device owner can use it.
 - Connected-client details remain available on every supported device. Blocking and client-limit controls require the platform force-disconnect capability; without it, the feature remains available and its summary explains that only connected-client details are supported.
 - Indoor auto-brightness tuning detects the Salami product configuration. Other devices report that the tuning targets OnePlus 11.
 - OnePlus Camera integration checks the installed integration package. Missing integration reports that the device build does not include it.
+- OnePlus Gallery requires the Salami product configuration and installed Gallery package. Other devices report that Gallery targets OnePlus 11; a missing package reports that the Salami build does not include it.
 - GApps integration reads `ro.yrrp.build.type`. A vanilla build reports that Google apps are not included; a GApps build reports availability.
 
 Resolvers stay independent from Android preference widgets and expose injectable dependencies for tests. A failed property, package, sensor, resource, or user probe returns **Unavailable — status could not be determined** rather than crashing Settings. A failed hotspot capability probe keeps connected-client details available and reports block and limit support as undetermined.
@@ -86,15 +89,16 @@ Use strict test-driven development: write a failing test, make the smallest prod
 Settings robotests cover:
 
 - Registry contents, grouping, and stable order
-- Universal feature availability
+- Universal feature availability, including full theming
 - Salami and non-Salami product behavior
 - Xueying fold eligibility and missing hinge-sensor behavior
 - GApps and vanilla build types
 - Primary and secondary users
 - Present and missing OnePlus Camera integration
+- Salami, non-Salami, present-package, and missing-package OnePlus Gallery behavior
 - Hotspot connected-client details with supported and unsupported block/limit controls
 - Probe-failure fallback and reason codes
-- Navigation from **YRRP → Misc → Features**
+- Navigation from **YRRPs → Misc → Features**
 - Search indexing and page opening
 - Localized available and unavailable summaries
 
@@ -108,11 +112,11 @@ Run targeted tests during development, then run `m Settings`. Run compile-only `
 ## Acceptance criteria
 
 1. `README.md` clearly separates universal, foldable-only, Salami-specific, and build-flavor-dependent features.
-2. **Settings → YRRP → Misc → Features** opens a searchable, read-only inventory.
+2. **Settings → YRRPs → Misc → Features** opens a searchable, read-only inventory.
 3. Every shipped feature family appears exactly once with an availability result.
 4. Salami reports fold animations unavailable with a non-foldable reason.
 5. Xueying reports fold animations available only when unfold configuration and hinge sensor are present.
-6. Ad blocking, hotspot block/limit controls, auto-brightness tuning, OnePlus Camera, and GApps report environment-specific reasons without hiding available hotspot client details.
+6. Ad blocking, hotspot block/limit controls, auto-brightness tuning, OnePlus Camera, OnePlus Gallery, and GApps report environment-specific reasons without hiding available hotspot client details.
 7. Probe failures never crash Settings and produce a privacy-safe diagnostic log.
 8. Settings restart recomputes and restores the same statuses for unchanged environment facts.
 9. Project repository contains no tracked feature patch bundles, checksum manifests, or active patch-workflow references.
@@ -126,7 +130,9 @@ Post-release device checks cover:
 
 - Salami and Xueying feature lists
 - Fold hardware/config eligibility
+- Full theming availability
 - OnePlus Camera package detection
+- OnePlus Gallery product and package detection
 - Auto-brightness product scope
 - GApps and vanilla build flavor
 - Primary and secondary user behavior

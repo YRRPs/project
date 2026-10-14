@@ -16,6 +16,7 @@ YRRP is a personal LineageOS 23.2 derivative for OnePlus 11 (`salami`), with a G
 - **Pulse visualizer:** Audio spectrum in the navigation area, with color modes and appearance controls.
 - **Screen-off effects:** Stock, CRT, Tear, Corrupt, and Signal loss animations with custom-effect speed controls.
 - **Matrix boot and shutdown animation:** Matrix renderer with optional full Finish intro and LineageOS fallback.
+- **Full theming:** Named four-seed color themes with linked or separate light and dark palettes and rendered previews.
 - **Ad blocking:** Hosts-file blocking, quick settings control, scheduled list updates, custom lists, and allowed hosts.
 - **Hotspot client management:** Connected-client details on all supported devices; blocking and client-limit controls when hotspot firmware exposes force-disconnect support.
 
@@ -27,6 +28,7 @@ YRRP is a personal LineageOS 23.2 derivative for OnePlus 11 (`salami`), with a G
 
 - **Indoor auto-brightness tuning:** OnePlus 11 brightness curve tuned for indoor use.
 - **OnePlus Camera integration:** Stock OPlus Camera framework and application integration.
+- **OnePlus Gallery:** Stock Gallery replaces the ROM gallery and supports camera thumbnails, editing, sharing, and Google Lens.
 
 ### Build-flavor dependent
 
