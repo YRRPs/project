@@ -47,7 +47,7 @@ Resolvers inspect installed-build facts and reuse existing eligibility logic whe
 - Pulse visualizer, screen-off effects, and Matrix boot/shutdown animation are available on every supported build.
 - Fold animations reuse `YrrpFoldAnimationAvailability`. Availability requires both unfold configuration booleans and a `TYPE_HINGE_ANGLE` sensor. A non-foldable reports that its hardware does not support fold animations.
 - Ad blocking requires the primary user. A secondary user reports that only the device owner can use it.
-- Hotspot client management requires the platform client-control capability. Missing support reports that hotspot firmware does not expose client controls.
+- Connected-client details remain available on every supported device. Blocking and client-limit controls require the platform force-disconnect capability; without it, the feature remains available and its summary explains that only connected-client details are supported.
 - Indoor auto-brightness tuning detects the Salami product configuration. Other devices report that the tuning targets OnePlus 11.
 - OnePlus Camera integration checks the installed integration package. Missing integration reports that the device build does not include it.
 - GApps integration reads `ro.yrrp.build.type`. A vanilla build reports that Google apps are not included; a GApps build reports availability.
@@ -92,7 +92,7 @@ Settings robotests cover:
 - GApps and vanilla build types
 - Primary and secondary users
 - Present and missing OnePlus Camera integration
-- Supported and unsupported hotspot client controls
+- Hotspot connected-client details with supported and unsupported block/limit controls
 - Probe-failure fallback and reason codes
 - Navigation from **YRRP → Misc → Features**
 - Search indexing and page opening
@@ -112,7 +112,7 @@ Run targeted tests during development, then run `m Settings`. Run compile-only `
 3. Every shipped feature family appears exactly once with an availability result.
 4. Salami reports fold animations unavailable with a non-foldable reason.
 5. Xueying reports fold animations available only when unfold configuration and hinge sensor are present.
-6. Ad blocking, hotspot controls, auto-brightness tuning, OnePlus Camera, and GApps report environment-specific reasons.
+6. Ad blocking, hotspot block/limit controls, auto-brightness tuning, OnePlus Camera, and GApps report environment-specific reasons without hiding available hotspot client details.
 7. Probe failures never crash Settings and produce a privacy-safe diagnostic log.
 8. Settings restart recomputes and restores the same statuses for unchanged environment facts.
 9. Project repository contains no tracked feature patch bundles, checksum manifests, or active patch-workflow references.

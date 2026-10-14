@@ -33,6 +33,19 @@ class SourcePolicyTest(unittest.TestCase):
         ):
             self.assertIn(feature, text)
 
+    def test_hotspot_inventory_separates_details_from_optional_controls(self) -> None:
+        readme = README.read_text(encoding="utf-8")
+        design = (ROOT / "docs" / "design" / "rom-feature-inventory.md").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Connected-client details on all supported devices", readme)
+        self.assertIn("Connected-client details remain available", design)
+        self.assertIn("Blocking and client-limit controls require", design)
+        self.assertNotIn(
+            "Hotspot client management requires the platform client-control capability",
+            design,
+        )
+
     def test_project_tracks_no_framework_patch_payloads(self) -> None:
         payloads = (
             []
