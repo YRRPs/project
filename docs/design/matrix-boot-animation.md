@@ -173,8 +173,7 @@ up to 4.2 s in total.
   `43d73d9`, head `d68baf1`. PR: https://github.com/YRRPs/android_vendor_extra/pull/4 (draft).
 - Settings: `YRRPs/android_packages_apps_Settings` branch `feat/matrix-boot-animation`, base
   `6d4230cbb1`, head `b18ac07a08`. PR: https://github.com/YRRPs/android_packages_apps_Settings/pull/8 (draft).
-- Framework patch series: `patches/frameworks-base/matrix-boot-animation/` (13 patches),
-  checksums in `SHA256SUMS.txt`.
+- Framework implementation merged through https://github.com/YRRPs/android_frameworks_base/pull/12 and is recorded on `lineage-23.2` at `b048326c7224`.
 - Local checks: `cmds/bootanimation/tests/yrrp/run_host_tests.sh` builds and runs the pure-unit
   gtests with g++ and checks both shaders with `glslangValidator`;
   `test_gen_yrrp_matrix_assets.py` checks the assets. The release manager runs

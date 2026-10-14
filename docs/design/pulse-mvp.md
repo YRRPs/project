@@ -50,7 +50,7 @@ e5f466525b4d  SystemUI: coordinate Pulse runtime state
 36269fa52cee  SystemUI: integrate Pulse with navigation lifecycle
 ```
 
-Patch backup: `patches/frameworks-base/pulse-mvp/`.
+Durable implementation history lives on `YRRPs/android_frameworks_base`; the commits above are ancestors of `lineage-23.2`.
 
 ## Components
 

@@ -73,7 +73,7 @@ Each entry names the user-visible capability and its scope. The README does not 
 
 ## Patch cleanup
 
-Delete tracked patch files and `SHA256SUMS.txt` manifests under `patches/frameworks-base/`.
+Delete tracked Android feature patch files and their checksum manifests from the project repository.
 
 Update design documents and the local ROM feature research skill to remove patch-file instructions and references. Preserve useful historical design context, but point implementation history to target-repository commits or pull requests.
 
