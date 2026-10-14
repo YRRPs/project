@@ -52,7 +52,7 @@ Resolvers inspect installed-build facts and reuse existing eligibility logic whe
 - OnePlus Camera integration checks the installed integration package. Missing integration reports that the device build does not include it.
 - GApps integration reads `ro.yrrp.build.type`. A vanilla build reports that Google apps are not included; a GApps build reports availability.
 
-Resolvers stay independent from Android preference widgets and expose injectable dependencies for tests. A failed property, package, sensor, resource, user, or capability probe returns **Unavailable — status could not be determined** rather than crashing Settings.
+Resolvers stay independent from Android preference widgets and expose injectable dependencies for tests. A failed property, package, sensor, resource, or user probe returns **Unavailable — status could not be determined** rather than crashing Settings. A failed hotspot capability probe keeps connected-client details available and reports block and limit support as undetermined.
 
 ## Observability
 

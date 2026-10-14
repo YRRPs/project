@@ -41,6 +41,10 @@ class SourcePolicyTest(unittest.TestCase):
         self.assertIn("Connected-client details on all supported devices", readme)
         self.assertIn("Connected-client details remain available", design)
         self.assertIn("Blocking and client-limit controls require", design)
+        self.assertIn(
+            "A failed hotspot capability probe keeps connected-client details available",
+            design,
+        )
         self.assertNotIn(
             "Hotspot client management requires the platform client-control capability",
             design,
