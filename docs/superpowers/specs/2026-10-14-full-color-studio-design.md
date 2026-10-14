@@ -65,6 +65,8 @@ The editor shows:
 5. Side-by-side light and dark component previews.
 6. **Save** and **Apply** actions.
 
+Custom themes support Tonal Spot, Vibrant, Expressive, Spritz, Rainbow, and Fruit Salad. Monochromatic remains available for existing wallpaper and preset choices but is excluded here because it deliberately removes seed hue and chroma.
+
 Turning on **Separate dark palette** reveals four dark-mode seed controls. Turning it off restores generated dark colors from the light inputs after confirmation when separate values would be discarded.
 
 Each seed control supports a visual picker, hue/saturation/value sliders, and exact `#RRGGBB` input. Invalid text stays in the field with an error and never updates the preview.
@@ -84,10 +86,13 @@ Light and dark panes render representative components and role relationships:
 - tertiary switch;
 - text field and outline;
 - floating action button;
-- selected and unselected states; and
-- fixed system error and warning roles.
+- selected and unselected states;
+- fixed Material error roles; and
+- a preview-only amber warning treatment.
 
-The preview uses the same palette-generation library and inputs as SystemUI. It does not approximate applied colors with hand-authored swatches.
+Material exposes system error roles but no standard warning role consumed by ordinary apps. The amber warning treatment explains contrast problems inside the studio and carries no runtime-parity claim.
+
+The preview uses the same palette-generation library, seeds, style, mode, and current system contrast level as SystemUI. It does not approximate applied colors with hand-authored swatches.
 
 Contrast checks inspect rendered foreground/background role pairs rather than raw seed pairs. A warning identifies each affected preview component. **Apply** opens an **Apply anyway** confirmation when warnings remain. The confirmation does not weaken validation of malformed values.
 
@@ -97,14 +102,14 @@ Each theme has a stable UUID and a user-visible name. Names trim surrounding whi
 
 Deleting the active theme removes its saved definition but does not change currently applied overlays. The confirmation states that colors remain active until another theme is selected. Active payloads are self-contained, so SystemUI never depends on a saved-theme lookup.
 
-Themes are per-user and survive reboot, ThemePicker app-data clearing, package updates, and OTA updates. Factory reset removes them. Version 1 does not export, import, cloud-sync, or transfer them to another device.
+Themes are per-user and survive reboot, ThemePicker app-data clearing, package updates, and OTA updates because SettingsProvider owns them. Backup explicitly denies this key. Factory reset removes themes, and version 1 does not export, import, cloud-sync, or transfer them.
 
 ## Architecture
 
 ### Repository ownership
 
 - `YRRPs/android_packages_apps_ThemePicker` owns editor UI, rendered preview, contrast warnings, saved-theme management, and active contract writes.
-- `YRRPs/android_frameworks_libs_systemui` owns shared multi-seed palette generation used by ThemePicker and SystemUI.
+- `YRRPs/android_frameworks_libs_systemui` owns shared multi-seed palette generation and active-contract parsing used by ThemePicker and SystemUI.
 - `YRRPs/android_frameworks_base` owns secure-setting constants, runtime validation, fabricated-overlay generation, application, logs, and dump state.
 - `YRRPs/android` selects new ThemePicker and color-library forks through narrow manifest overrides.
 - `YRRPs/project` owns this design, workflow checks, and release proof boundaries.
@@ -205,7 +210,7 @@ Wallpaper events continue updating cached wallpaper colors. They do not replace 
 - If active custom JSON update is invalid while SystemUI runs, SystemUI rejects it and keeps currently applied overlays.
 - If SystemUI starts with invalid active custom JSON, it records rejection and falls back to existing wallpaper behavior.
 - If palette generation fails, SystemUI keeps current overlays when available; during boot it falls back to wallpaper behavior.
-- If overlay application fails, SystemUI reports failure through existing overlay error handling and retains enough dump state to identify attempted inputs.
+- SystemUI commits each overlay change in one transaction and receives one completion result. If application fails, existing overlays remain active, retry state remains set, and dump state identifies attempted inputs.
 - If selected source is wallpaper or preset, new custom parsing and generation paths do not run.
 
 ## Observability
@@ -240,8 +245,10 @@ Tests prove:
 - separate dark generation;
 - each seed family changes intended role families;
 - supported styles produce expected role differences;
+- Monochromatic is rejected for custom themes;
+- fixed Material error roles remain unchanged across seed mutations;
 - input normalization and rejection; and
-- preview and runtime entry points return identical maps.
+- preview and runtime entry points return identical maps for the same contrast level.
 
 ### ThemePicker
 
