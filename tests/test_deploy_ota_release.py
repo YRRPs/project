@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import shutil
@@ -38,6 +39,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.ota, self.target = create_fixture(self.root / "input")
+        self.write_checksums([self.ota, self.target])
         self.bin = self.root / "bin"
         self.bin.mkdir()
         shutil.copy2(FAKE_DOCKER, self.bin / "docker")
@@ -46,6 +48,16 @@ class DeployOtaReleaseTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self.temp.cleanup()
+
+    def write_checksums(self, paths: list[Path]) -> None:
+        channel = GAPPS if "gapps" in paths[0].name else VANILLA
+        manifest = paths[0].parent / channel.checksums_name(BUILD_ID)
+        manifest.write_text(
+            "".join(
+                f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}\n"
+                for path in paths
+            )
+        )
 
     def run_deploy(
         self,
@@ -69,6 +81,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
             "OTA_HEALTH_TIMEOUT": "1",
             "OTA_HEALTH_INTERVAL": "0",
             "YRRP_BUILD_LOCK_FILE": str(self.root / "build.lock"),
+            "YRRP_SIGNED_ROOT": str((ota or self.ota).parent),
         } | (env_extra or {})
         env.pop("YRRP_BUILD_LOCK_HELD", None)
         if not ota_env:
@@ -106,6 +119,29 @@ class DeployOtaReleaseTest(unittest.TestCase):
         self.assertIn("no-new-privileges:true", run)
         self.assertIn("proxy-net", run)
         self.assertFalse(any(command[:1] == ["push"] for command in commands))
+
+    def test_success_publishes_immutable_deployment_record(self) -> None:
+        result = self.run_deploy("initial")
+        self.assertEqual(0, result.returncode, result.stderr)
+        record = (
+            self.ota.parent
+            / "deployments/salami/vanilla"
+            / f"{BUILD_ID}.json"
+        )
+        self.assertTrue(record.is_file())
+        document = json.loads(record.read_text())
+        self.assertEqual(self.ota.name, document["full_ota"]["name"])
+        self.assertEqual(self.target.name, document["target_files"]["name"])
+
+    def test_failed_candidate_does_not_publish_deployment_record(self) -> None:
+        result = self.run_deploy("metadata_fail")
+        self.assertNotEqual(0, result.returncode)
+        record = (
+            self.ota.parent
+            / "deployments/salami/vanilla"
+            / f"{BUILD_ID}.json"
+        )
+        self.assertFalse(record.exists())
 
     def test_refuses_to_replace_foreign_container(self) -> None:
         result = self.run_deploy("foreign")
@@ -151,6 +187,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
     def test_incremental_deploy_verifies_incremental_and_fallback_routes(self) -> None:
         incremental = create_incremental_fixture(self.root / "input")
         write_incremental_meta(incremental)
+        self.write_checksums([self.ota, self.target, incremental])
         result = self.run_deploy("initial", "--incremental", str(incremental))
         self.assertEqual(0, result.returncode, result.stderr)
         execs = [" ".join(command) for command in self.commands() if command[:1] == ["exec"]]
@@ -192,6 +229,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
     def deploy_gapps(self, mode: str, labels: dict[str, str] | None, *, live: Path | None = None):
         live = live or self.stage_live()
         ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        self.write_checksums([ota, target])
         return self.run_deploy(
             mode, channel="salami/gapps", ota=ota, target=target, env_extra=self.live_env(live, labels)
         )
@@ -300,6 +338,7 @@ class DeployOtaReleaseTest(unittest.TestCase):
     def test_refuses_carried_label_for_released_channel(self) -> None:
         deploy = self.deploy_with_carry_stub([f"{GAPPS_LABEL}={LIVE_GAPPS_BUILD}"])
         ota, target = create_fixture(self.root / "gapps-input", build_type="gapps")
+        self.write_checksums([ota, target])
         result = self.run_deploy("existing", channel="salami/gapps", ota=ota, target=target, deploy=deploy)
         self.assertNotEqual(0, result.returncode)
         self.assertIn("carry-over returned the released channel's label", result.stderr)
