@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from yrrp_ota.channel import Channel
-from yrrp_release.receipt import render_receipt, write_receipt
+from yrrp_release.receipt import render_receipt, validate_receipt_document, write_receipt
 
 BUILD_ID = "20261008-123456"
 SHA_A = "a" * 40
@@ -195,6 +195,12 @@ def accepted_incremental_release(channel: str = "salami/vanilla") -> dict:
 
 
 class ReceiptRenderingTest(unittest.TestCase):
+    def test_public_validator_returns_independent_document(self) -> None:
+        source = accepted_incremental_release()
+        validated = validate_receipt_document(source)
+        self.assertEqual(source, validated)
+        self.assertIsNot(source, validated)
+
     def test_renders_deterministic_sections_and_incremental_release(self) -> None:
         document = accepted_incremental_release()
         first = render_receipt(document)

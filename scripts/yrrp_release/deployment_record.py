@@ -34,6 +34,58 @@ INCREMENTAL_KEYS = frozenset({"name", "size", "sha256", "source_incremental"})
 SOURCE_INCREMENTAL_PATTERN = re.compile(r"[0-9]+")
 
 
+def deployment_record_from_receipt(
+    receipt: object, channel: Channel, build_id: str
+) -> dict[str, object]:
+    document = _mapping(receipt, "receipt")
+    identity = _mapping(document.get("release_identity"), "receipt.release_identity")
+    if identity.get("channel") != channel.name or identity.get("build_id") != build_id:
+        raise ValueError("receipt identity does not match rollback request")
+    artifacts = document.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise TypeError("receipt.artifacts must be a list")
+    expected = {
+        channel.full_ota_name(build_id),
+        channel.target_files_name(build_id),
+        channel.checksums_name(build_id),
+    }
+    normalized: dict[str, dict[str, object]] = {}
+    incremental_count = 0
+    for index, value in enumerate(artifacts):
+        artifact = _mapping(value, f"receipt.artifacts[{index}]")
+        name = _text(artifact.get("name"), f"receipt.artifacts[{index}].name")
+        if Path(name).name != name:
+            raise ValueError("receipt artifact name must be a basename")
+        is_incremental = name.endswith("-signed-incremental-ota.zip")
+        if name not in expected and not is_incremental:
+            continue
+        if is_incremental:
+            _incremental_source_build(channel, name, build_id)
+            incremental_count += 1
+            if incremental_count > 1:
+                raise ValueError("receipt contains multiple incremental artifacts")
+        if artifact.get("checksum_verified") is not True:
+            raise ValueError("receipt artifact checksum was not verified")
+        size = artifact.get("size")
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise ValueError("receipt artifact size must be positive")
+        sha256 = validate_sha256(
+            _text(artifact.get("sha256"), f"receipt.artifacts[{index}].sha256"),
+            "receipt artifact SHA-256",
+        )
+        if name in normalized:
+            raise ValueError(f"duplicate receipt artifact: {name}")
+        normalized[name] = {"size": size, "sha256": sha256}
+    missing = sorted(expected - set(normalized))
+    if missing:
+        raise ValueError("receipt is missing rollback artifacts: " + ", ".join(missing))
+    return {
+        "channel": channel.name,
+        "build_id": build_id,
+        "artifacts": dict(sorted(normalized.items())),
+    }
+
+
 def build_deployment_record(
     *,
     channel: Channel,

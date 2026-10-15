@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import html
 import ipaddress
@@ -248,6 +249,10 @@ def _require_linked_directory(parent_fd: int, name: str, held_fd: int) -> None:
         held.st_ino,
     ):
         raise OSError("receipt directory changed during publication")
+
+def validate_receipt_document(document: object) -> dict[str, Any]:
+    return _validate_document(copy.deepcopy(document))
+
 
 def _validate_document(document: Any) -> dict[str, Any]:
     result = _mapping(document, "receipt")

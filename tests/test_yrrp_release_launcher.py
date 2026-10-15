@@ -379,6 +379,30 @@ class CliContractTest(unittest.TestCase):
             calls,
         )
 
+    def test_cli_rollback_passes_exact_selectors(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        approval = "Rollback salami/gapps to 20261013-151101"
+        arguments = namespace["parse_args"]([
+            "rollback",
+            "--approval", approval,
+            "--channel", "salami/gapps",
+            "--build-id", "20261013-151101",
+        ])
+        calls = []
+        namespace["run"].__globals__["start_rollback"] = (
+            lambda **kwargs: calls.append(kwargs) or {"run_id": "rollback-id"}
+        )
+        self.assertEqual({"run_id": "rollback-id"}, namespace["run"](arguments))
+        self.assertEqual(
+            [{
+                "approval": approval,
+                "channel": "salami/gapps",
+                "build_id": "20261013-151101",
+                "receipt_document": None,
+            }],
+            calls,
+        )
+
     def test_cli_wait_streams_events_without_result_wrapper(self) -> None:
         namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
         run_id = "check-20261015-123456-a1b2c3d4"

@@ -18,7 +18,8 @@ from yrrp_release.launcher import (
     validate_sha,
     validate_sha256,
 )
-from yrrp_release.receipt import write_receipt
+from yrrp_release.receipt import validate_receipt_document, write_receipt
+from yrrp_release.rollback import start_rollback
 from yrrp_release.targets import list_targets
 
 
@@ -44,6 +45,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     commands.add_parser("targets")
     wait = commands.add_parser("wait")
     wait.add_argument("--run-id", required=True)
+    rollback = commands.add_parser("rollback")
+    rollback.add_argument("--approval", required=True)
+    rollback.add_argument("--channel", required=True)
+    rollback.add_argument("--build-id", required=True)
+    rollback.add_argument("--receipt-input", metavar="JSON-FILE")
     return parser.parse_args(argv)
 
 
@@ -53,6 +59,18 @@ def run(arguments: argparse.Namespace) -> dict:
     if arguments.command == "receipt":
         document = _load_receipt_input(arguments.input)
         return {"receipt": str(write_receipt(document))}
+    if arguments.command == "rollback":
+        receipt_document = None
+        if arguments.receipt_input is not None:
+            receipt_document = validate_receipt_document(
+                _load_receipt_input(arguments.receipt_input)
+            )
+        return start_rollback(
+            approval=arguments.approval,
+            channel=arguments.channel,
+            build_id=arguments.build_id,
+            receipt_document=receipt_document,
+        )
     project_sha = validate_sha(arguments.project_sha, "project SHA")
     repositories = parse_repository_arguments(arguments.repo)
     if arguments.command == "prepare":
