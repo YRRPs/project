@@ -20,10 +20,12 @@ if str(SCRIPTS) not in sys.path:
 
 from yrrp_release.checks import (
     CHECK_TARGET_SCRIPT,
+    ISOLATED_OVERLAY_PREP_SCRIPT,
     ISOLATED_WORKSPACE_SETUP_SCRIPT,
     REMOTE_CHECK_INNER_SCRIPT,
     REMOTE_CHECK_SCRIPT,
     match_check_to_source,
+    parse_atest_counts,
     parse_atest_result,
     start_check,
     validate_check_result,
@@ -46,11 +48,20 @@ ThemePickerRoboTests: Passed: 0, Failed: 0, Ignored: 0
 0 Tests Passed
 """
 COMPILE_ONLY = "Build completed successfully\n"
+FAILED_MODULES = """
+ThemePickerUnitTests: Passed: 10, Failed: 100
+ThemePickerResourceTests: Passed: 6, Failed: 99
+"""
+FAILED_LINES = """
+com.example.FirstTest testOne PASSED
+com.example.SecondTest testTwo FAILED
+com.example.ThirdTest testThree FAILED
+"""
 
 
 def valid_result() -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": RUN_ID,
         "workspace": "release",
         "device": "salami",
@@ -76,6 +87,9 @@ def valid_result() -> dict:
                 "result": "passed",
                 "exit_code": 0,
                 "executed_tests": 12,
+                "passed_tests": 12,
+                "failed_tests": 0,
+                "ignored_tests": 0,
                 "started_at": "2026-10-15T12:36:00Z",
                 "completed_at": "2026-10-15T12:37:00Z",
             },
@@ -92,15 +106,21 @@ def valid_result() -> dict:
 class AtestResultTest(unittest.TestCase):
     def test_requires_positive_execution_count(self) -> None:
         self.assertEqual(12, parse_atest_result(SUCCESS))
-        invalid = (
-            ZERO,
-            COMPILE_ONLY,
-            "",
-            SUCCESS + "Other: Passed: 1, Failed: 0, Ignored: 0\n",
-        )
-        for output in invalid:
+        for output in (ZERO, COMPILE_ONLY, ""):
             with self.subTest(output=output), self.assertRaises(ValueError):
                 parse_atest_result(output)
+
+    def test_aggregates_module_summaries_and_records_outcomes(self) -> None:
+        self.assertEqual(
+            {"passed": 16, "failed": 199, "ignored": 0, "executed": 215},
+            parse_atest_counts(FAILED_MODULES),
+        )
+
+    def test_falls_back_to_passed_and_failed_result_lines(self) -> None:
+        self.assertEqual(
+            {"passed": 1, "failed": 2, "ignored": 0, "executed": 3},
+            parse_atest_counts(FAILED_LINES),
+        )
 
     def test_counts_failed_and_ignored_tests_as_execution(self) -> None:
         output = "Suite: Passed: 2, Failed: 1, Ignored: 3\n"
@@ -114,6 +134,13 @@ class CheckResultValidationTest(unittest.TestCase):
         self.assertEqual(source, validated)
         self.assertIsNot(source, validated)
         self.assertIsNot(source["targets"], validated["targets"])
+
+    def test_accepts_legacy_schema_one_counts(self) -> None:
+        document = valid_result()
+        document["schema_version"] = 1
+        for key in ("passed_tests", "failed_tests", "ignored_tests"):
+            document["targets"][1].pop(key)
+        self.assertEqual(12, validate_check_result(document)["targets"][1]["executed_tests"])
 
     def test_rejects_unknown_or_missing_top_level_keys(self) -> None:
         for mutate in (
@@ -140,6 +167,10 @@ class CheckResultValidationTest(unittest.TestCase):
         zero["targets"][1]["executed_tests"] = 0
         mutations.append(zero)
 
+        inconsistent_counts = valid_result()
+        inconsistent_counts["targets"][1]["failed_tests"] = 1
+        mutations.append(inconsistent_counts)
+
         for document in mutations:
             with self.subTest(document=document), self.assertRaises((TypeError, ValueError)):
                 validate_check_result(document)
@@ -160,6 +191,7 @@ class CheckResultValidationTest(unittest.TestCase):
         document["targets"][1]["result"] = "failed"
         document["targets"][1]["exit_code"] = 1
         document["targets"][1]["executed_tests"] = 0
+        document["targets"][1]["passed_tests"] = 0
         self.assertEqual("failed", validate_check_result(document)["result"])
 
     def test_rejects_bad_timestamps_exit_codes_and_log_paths(self) -> None:
@@ -187,7 +219,7 @@ class SourceMatchTest(unittest.TestCase):
                 "repositories": {"packages/apps/ThemePicker": SHA_B},
                 "manifest_sha256": DIGEST,
             },
-            ("m:ThemePicker", "atest:ThemePickerRoboTests"),
+            ("m:ThemePicker",),
         )
         self.assertEqual(RUN_ID, checked["run_id"])
 
@@ -197,6 +229,14 @@ class SourceMatchTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             match_check_to_source(
                 valid_result(), valid_result()["source"], ("m:SystemUI",)
+            )
+
+    def test_rejects_non_gating_robo_target_as_release_requirement(self) -> None:
+        with self.assertRaisesRegex(ValueError, "non-gating"):
+            match_check_to_source(
+                valid_result(),
+                valid_result()["source"],
+                ("atest:ThemePickerRoboTests",),
             )
 
     def test_rejects_check_for_different_required_device(self) -> None:
@@ -296,44 +336,55 @@ class CheckLaunchTest(unittest.TestCase):
         self.assertIn('"-dmS", run_id', REMOTE_CHECK_SCRIPT)
         self.assertIn('atomic_json(result_path', REMOTE_CHECK_SCRIPT)
 
-    def test_isolated_mounts_do_not_share_release_source_or_output(self) -> None:
+    def test_isolated_mounts_use_read_only_release_lower_layer(self) -> None:
         self.assertIn(
+            'release_host = "/mnt/fast/docker/android/workspace"', REMOTE_CHECK_SCRIPT
+        )
+        self.assertIn('release_host + ":/opt/android:ro"', REMOTE_CHECK_SCRIPT)
+        self.assertIn('release_host + ":/opt/release-lower:ro"', REMOTE_CHECK_SCRIPT)
+        self.assertIn('check_host + "/out:/opt/android/out:rw"', REMOTE_CHECK_SCRIPT)
+        self.assertIn("/mnt/fast/docker/android/ccache:/ccache:rw", REMOTE_CHECK_SCRIPT)
+        self.assertIn(
+            'project_host = "/mnt/fast/docker/android/project"', REMOTE_CHECK_SCRIPT
+        )
+        self.assertIn('project_host + ":/opt/yrrp/project:ro"', REMOTE_CHECK_SCRIPT)
+        self.assertNotIn(
             "/mnt/fast/docker/android/check-workspace:/opt/android:rw",
             REMOTE_CHECK_SCRIPT,
         )
-        self.assertIn("/mnt/fast/docker/android/ccache:/ccache:rw", REMOTE_CHECK_SCRIPT)
-        self.assertIn(
-            "/mnt/fast/docker/android/project:/opt/yrrp/project:ro",
-            REMOTE_CHECK_SCRIPT,
-        )
-        self.assertNotIn(
-            "/mnt/fast/docker/android/workspace:/opt/android",
-            REMOTE_CHECK_SCRIPT,
-        )
 
-    def test_isolated_container_has_writable_home(self) -> None:
-        self.assertIn('"--env", "HOME=/opt/android/.home"', REMOTE_CHECK_SCRIPT)
+    def test_isolated_container_has_persistent_writable_home(self) -> None:
+        self.assertIn('"--env", "HOME=/home/android"', REMOTE_CHECK_SCRIPT)
+        self.assertIn('check_host + "/home:/home/android:rw"', REMOTE_CHECK_SCRIPT)
 
-    def test_isolated_workspace_setup_removes_partial_initialization(self) -> None:
+    def test_isolated_workspace_setup_preserves_managed_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)
-            (workspace / ".repo").mkdir()
-            (workspace / ".repo" / "partial").write_text("stale\n")
-            (workspace / "stale-file").write_text("stale\n")
-            (workspace / "stale-link").symlink_to(workspace / "stale-file")
-            subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    ISOLATED_WORKSPACE_SETUP_SCRIPT,
-                    str(workspace),
-                    str(os.getuid()),
-                    str(os.getgid()),
-                ],
-                check=True,
+            (workspace / "home").mkdir()
+            (workspace / "home" / ".gitconfig").write_text("[user]\n")
+            (workspace / "out").mkdir()
+            (workspace / "out" / "cached-object").write_text("cached\n")
+            (workspace / "repos" / "packages" / "apps" / "ThemePicker").mkdir(
+                parents=True
             )
-            self.assertEqual([".home"], [path.name for path in workspace.iterdir()])
-            self.assertEqual(0o700, (workspace / ".home").stat().st_mode & 0o777)
+            overlay_marker = (
+                workspace / "repos" / "packages" / "apps" / "ThemePicker" / "marker"
+            )
+            overlay_marker.write_text("overlay\n")
+            command = [
+                sys.executable,
+                "-c",
+                ISOLATED_WORKSPACE_SETUP_SCRIPT,
+                str(workspace),
+                str(os.getuid()),
+                str(os.getgid()),
+            ]
+            subprocess.run(command, check=True)
+            subprocess.run(command, check=True)
+            self.assertEqual("[user]\n", (workspace / "home" / ".gitconfig").read_text())
+            self.assertEqual("cached\n", (workspace / "out" / "cached-object").read_text())
+            self.assertEqual("overlay\n", overlay_marker.read_text())
+            self.assertEqual(0o700, (workspace / "home").stat().st_mode & 0o777)
 
     def test_manifest_remotes_fetch_exact_sha_from_real_git_layouts(self) -> None:
         functions = {
@@ -416,6 +467,223 @@ class CheckLaunchTest(unittest.TestCase):
                         output("git", "rev-parse", "HEAD", cwd=checkout),
                     )
 
+    def test_overlay_repositories_reuse_objects_and_drop_stale_paths(self) -> None:
+        overlay_functions = {
+            "atomic_json",
+            "fetch_repository_revision",
+            "load_overlay_state",
+            "overlay_path",
+            "prepare_overlay_repositories",
+            "prepare_overlay_repository",
+            "remove_stale_overlays",
+            "write_overlay_state",
+        }
+        functions = [
+            node
+            for node in ast.parse(ISOLATED_OVERLAY_PREP_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name in overlay_functions
+        ]
+
+        def run(*args, cwd=None, check=True):
+            return subprocess.run(
+                list(args), cwd=cwd, capture_output=True, check=check, text=True
+            )
+
+        def output(*args, cwd=None):
+            return run(*args, cwd=cwd).stdout.strip()
+
+        namespace = {
+            "json": json,
+            "os": os,
+            "output": output,
+            "Path": Path,
+            "re": re,
+            "run": run,
+            "shutil": __import__("shutil"),
+            "tempfile": tempfile,
+        }
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "overlay", "exec"), namespace)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            lower = root / "lower"
+            overlays = root / "overlays"
+            active = root / "active.json"
+            lower.mkdir()
+
+            def create_repository(relative: str, remote_name: str) -> tuple[Path, Path, str]:
+                upstream = root / (relative.replace("/", "-") + ".git")
+                seed = root / (relative.replace("/", "-") + "-seed")
+                source = lower / relative
+                subprocess.run(["git", "init", "--bare", str(upstream)], check=True, capture_output=True)
+                subprocess.run(["git", "init", str(seed)], check=True, capture_output=True)
+                subprocess.run(["git", "-C", str(seed), "config", "user.name", "Check Test"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(seed), "config", "user.email", "check@example.invalid"],
+                    check=True,
+                )
+                (seed / "source.txt").write_text(relative + "\n")
+                subprocess.run(["git", "-C", str(seed), "add", "source.txt"], check=True)
+                subprocess.run(["git", "-C", str(seed), "commit", "-m", "source"], check=True, capture_output=True)
+                sha = output("git", "rev-parse", "HEAD", cwd=seed)
+                subprocess.run(
+                    ["git", "-C", str(seed), "push", str(upstream), "HEAD:refs/heads/main"],
+                    check=True,
+                    capture_output=True,
+                )
+                source.parent.mkdir(parents=True, exist_ok=True)
+                subprocess.run(["git", "init", str(source)], check=True, capture_output=True)
+                subprocess.run(
+                    ["git", "-C", str(source), "remote", "add", remote_name, str(upstream)],
+                    check=True,
+                )
+                subprocess.run(["git", "-C", str(source), "fetch", remote_name, sha], check=True, capture_output=True)
+                subprocess.run(["git", "-C", str(source), "checkout", "--detach", sha], check=True, capture_output=True)
+                return upstream, seed, sha
+
+            theme_upstream, theme_seed, theme_sha = create_repository(
+                "packages/apps/ThemePicker", "yrrp"
+            )
+            _, _, camera_sha = create_repository("vendor/oplus/camera-salami", "private")
+            prepare = namespace["prepare_overlay_repositories"]
+            prepare(
+                {
+                    "packages/apps/ThemePicker": theme_sha,
+                    "vendor/oplus/camera-salami": camera_sha,
+                },
+                {
+                    "packages/apps/ThemePicker": "yrrp",
+                    "vendor/oplus/camera-salami": "private",
+                },
+                lower,
+                overlays,
+                active,
+            )
+            theme_overlay = overlays / "packages/apps/ThemePicker"
+            camera_overlay = overlays / "vendor/oplus/camera-salami"
+            git_inode = (theme_overlay / ".git").stat().st_ino
+            self.assertEqual(theme_sha, output("git", "rev-parse", "HEAD", cwd=theme_overlay))
+            self.assertEqual(camera_sha, output("git", "rev-parse", "HEAD", cwd=camera_overlay))
+
+            (theme_seed / "source.txt").write_text("updated\n")
+            subprocess.run(["git", "-C", str(theme_seed), "commit", "-am", "updated"], check=True, capture_output=True)
+            updated_sha = output("git", "rev-parse", "HEAD", cwd=theme_seed)
+            subprocess.run(
+                ["git", "-C", str(theme_seed), "push", str(theme_upstream), "HEAD:refs/heads/main"],
+                check=True,
+                capture_output=True,
+            )
+            prepare(
+                {"packages/apps/ThemePicker": updated_sha},
+                {"packages/apps/ThemePicker": "yrrp"},
+                lower,
+                overlays,
+                active,
+            )
+            self.assertEqual(git_inode, (theme_overlay / ".git").stat().st_ino)
+            self.assertEqual(updated_sha, output("git", "rev-parse", "HEAD", cwd=theme_overlay))
+            self.assertFalse(camera_overlay.exists())
+            self.assertEqual(
+                ["packages/apps/ThemePicker"], json.loads(active.read_text())
+            )
+
+    def test_failed_overlay_preparation_is_cleaned_by_next_request(self) -> None:
+        names = {
+            "atomic_json", "overlay_path", "load_overlay_state",
+            "write_overlay_state", "remove_stale_overlays",
+            "prepare_overlay_repositories",
+        }
+        functions = [
+            node for node in ast.parse(ISOLATED_OVERLAY_PREP_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name in names
+        ]
+        namespace = {
+            "json": json, "os": os, "Path": Path, "re": re,
+            "shutil": __import__("shutil"), "tempfile": tempfile,
+        }
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "overlay", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            overlays = root / "repos"
+            overlays.mkdir()
+            active = root / "active.json"
+
+            def prepare_repository(source, overlay, remote, sha):
+                overlay.mkdir(parents=True, exist_ok=True)
+                (overlay / "partial").write_text(sha)
+                if overlay.name == "b":
+                    raise RuntimeError("injected fetch failure")
+
+            namespace["prepare_overlay_repository"] = prepare_repository
+            prepare = namespace["prepare_overlay_repositories"]
+            with self.assertRaisesRegex(RuntimeError, "injected fetch failure"):
+                prepare({"a": SHA_A, "b": SHA_B}, {"a": "yrrp", "b": "yrrp"}, root, overlays, active)
+            prepare({"c": SHA_A}, {"c": "yrrp"}, root, overlays, active)
+            self.assertEqual(["c"], sorted(path.name for path in overlays.iterdir()))
+            self.assertEqual(["c"], json.loads(active.read_text()))
+
+    def test_overlay_cleanup_failure_preserves_previous_inventory(self) -> None:
+        names = {
+            "atomic_json", "overlay_path", "load_overlay_state",
+            "write_overlay_state", "prepare_overlay_repositories",
+        }
+        functions = [
+            node for node in ast.parse(ISOLATED_OVERLAY_PREP_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name in names
+        ]
+        namespace = {
+            "json": json, "os": os, "Path": Path, "re": re,
+            "tempfile": tempfile,
+        }
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "overlay", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            active = root / "active.json"
+            active.write_text(json.dumps(["old"]))
+
+            def fail_cleanup(previous, requested, overlay_root):
+                raise OSError("injected cleanup failure")
+
+            namespace["remove_stale_overlays"] = fail_cleanup
+            with self.assertRaisesRegex(OSError, "injected cleanup failure"):
+                namespace["prepare_overlay_repositories"](
+                    {"new": SHA_A}, {"new": "yrrp"}, root, root / "repos", active
+                )
+            self.assertEqual(["old"], json.loads(active.read_text()))
+
+    def test_isolated_inner_uses_prepared_overlays_without_repo_sync(self) -> None:
+        self.assertIn(
+            "perform_check(payload, run_id, synchronize=False, lower_android=LOWER_ANDROID)",
+            REMOTE_CHECK_INNER_SCRIPT,
+        )
+        self.assertIn(
+            'check_host + "/repos/" + relative + ":/opt/android/" + relative + ":rw"',
+            REMOTE_CHECK_SCRIPT,
+        )
+
+    def test_isolated_check_fingerprints_release_lower_layer_before_and_after(self) -> None:
+        function = next(
+            node
+            for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name == "perform_check"
+        )
+        calls = [
+            node
+            for node in ast.walk(function)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "release_tree_fingerprint"
+        ]
+        self.assertEqual(2, len(calls))
+        self.assertIn(
+            "release checkout is not clean at manifest revisions",
+            REMOTE_CHECK_INNER_SCRIPT,
+        )
+        self.assertIn(
+            "release lower layer changed during isolated check",
+            REMOTE_CHECK_INNER_SCRIPT,
+        )
+
     def test_result_parser_accepts_interleaved_request_order(self) -> None:
         function = next(
             node
@@ -431,7 +699,13 @@ class CheckLaunchTest(unittest.TestCase):
             r"Ignored: (?P<ignored>[0-9]+)$",
             re.MULTILINE,
         )
-        namespace = {"Path": Path, "TARGET_REGISTRY": registry, "ATEST_PATTERN": pattern}
+        result_pattern = re.compile(r"\b(?P<outcome>PASSED|FAILED)\s*$", re.MULTILINE)
+        namespace = {
+            "Path": Path,
+            "TARGET_REGISTRY": registry,
+            "ATEST_PATTERN": pattern,
+            "ATEST_RESULT_LINE_PATTERN": result_pattern,
+        }
         exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -453,6 +727,83 @@ class CheckLaunchTest(unittest.TestCase):
             )
         self.assertEqual(2, len(results))
         self.assertTrue(all(result["result"] == "passed" for result in results))
+        self.assertEqual(2, results[1]["passed_tests"])
+        self.assertEqual(0, results[1]["failed_tests"])
+        self.assertEqual(0, results[1]["ignored_tests"])
+
+    def test_result_parser_records_failed_atest_execution(self) -> None:
+        function = next(
+            node
+            for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name == "parse_target_results"
+        )
+        registry = {"atest:ThemePickerRoboTests": ["atest", "ThemePickerRoboTests"]}
+        pattern = re.compile(
+            r"^(?:[^:\n]+:\s*)?Passed:\s*(?P<passed>[0-9]+),\s*"
+            r"Failed:\s*(?P<failed>[0-9]+)"
+            r"(?:,\s*Ignored:\s*(?P<ignored>[0-9]+))?$",
+            re.MULTILINE,
+        )
+        namespace = {
+            "Path": Path,
+            "TARGET_REGISTRY": registry,
+            "ATEST_PATTERN": pattern,
+            "ATEST_RESULT_LINE_PATTERN": re.compile(
+                r"\b(?P<outcome>PASSED|FAILED)\s*$", re.MULTILINE
+            ),
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_path = root / "atest.log"
+            output_path.write_text(FAILED_MODULES)
+            (root / "target-results.tsv").write_text(
+                "atest\tatest:ThemePickerRoboTests\t2\t2026-10-15T12:00:00Z\t"
+                "2026-10-15T12:01:00Z\t" + str(output_path) + "\n"
+            )
+            result = namespace["parse_target_results"](
+                root, ["atest:ThemePickerRoboTests"]
+            )[0]
+        self.assertEqual("failed", result["result"])
+        self.assertEqual(215, result["executed_tests"])
+        self.assertEqual(16, result["passed_tests"])
+        self.assertEqual(199, result["failed_tests"])
+
+    def test_zero_exit_atest_failures_cannot_publish_passed_evidence(self) -> None:
+        function = next(
+            node for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name == "parse_target_results"
+        )
+        from yrrp_release.checks import ATEST_SUMMARY_PATTERN, ATEST_RESULT_LINE_PATTERN
+
+        namespace = {
+            "Path": Path,
+            "TARGET_REGISTRY": {"atest:ThemePickerRoboTests": ["atest", "ThemePickerRoboTests"]},
+            "ATEST_PATTERN": ATEST_SUMMARY_PATTERN,
+            "ATEST_RESULT_LINE_PATTERN": ATEST_RESULT_LINE_PATTERN,
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
+        for output in (FAILED_MODULES, FAILED_LINES):
+            with self.subTest(output=output), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                log = root / "atest.log"
+                log.write_text(output)
+                (root / "target-results.tsv").write_text(
+                    "atest\tatest:ThemePickerRoboTests\t0\t2026-10-15T12:00:00Z\t"
+                    "2026-10-15T12:01:00Z\t" + str(log) + "\n"
+                )
+                target = namespace["parse_target_results"](
+                    root, ["atest:ThemePickerRoboTests"]
+                )[0]
+                self.assertEqual("failed", target["result"])
+                self.assertNotEqual(0, target["exit_code"])
+                self.assertGreater(target["failed_tests"], 0)
+                document = valid_result()
+                document["targets"] = [target]
+                document["result"] = "failed"
+                document["exit_code"] = target["exit_code"]
+                document["failure_reason"] = "atest reported failed tests"
+                self.assertEqual("failed", validate_check_result(document)["result"])
 
     def test_isolated_exit_without_result_creates_failure_evidence(self) -> None:
         function = next(

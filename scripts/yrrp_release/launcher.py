@@ -621,7 +621,7 @@ def prepare_release(
     required_device: str | None = None,
 ) -> dict[str, Any]:
     from .jobs import parse_run_id
-    from .targets import parse_targets, validate_device
+    from .targets import parse_gating_targets, validate_device
 
     gate_parts = (required_check is not None, bool(required_targets), required_device is not None)
     if any(gate_parts) and not all(gate_parts):
@@ -631,7 +631,7 @@ def prepare_release(
         if parse_run_id(required_check) != "check":
             raise ValueError("required check must use a check run ID")
         validated_targets = [
-            target.id for target in parse_targets(list(required_targets))
+            target.id for target in parse_gating_targets(list(required_targets))
         ]
         required_device = validate_device(required_device)
     project_sha, repositories = _validated_request(project_sha, repositories)
@@ -659,7 +659,7 @@ def launch_release(
     required_device: str,
 ) -> dict[str, Any]:
     from .jobs import parse_run_id
-    from .targets import parse_targets, validate_device
+    from .targets import parse_gating_targets, validate_device
 
     if approval != APPROVAL:
         raise ValueError(f"launch requires exact approval {APPROVAL!r}")
@@ -669,7 +669,7 @@ def launch_release(
         raise ValueError("required check device does not match launch channel")
     if parse_run_id(required_check) != "check":
         raise ValueError("required check must use a check run ID")
-    targets = [target.id for target in parse_targets(list(required_targets))]
+    targets = [target.id for target in parse_gating_targets(list(required_targets))]
     project_sha, repositories = _validated_request(project_sha, repositories)
     manifest_sha256 = validate_sha256(manifest_sha256, "manifest SHA-256")
     verify_local_project(project_sha)

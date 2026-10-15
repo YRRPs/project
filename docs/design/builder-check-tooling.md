@@ -40,10 +40,10 @@ Initial test targets:
 
 - `atest:monet_tests`
 - `atest:ThemeOverlayApplierTest`
-- `atest:ThemePickerRoboTests`
+- `atest:ThemePickerRoboTests` (diagnostic, non-gating while platform resources are unavailable)
 - `atest:SystemUITests_presubmit`
 - `atest:SettingsProviderTest`
-- `atest:SystemUiRoboTests`
+- `atest:SystemUiRoboTests` (diagnostic, non-gating while platform resources are unavailable)
 
 Supported devices are `salami` and `xueying`.
 
@@ -164,22 +164,22 @@ Any source drift or generated source-file change fails the check.
 
 An `isolated` check runs in a disposable sibling container using the trusted builder image. The container mounts:
 
-- `/mnt/fast/docker/android/check-workspace` at `/opt/android` read-write.
-- `/mnt/fast/docker/android/ccache` at `/ccache` read-write.
-- `/mnt/fast/docker/android/project` at `/opt/yrrp/project` read-only.
-- The check result directory at its fixed path read-write.
+- `/mnt/fast/docker/android/workspace` at `/opt/android` and `/opt/release-lower` read-only.
+- One persistent shared-clone overlay per requested repository at its `/opt/android/<path>` read-write path.
+- Persistent isolated `out/` at `/opt/android/out` read-write.
+- Persistent isolated home, shared ccache, read-only project tooling, and the fixed result directory.
 
-The check checkout is initialized from `https://github.com/YRRPs/android.git`, branch `lineage-23.2`, when absent. Each run verifies manifest cleanliness and syncs requested repositories. For an unmerged commit, it fetches the exact SHA from that manifest project's existing canonical remote without accepting a caller-supplied URL, verifies the commit object, checks it out detached, and validates source evidence before building. Its source and `out/` never share the release workspace.
+Before execution, the worker requires every lower-layer repository to be clean at its manifest revision and fingerprints manifest files plus repository SHAs. It creates or reuses each requested overlay with `git clone --shared`, resolves the canonical remote from the manifest, fetches the exact requested SHA, resets only that overlay, and drops overlays omitted by the next request. No caller supplies a repository URL or mount path.
 
-The sibling container exits after the check. The persistent isolated checkout and its `out/` remain cached for later checks. A failed or dirty checkout blocks the next check; the tool never silently cleans or resets unexpected state.
+The build sees release dependencies through the read-only lower layer and writes only to requested overlays, isolated output, home, ccache, and evidence. Any attempted write elsewhere fails visibly. The worker verifies the lower-layer fingerprint again before publishing final evidence. Overlay repositories and `out/` remain cached across sibling-container runs.
 
 ### Target execution
 
 The worker sources the Android build environment once and runs `breakfast` once. It combines requested `m` targets into one fixed argv invocation. It runs each `atest` target separately so each suite receives an independent verdict.
 
-Each result records target IDs, exact argv, start/end timestamps, exit code, and bounded summary/error lines. The log retains complete output. The result never stores signing keys, credentials, environment dumps, or unrelated file contents.
+Each result records target IDs, exact argv, start/end timestamps, exit code, and bounded summary/error lines. `atest` evidence also records executed, passed, failed, and ignored counts, aggregating per-module summaries and falling back to explicit `PASSED`/`FAILED` result lines. The log retains complete output. The result never stores signing keys, credentials, environment dumps, or unrelated file contents.
 
-An `m` success proves compilation only. An `atest` success requires exit zero and positive executed-test evidence. Exit zero with zero tests, no test execution, or compile-only completion fails the target.
+An `m` success proves compilation only. An `atest` success requires exit zero and positive executed-test evidence. Exit zero with zero tests, no test execution, or compile-only completion fails the target. Fixed Robolectric `atest` IDs remain runnable diagnostics but are listed as non-gating while the Lineage platform-resource AssetManager blocker prevents test-body execution; preparation and launch reject them as required targets.
 
 ## Pre-approval workflow
 
@@ -230,7 +230,7 @@ Each source-check entry records:
 - Device.
 - Project SHA, repository SHAs, and manifest SHA-256.
 - Requested target IDs.
-- Per-target type, exact argv, result, exit code, and executed-test count when applicable.
+- Per-target type, exact argv, result, exit code, and executed/passed/failed/ignored test counts when applicable.
 - Start/end timestamps.
 - Log path.
 
@@ -279,7 +279,7 @@ Source and deployment evidence bind builder inputs, parameters, and artifact dig
 After local tests pass, a release-manager session provisions the isolated workspace and runs:
 
 - One compile target, initially `m:ThemePicker`.
-- One test target, initially `atest:ThemePickerRoboTests`.
+- One gating `atest` target plus any requested non-gating Robo diagnostic.
 - `wait` through successful phase transitions.
 - One intentional unknown-target rejection without remote mutation.
 

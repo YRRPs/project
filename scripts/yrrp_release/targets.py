@@ -13,14 +13,15 @@ class Target:
     id: str
     executor: Executor
     argument: str
+    gating: bool = True
 
 
 _TARGET_VALUES = (
     Target("atest:SettingsProviderTest", "atest", "SettingsProviderTest"),
     Target("atest:SystemUITests_presubmit", "atest", "SystemUITests_presubmit"),
-    Target("atest:SystemUiRoboTests", "atest", "SystemUiRoboTests"),
+    Target("atest:SystemUiRoboTests", "atest", "SystemUiRoboTests", gating=False),
     Target("atest:ThemeOverlayApplierTest", "atest", "ThemeOverlayApplierTest"),
-    Target("atest:ThemePickerRoboTests", "atest", "ThemePickerRoboTests"),
+    Target("atest:ThemePickerRoboTests", "atest", "ThemePickerRoboTests", gating=False),
     Target("atest:monet_tests", "atest", "monet_tests"),
     Target("m:Settings", "m", "Settings"),
     Target("m:SettingsProvider", "m", "SettingsProvider"),
@@ -34,7 +35,24 @@ TARGETS = MappingProxyType({target.id: target for target in _TARGET_VALUES})
 
 
 def list_targets() -> dict[str, list[str]]:
-    return {"devices": list(SUPPORTED_DEVICES), "targets": list(TARGETS)}
+    return {
+        "devices": list(SUPPORTED_DEVICES),
+        "targets": list(TARGETS),
+        "non_gating_targets": [
+            target.id for target in _TARGET_VALUES if not target.gating
+        ],
+    }
+
+
+def parse_gating_targets(values: list[str]) -> tuple[Target, ...]:
+    parsed = parse_targets(values)
+    non_gating = [target.id for target in parsed if not target.gating]
+    if non_gating:
+        raise ValueError(
+            "non-gating targets cannot satisfy release preparation: "
+            + ", ".join(non_gating)
+        )
+    return parsed
 
 
 def validate_device(value: str) -> str:

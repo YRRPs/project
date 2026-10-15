@@ -40,9 +40,22 @@ class TargetRegistryTest(unittest.TestCase):
             list(TARGETS),
         )
         self.assertEqual(
-            {"devices": ["salami", "xueying"], "targets": list(TARGETS)},
+            {
+                "devices": ["salami", "xueying"],
+                "targets": list(TARGETS),
+                "non_gating_targets": [
+                    "atest:SystemUiRoboTests",
+                    "atest:ThemePickerRoboTests",
+                ],
+            },
             list_targets(),
         )
+
+    def test_robo_atest_targets_are_diagnostic_only(self) -> None:
+        self.assertFalse(TARGETS["atest:SystemUiRoboTests"].gating)
+        self.assertFalse(TARGETS["atest:ThemePickerRoboTests"].gating)
+        self.assertTrue(TARGETS["m:SettingsRoboTests"].gating)
+        self.assertTrue(TARGETS["atest:SystemUITests_presubmit"].gating)
 
     def test_parses_fixed_targets_without_free_arguments(self) -> None:
         parsed = parse_targets(["m:ThemePicker", "atest:ThemePickerRoboTests"])
