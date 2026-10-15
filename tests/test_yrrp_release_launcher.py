@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import runpy
+import re
 import shutil
 import shlex
 import subprocess
@@ -48,6 +49,9 @@ WORKER_EXPECTED = {
     "repositories": {},
     "manifest_sha256": "c" * 64,
     "channel": "salami/vanilla",
+    "required_check": "check-20261015-123456-a1b2c3d4",
+    "required_targets": ["m:SystemUI"],
+    "required_device": "salami",
 }
 
 
@@ -215,12 +219,61 @@ class PublicLauncherTest(unittest.TestCase):
         })
         self.assertEqual(SHA_A, result["project_sha"])
 
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_prepare_sends_required_check_and_targets(self, verify, remote) -> None:
+        run_id = "check-20261015-123456-a1b2c3d4"
+        remote.return_value = {"source": {"project_sha": SHA_A}, "source_checks": []}
+        prepare_release(
+            SHA_A,
+            {"frameworks/base": SHA_B},
+            required_check=run_id,
+            required_targets=("m:SystemUI",),
+            required_device="salami",
+        )
+        remote.assert_called_once_with(
+            REMOTE_PREPARE_SCRIPT,
+            {
+                "project_sha": SHA_A,
+                "repositories": {"frameworks/base": SHA_B},
+                "required_check": run_id,
+                "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
+            },
+        )
+
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_prepare_rejects_incomplete_check_gate(self, verify, remote) -> None:
+        cases = (
+            {"required_check": "check-20261015-123456-a1b2c3d4"},
+            {"required_targets": ("m:SystemUI",)},
+            {
+                "required_check": "check-20261015-123456-a1b2c3d4",
+                "required_targets": ("m:SystemUI",),
+            },
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                prepare_release(SHA_A, {}, **arguments)
+        verify.assert_not_called()
+        remote.assert_not_called()
+
     def test_launch_requires_exact_literal_approval(self) -> None:
         for approval in ("build and release", "Build and release ", "Build & release", ""):
             with self.subTest(approval=approval), self.assertRaisesRegex(
                 ValueError, "exact approval"
             ):
-                launch_release(approval, SHA_A, {}, "c" * 64, channel="salami/vanilla")
+                launch_release(
+                    approval,
+                    SHA_A,
+                    {},
+                    "c" * 64,
+                    channel="salami/vanilla",
+                    required_check="check-20261015-123456-a1b2c3d4",
+                    required_targets=("m:SystemUI",),
+                    required_device="salami",
+                )
 
     @patch("yrrp_release.launcher.run_remote")
     @patch("yrrp_release.launcher.verify_local_project")
@@ -238,6 +291,9 @@ class PublicLauncherTest(unittest.TestCase):
             {"frameworks/base": SHA_B},
             "c" * 64,
             channel="salami/gapps",
+            required_check="check-20261015-123456-a1b2c3d4",
+            required_targets=("m:SystemUI",),
+            required_device="salami",
         )
         verify.assert_called_once_with(SHA_A)
         remote.assert_called_once_with(
@@ -247,9 +303,29 @@ class PublicLauncherTest(unittest.TestCase):
                 "repositories": {"frameworks/base": SHA_B},
                 "manifest_sha256": "c" * 64,
                 "channel": "salami/gapps",
+                "required_check": "check-20261015-123456-a1b2c3d4",
+                "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
             },
         )
         self.assertEqual(evidence, result)
+
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_launch_rejects_check_device_different_from_channel(self, verify, remote) -> None:
+        with self.assertRaisesRegex(ValueError, "device"):
+            launch_release(
+                APPROVAL,
+                SHA_A,
+                {},
+                "c" * 64,
+                channel="xueying/gapps",
+                required_check="check-20261015-123456-a1b2c3d4",
+                required_targets=("m:SystemUI",),
+                required_device="salami",
+            )
+        verify.assert_not_called()
+        remote.assert_not_called()
 
     @patch("yrrp_release.launcher.run_remote")
     @patch("yrrp_release.launcher.verify_local_project")
@@ -258,7 +334,16 @@ class PublicLauncherTest(unittest.TestCase):
             with self.subTest(channel=channel), self.assertRaisesRegex(
                 ValueError, "channel"
             ):
-                launch_release(APPROVAL, SHA_A, {}, "b" * 64, channel=channel)
+                launch_release(
+                    APPROVAL,
+                    SHA_A,
+                    {},
+                    "b" * 64,
+                    channel=channel,
+                    required_check="check-20261015-123456-a1b2c3d4",
+                    required_targets=("m:SystemUI",),
+                    required_device="salami",
+                )
         verify.assert_not_called()
         remote.assert_not_called()
 
@@ -280,6 +365,9 @@ class CliContractTest(unittest.TestCase):
             "--manifest-sha256", "c" * 64,
             "--repo", f"frameworks/base={SHA_B}",
             "--channel", "salami/gapps",
+            "--require-check", "check-20261015-123456-a1b2c3d4",
+            "--require-target", "m:SystemUI",
+            "--device", "salami",
         ])
         self.assertEqual("c" * 64, arguments.manifest_sha256)
         self.assertEqual("salami/gapps", arguments.channel)
@@ -302,13 +390,128 @@ class CliContractTest(unittest.TestCase):
             "--approval", "Build and release",
             "--manifest-sha256", "b" * 64,
             "--channel", "salami/gapps",
+            "--require-check", "check-20261015-123456-a1b2c3d4",
+            "--require-target", "m:SystemUI",
+            "--device", "salami",
         ])
         calls = []
         namespace["run"].__globals__["launch_release"] = (
             lambda *args, **kwargs: calls.append((args, kwargs)) or {}
         )
         namespace["run"](arguments)
-        self.assertEqual([((APPROVAL, SHA_A, {}, "b" * 64), {"channel": "salami/gapps"})], calls)
+        self.assertEqual(
+            [((APPROVAL, SHA_A, {}, "b" * 64), {
+                "channel": "salami/gapps",
+                "required_check": "check-20261015-123456-a1b2c3d4",
+                "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
+            })],
+            calls,
+        )
+
+    def test_cli_targets_returns_registry_without_remote_source_fields(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        arguments = namespace["parse_args"](["targets"])
+        result = namespace["run"](arguments)
+        self.assertEqual(["salami", "xueying"], result["devices"])
+        self.assertIn("m:ThemePicker", result["targets"])
+        self.assertFalse(hasattr(arguments, "project_sha"))
+
+    def test_cli_check_passes_validated_request_to_launcher(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        arguments = namespace["parse_args"]([
+            "check",
+            "--workspace", "isolated",
+            "--project-sha", SHA_A,
+            "--repo", f"packages/apps/ThemePicker={SHA_B}",
+            "--device", "salami",
+            "--target", "m:ThemePicker",
+        ])
+        calls = []
+        namespace["run"].__globals__["start_check"] = (
+            lambda **kwargs: calls.append(kwargs) or {"run_id": "check-id"}
+        )
+        self.assertEqual({"run_id": "check-id"}, namespace["run"](arguments))
+        self.assertEqual(
+            [{
+                "workspace": "isolated",
+                "project_sha": SHA_A,
+                "repositories": {"packages/apps/ThemePicker": SHA_B},
+                "device": "salami",
+                "target_ids": ["m:ThemePicker"],
+            }],
+            calls,
+        )
+
+    def test_cli_rollback_passes_exact_selectors(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        approval = "Rollback salami/gapps to 20261013-151101"
+        arguments = namespace["parse_args"]([
+            "rollback",
+            "--approval", approval,
+            "--channel", "salami/gapps",
+            "--build-id", "20261013-151101",
+        ])
+        calls = []
+        namespace["run"].__globals__["start_rollback"] = (
+            lambda **kwargs: calls.append(kwargs) or {"run_id": "rollback-id"}
+        )
+        self.assertEqual({"run_id": "rollback-id"}, namespace["run"](arguments))
+        self.assertEqual(
+            [{
+                "approval": approval,
+                "channel": "salami/gapps",
+                "build_id": "20261013-151101",
+                "receipt_document": None,
+            }],
+            calls,
+        )
+
+    def test_cli_wait_streams_events_without_result_wrapper(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        run_id = "check-20261015-123456-a1b2c3d4"
+        event = {
+            "run_id": run_id,
+            "phase": "failed",
+            "result": "failed",
+            "exit_code": 17,
+        }
+
+        def fake_wait(value, emit):
+            self.assertEqual(run_id, value)
+            emit(event)
+            return 17
+
+        namespace["main"].__globals__["wait_for_job"] = fake_wait
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = namespace["main"](["wait", "--run-id", run_id])
+        self.assertEqual(17, exit_code)
+        self.assertEqual([event], [json.loads(line) for line in output.getvalue().splitlines()])
+
+    def test_cli_prepare_passes_required_check_and_targets(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        run_id = "check-20261015-123456-a1b2c3d4"
+        arguments = namespace["parse_args"]([
+            "prepare",
+            "--project-sha", SHA_A,
+            "--require-check", run_id,
+            "--require-target", "m:SystemUI",
+            "--device", "salami",
+        ])
+        calls = []
+        namespace["run"].__globals__["prepare_release"] = (
+            lambda *args, **kwargs: calls.append((args, kwargs)) or {}
+        )
+        namespace["run"](arguments)
+        self.assertEqual(
+            [((SHA_A, {}), {
+                "required_check": run_id,
+                "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
+            })],
+            calls,
+        )
 
     def test_cli_prepare_takes_no_channel(self) -> None:
         parse_args = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))["parse_args"]
@@ -317,6 +520,63 @@ class CliContractTest(unittest.TestCase):
 
 
 class RemotePrepareContractTest(unittest.TestCase):
+    def test_prepare_loads_only_matching_successful_check(self) -> None:
+        namespace = load_embedded_functions(
+            REMOTE_PREPARE_SCRIPT,
+            {"load_required_check"},
+            {"json": json, "Path": Path, "re": re, "sys": sys},
+        )
+        load = namespace["load_required_check"]
+        run_id = "check-20261015-123456-a1b2c3d4"
+        source = {
+            "project_sha": SHA_A,
+            "repositories": {"frameworks/base": SHA_B},
+            "manifest_sha256": "c" * 64,
+        }
+        result = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "workspace": "release",
+            "device": "salami",
+            "source": source,
+            "targets": [{
+                "ids": ["m:SystemUI"],
+                "executor": "m",
+                "argv": ["m", "SystemUI"],
+                "result": "passed",
+                "exit_code": 0,
+                "started_at": "2026-10-15T12:35:00Z",
+                "completed_at": "2026-10-15T12:36:00Z",
+            }],
+            "started_at": "2026-10-15T12:34:56Z",
+            "completed_at": "2026-10-15T12:36:01Z",
+            "log": f"/opt/android/out/yrrp-checks/{run_id}/job.log",
+            "result": "passed",
+            "exit_code": 0,
+            "failure_reason": None,
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_directory = root / run_id
+            run_directory.mkdir()
+            (run_directory / "result.json").write_text(json.dumps(result))
+            payload = {
+                "required_check": run_id,
+                "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
+            }
+            self.assertEqual(result, load(payload, source, root))
+            malformed = json.loads(json.dumps(result))
+            malformed["targets"][0]["argv"] = ["sh", "-c", "false"]
+            malformed["targets"][0]["exit_code"] = 99
+            (run_directory / "result.json").write_text(json.dumps(malformed))
+            with self.assertRaisesRegex(SystemExit, "evidence is invalid"):
+                load(payload, source, root)
+            result["source"] = {**source, "manifest_sha256": "d" * 64}
+            (run_directory / "result.json").write_text(json.dumps(result))
+            with self.assertRaisesRegex(SystemExit, "source"):
+                load(payload, source, root)
+
     def test_prepare_uses_nonblocking_shared_release_lock(self) -> None:
         self.assertIn("/home/android/.yrrp-build-launch.lock", REMOTE_PREPARE_SCRIPT)
         self.assertIn("fcntl.LOCK_EX | fcntl.LOCK_NB", REMOTE_PREPARE_SCRIPT)
@@ -627,6 +887,11 @@ class RemoteLaunchContractTest(unittest.TestCase):
             "reject_active_release": lambda **_: None,
             "validate_signing_and_network": lambda: None,
             "validate_signer_entry": lambda: None,
+            "load_required_check": lambda expected, source: {
+                "run_id": expected["required_check"],
+                "source": source,
+                "device": expected["required_device"],
+            },
         }
         return load_embedded_functions(
             REMOTE_LAUNCH_WORKER_SCRIPT, self.WORKER_FUNCTIONS, namespace

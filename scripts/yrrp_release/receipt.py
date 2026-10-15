@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import html
 import ipaddress
@@ -16,6 +17,7 @@ from urllib.parse import urlsplit
 
 from yrrp_ota.channel import BUILD_ID_PATTERN, Channel
 
+from .checks import validate_check_result
 from .launcher import APPROVAL, PROJECT_ROOT, validate_repo_path, validate_sha, validate_sha256
 from .receipt_channel import (
     INCREMENTAL_SUFFIX,
@@ -85,6 +87,7 @@ def render_receipt(document: dict[str, Any]) -> str:
         _release_identity(validated),
         _selected_changes(validated),
         _source(validated),
+        *([_source_checks(validated)] if "source_checks" in validated else []),
         _build_and_signing(validated),
         _artifacts(validated),
         _deployment(validated),
@@ -249,17 +252,22 @@ def _require_linked_directory(parent_fd: int, name: str, held_fd: int) -> None:
     ):
         raise OSError("receipt directory changed during publication")
 
+def validate_receipt_document(document: object) -> dict[str, Any]:
+    return _validate_document(copy.deepcopy(document))
+
+
 def _validate_document(document: Any) -> dict[str, Any]:
     result = _mapping(document, "receipt")
     _exact_keys(
         result,
         "receipt",
         TOP_LEVEL_SECTIONS,
-        optional=("accessibility_exclusion",),
+        optional=("accessibility_exclusion", "source_checks"),
     )
     _validate_identity(result)
     _validate_changes(result)
     _validate_source(result)
+    _validate_source_checks(result)
     _validate_build_and_signing(result)
     _validate_artifacts(result)
     _validate_deployment(result)
@@ -415,6 +423,33 @@ def _validate_source(document: dict[str, Any]) -> None:
         if name in seen:
             raise ValueError(f"duplicate repository: {name}")
         seen.add(name)
+
+def _validate_source_checks(document: dict[str, Any]) -> None:
+    if "source_checks" not in document:
+        return
+    checks = _list(document["source_checks"], "source_checks")
+    source = document["source"]
+    expected_source = {
+        "project_sha": source["project_sha"],
+        "repositories": {
+            repository["repository"]: repository["sha"]
+            for repository in source["repositories"]
+        },
+        "manifest_sha256": source["manifest_sha256"],
+    }
+    seen: set[str] = set()
+    validated: list[dict[str, object]] = []
+    for index, raw in enumerate(checks):
+        check = validate_check_result(raw)
+        run_id = check["run_id"]
+        if run_id in seen:
+            raise ValueError(f"duplicate source check run ID: {run_id}")
+        if check["source"] != expected_source:
+            raise ValueError(f"source_checks[{index}] source does not match receipt source")
+        seen.add(run_id)
+        validated.append(check)
+    document["source_checks"] = validated
+
 
 def _validate_build_and_signing(document: dict[str, Any]) -> None:
     section = _mapping(document["build_and_signing"], "build_and_signing")
@@ -897,6 +932,39 @@ def _source(document: dict[str, Any]) -> str:
         fence += "`"
     lines.extend(("- Revision-locked manifest:", f"{fence}xml", manifest, fence))
     return "\n".join(lines)
+
+def _source_checks(document: dict[str, Any]) -> str:
+    lines = ["## Source checks"]
+    checks = sorted(document["source_checks"], key=lambda item: item["run_id"])
+    if not checks:
+        lines.append("- None.")
+        return "\n".join(lines)
+    for check in checks:
+        lines.extend(
+            (
+                "",
+                f"### `{_md(check['run_id'])}`",
+                f"- Workspace: `{_md(check['workspace'])}`",
+                f"- Device: `{_md(check['device'])}`",
+                f"- Manifest SHA-256: `{_md(check['source']['manifest_sha256'])}`",
+                f"- Log: `{_md(check['log'])}`",
+            )
+        )
+        targets = sorted(
+            check["targets"],
+            key=lambda item: (0 if item["executor"] == "m" else 1, item["ids"]),
+        )
+        for target in targets:
+            command = " ".join(target["argv"])
+            if target["executor"] == "m":
+                lines.append(f"- Compilation: `{command}` — {_md(target['result'])}")
+                continue
+            count = target["executed_tests"]
+            lines.append(
+                f"- Test execution: `{command}` — {_md(count)} tests {_md(target['result'])}"
+            )
+    return "\n".join(lines)
+
 
 def _build_and_signing(document: dict[str, Any]) -> str:
     value = document["build_and_signing"]

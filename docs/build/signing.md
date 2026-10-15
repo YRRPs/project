@@ -10,12 +10,14 @@ Restore only through the `yrrp-signing-keys` procedure, verify `MANIFEST.sha256`
 
 One `yrrp-release-manager` session owns review, merge, exact source, build approval, release proof, and receipt. Feature owners provide local evidence and proof plans but have no builder access.
 
-1. Merge selected PRs and record each actual merged default-branch SHA.
-2. Run `python3 scripts/yrrp-release.py prepare --project-sha <sha> --repo <path>=<sha>`.
-3. Inspect returned project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, and manifest SHA-256.
-4. Ask through `AskUserQuestion` with **Build and release** and **Stop**. Name the channel to release in the question.
-5. Only after **Build and release**, run `python3 scripts/yrrp-release.py launch --approval 'Build and release' --channel <device>/<type>` with the same SHA arguments and exact `--manifest-sha256` from prepare.
-6. Monitor the detached status/log, verify artifacts and service, run device proof plans serially, and write the receipt through the fixed receipt command. Preserve the input JSON, tested/merged patch-ID evidence, and complete revision-locked manifest XML.
+1. List fixed IDs with `python3 scripts/yrrp-release.py targets`. Run declared targets against tested PR heads with `check --workspace isolated`, then `python3 scripts/yrrp-release.py wait --run-id <run-id>`.
+2. Merge selected PRs and record each actual merged default-branch SHA.
+3. Repeat required targets against merged SHAs with `check --workspace release`, then wait for every target to pass.
+4. Run `python3 scripts/yrrp-release.py prepare --require-check <run-id> --require-target <fixed-id> --device <device> --project-sha <sha> --repo <path>=<sha>`.
+5. Inspect returned source, local-manifest, revision-locked manifest, manifest SHA-256, and source-check evidence.
+6. Ask through `AskUserQuestion` with **Build and release** and **Stop**. Name the channel to release in the question.
+7. Only after **Build and release**, run `python3 scripts/yrrp-release.py launch --approval 'Build and release' --channel <device>/<type> --require-check <same-run-id> --require-target <same-fixed-id> --device <same-device>` with the same SHA arguments and exact `--manifest-sha256` from prepare.
+8. Monitor the detached status/log, verify artifacts and service, run device proof plans serially, and write the receipt with `source_checks`. Preserve the input JSON, tested/merged patch-ID evidence, and complete revision-locked manifest XML.
 
 Both prepare and launch use `/home/android/.yrrp-build-launch.lock`. Launch rechecks source and manifest before starting. Never call `sign-lineage-build.sh` directly.
 
@@ -86,6 +88,8 @@ Limits:
 ## Recovery
 
 An incremental or deployment retry does not require rebuilding. The release manager directly invokes the fixed incremental generator or deployer against existing `/opt/android/out/signed/` artifacts, with the release's `--channel`. The invoked script non-blockingly acquires and holds `/home/android/.yrrp-build-launch.lock` for the entire operation and refuses if the lock is busy. Prior read-only inspection may diagnose an active release, but it is not the locking mechanism and never authorizes a retry. Run the script detached with captured exit/output and repeat the affected verification. An OTA-server-only change must not rebuild or re-sign.
+
+Every successful deploy writes an immutable deployment record. A production rollback requires separate exact approval: `python3 scripts/yrrp-release.py rollback --approval 'Rollback <channel> to <build-id>' --channel <channel> --build-id <build-id>`, followed by `python3 scripts/yrrp-release.py wait --run-id <run-id>`. For older builds without a record, add `--receipt-input <preserved-input.json>`. The command accepts no artifact paths and never defaults the channel.
 
 ## Clean installation
 

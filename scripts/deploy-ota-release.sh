@@ -5,6 +5,7 @@ readonly script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 readonly prepare_script=${script_dir}/prepare-ota-release.py
 readonly carry_tool=${script_dir}/ota-carry-over.py
 readonly channel_tool=${script_dir}/ota-channel.py
+readonly deployment_record_module=yrrp_release.deployment_record
 source "${script_dir}/yrrp-release-lib.sh"
 : "${OTA_PUBLIC_BASE_URL:=https://ota.yimura.dev}"
 : "${OTA_BASE_IMAGE_REF:=ghcr.io/yrrps/ota-server:main}"
@@ -17,13 +18,13 @@ readonly health_timeout=${OTA_HEALTH_TIMEOUT:-90}
 readonly health_interval=${OTA_HEALTH_INTERVAL:-2}
 readonly work_dir=${OTA_WORK_DIR:-/opt/android/out/ota-release-contexts}
 readonly lock_file=${OTA_LOCK_FILE:-/opt/android/out/.ota-deploy.lock}
+readonly signed_root=${YRRP_SIGNED_ROOT:-/opt/android/out/signed}
 
 channel=salami/vanilla
 ota=
 target_files=
 build_id=
 incremental=
-source_incremental=
 context=
 previous_exists=false
 previous_stopped=false
@@ -85,6 +86,14 @@ cleanup() {
 
 require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command missing: $1"
+}
+
+require_signed_artifact() {
+    local path=$1 canonical
+    canonical=$(realpath -e "${path}") || fail "signed artifact is missing: ${path}"
+    [[ $(dirname "${canonical}") == "${signed_root_canonical}" ]] \
+        || fail "artifact must be directly beneath signed root: ${path}"
+    printf '%s\n' "${canonical}"
 }
 
 wait_for_health() {
@@ -210,6 +219,15 @@ yrrp_require_build_lock_free || exit 1
 require_command docker
 require_command flock
 require_command python3
+require_command realpath
+signed_root_canonical=$(realpath -e "${signed_root}") \
+    || fail "signed root is missing: ${signed_root}"
+ota=$(require_signed_artifact "${ota}")
+target_files=$(require_signed_artifact "${target_files}")
+if [[ -n ${incremental} ]]; then
+    incremental=$(require_signed_artifact "${incremental}")
+fi
+readonly signed_root_canonical
 [[ -S /var/run/docker.sock ]] || fail "Docker socket is unavailable"
 [[ -x "${prepare_script}" ]] || fail "release preparer is missing or not executable: ${prepare_script}"
 [[ ${OTA_PUBLIC_BASE_URL:-} == https://* ]] || fail "OTA_PUBLIC_BASE_URL must use HTTPS"
@@ -257,6 +275,19 @@ if [[ -n ${incremental} ]]; then
     incremental_route=$(channel_field updates-incremental "${source_incremental}") \
         || fail "cannot derive the incremental route for ${channel}"
 fi
+record_args=(
+    --channel "${channel}"
+    --build-id "${build_id}"
+    --signed-root "${signed_root_canonical}"
+    --ota-name "$(basename "${ota}")"
+    --target-files-name "$(basename "${target_files}")"
+    --output "${context}/deployment-record.json"
+)
+if [[ -n ${incremental} ]]; then
+    record_args+=(--incremental-name "$(basename "${incremental}")")
+fi
+PYTHONPATH="${script_dir}" python3 -m "${deployment_record_module}" prepare \
+    "${record_args[@]}"
 # Only channel labels from here on; the legacy device/build-id pair is never written again.
 label_args=(--label io.yrrp.ota.release=true --label "${channel_label}=${build_id}")
 if ${previous_exists}; then
@@ -302,6 +333,9 @@ docker run -d \
 
 wait_for_health "${container_name}" || fail "candidate OTA container did not become healthy"
 verify_candidate || fail "candidate OTA endpoint verification failed"
+PYTHONPATH="${script_dir}" python3 -m "${deployment_record_module}" publish \
+    --record "${context}/deployment-record.json" \
+    --signed-root "${signed_root_canonical}"
 
 deployment_complete=true
 report complete

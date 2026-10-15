@@ -19,7 +19,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from yrrp_ota.channel import Channel
-from yrrp_release.receipt import render_receipt, write_receipt
+from yrrp_release.receipt import render_receipt, validate_receipt_document, write_receipt
 
 BUILD_ID = "20261008-123456"
 SHA_A = "a" * 40
@@ -195,6 +195,62 @@ def accepted_incremental_release(channel: str = "salami/vanilla") -> dict:
 
 
 class ReceiptRenderingTest(unittest.TestCase):
+    def test_public_validator_returns_independent_document(self) -> None:
+        source = accepted_incremental_release()
+        validated = validate_receipt_document(source)
+        self.assertEqual(source, validated)
+        self.assertIsNot(source, validated)
+
+    def test_renders_validated_source_check_evidence(self) -> None:
+        document = accepted_incremental_release()
+        run_id = "check-20261015-123456-a1b2c3d4"
+        document["source_checks"] = [{
+            "schema_version": 1,
+            "run_id": run_id,
+            "workspace": "release",
+            "device": "salami",
+            "source": {
+                "project_sha": SHA_B,
+                "repositories": {"frameworks/base": SHA_A},
+                "manifest_sha256": MANIFEST_DIGEST,
+            },
+            "targets": [
+                {
+                    "ids": ["m:SystemUI"],
+                    "executor": "m",
+                    "argv": ["m", "SystemUI"],
+                    "result": "passed",
+                    "exit_code": 0,
+                    "started_at": "2026-10-15T12:35:00Z",
+                    "completed_at": "2026-10-15T12:36:00Z",
+                },
+                {
+                    "ids": ["atest:SystemUITests_presubmit"],
+                    "executor": "atest",
+                    "argv": ["atest", "SystemUITests_presubmit"],
+                    "result": "passed",
+                    "exit_code": 0,
+                    "executed_tests": 12,
+                    "started_at": "2026-10-15T12:36:00Z",
+                    "completed_at": "2026-10-15T12:37:00Z",
+                },
+            ],
+            "started_at": "2026-10-15T12:34:56Z",
+            "completed_at": "2026-10-15T12:37:01Z",
+            "log": f"/opt/android/out/yrrp-checks/{run_id}/job.log",
+            "result": "passed",
+            "exit_code": 0,
+            "failure_reason": None,
+        }]
+        rendered = render_receipt(document)
+        self.assertIn("## Source checks", rendered)
+        self.assertIn("- Compilation: `m SystemUI` — passed", rendered)
+        self.assertIn(
+            "- Test execution: `atest SystemUITests_presubmit` — 12 tests passed",
+            rendered,
+        )
+        self.assertLess(rendered.index("## Source checks"), rendered.index("## Build and signing"))
+
     def test_renders_deterministic_sections_and_incremental_release(self) -> None:
         document = accepted_incremental_release()
         first = render_receipt(document)
