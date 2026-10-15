@@ -3,10 +3,13 @@ from __future__ import annotations
 import ast
 import copy
 import json
+import os
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -17,6 +20,7 @@ if str(SCRIPTS) not in sys.path:
 
 from yrrp_release.checks import (
     CHECK_TARGET_SCRIPT,
+    ISOLATED_WORKSPACE_SETUP_SCRIPT,
     REMOTE_CHECK_INNER_SCRIPT,
     REMOTE_CHECK_SCRIPT,
     match_check_to_source,
@@ -307,6 +311,111 @@ class CheckLaunchTest(unittest.TestCase):
             REMOTE_CHECK_SCRIPT,
         )
 
+    def test_isolated_container_has_writable_home(self) -> None:
+        self.assertIn('"--env", "HOME=/opt/android/.home"', REMOTE_CHECK_SCRIPT)
+
+    def test_isolated_workspace_setup_removes_partial_initialization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory)
+            (workspace / ".repo").mkdir()
+            (workspace / ".repo" / "partial").write_text("stale\n")
+            (workspace / "stale-file").write_text("stale\n")
+            (workspace / "stale-link").symlink_to(workspace / "stale-file")
+            subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    ISOLATED_WORKSPACE_SETUP_SCRIPT,
+                    str(workspace),
+                    str(os.getuid()),
+                    str(os.getgid()),
+                ],
+                check=True,
+            )
+            self.assertEqual([".home"], [path.name for path in workspace.iterdir()])
+            self.assertEqual(0o700, (workspace / ".home").stat().st_mode & 0o777)
+
+    def test_manifest_remotes_fetch_exact_sha_from_real_git_layouts(self) -> None:
+        functions = {
+            node.name: node
+            for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef)
+            and node.name in ("manifest_repository_remotes", "fetch_repository_revision")
+        }
+
+        def run(*args, cwd=None, check=True):
+            return subprocess.run(
+                list(args), cwd=cwd, capture_output=True, check=check, text=True
+            )
+
+        def output(*args, cwd=None):
+            return run(*args, cwd=cwd).stdout.strip()
+
+        namespace = {"ET": ET, "output": output, "re": re, "run": run}
+        exec(
+            compile(ast.Module(body=list(functions.values()), type_ignores=[]), "remote", "exec"),
+            namespace,
+        )
+        manifest = """\
+<manifest>
+  <remote name="yrrp" fetch="https://github.com/YRRPs" />
+  <remote name="private" fetch="ssh://private.example" />
+  <default remote="yrrp" revision="refs/heads/lineage-23.2" />
+  <project name="android_packages_apps_ThemePicker" path="packages/apps/ThemePicker" />
+  <project name="android_vendor_oplus_camera-salami" path="vendor/oplus/camera-salami" remote="private" />
+</manifest>
+"""
+        remotes = namespace["manifest_repository_remotes"](manifest)
+        self.assertEqual("yrrp", remotes["packages/apps/ThemePicker"])
+        self.assertEqual("private", remotes["vendor/oplus/camera-salami"])
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            upstream = root / "upstream.git"
+            seed = root / "seed"
+            subprocess.run(["git", "init", "--bare", str(upstream)], check=True, capture_output=True)
+            subprocess.run(["git", "init", str(seed)], check=True, capture_output=True)
+            subprocess.run(
+                ["git", "-C", str(seed), "config", "user.name", "Check Test"], check=True
+            )
+            subprocess.run(
+                ["git", "-C", str(seed), "config", "user.email", "check@example.invalid"],
+                check=True,
+            )
+            (seed / "source.txt").write_text("source\n")
+            subprocess.run(["git", "-C", str(seed), "add", "source.txt"], check=True)
+            subprocess.run(["git", "-C", str(seed), "commit", "-m", "source"], check=True, capture_output=True)
+            expected_sha = output("git", "rev-parse", "HEAD", cwd=seed)
+            subprocess.run(
+                ["git", "-C", str(seed), "push", str(upstream), "HEAD:refs/heads/main"],
+                check=True,
+                capture_output=True,
+            )
+
+            for remote_name in ("yrrp", "private"):
+                with self.subTest(remote_name=remote_name):
+                    checkout = root / f"checkout-{remote_name}"
+                    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+                    subprocess.run(
+                        [
+                            "git",
+                            "-C",
+                            str(checkout),
+                            "remote",
+                            "add",
+                            remote_name,
+                            str(upstream),
+                        ],
+                        check=True,
+                    )
+                    namespace["fetch_repository_revision"](
+                        checkout, remote_name, expected_sha
+                    )
+                    self.assertEqual(
+                        expected_sha,
+                        output("git", "rev-parse", "HEAD", cwd=checkout),
+                    )
+
     def test_result_parser_accepts_interleaved_request_order(self) -> None:
         function = next(
             node
@@ -356,7 +465,11 @@ class CheckLaunchTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(json.dumps(document))
 
-        namespace = {"atomic_json": atomic_json, "utc_now": lambda: "2026-10-15T12:00:00Z"}
+        namespace = {
+            "atomic_json": atomic_json,
+            "json": json,
+            "utc_now": lambda: "2026-10-15T12:00:00Z",
+        }
         exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -368,9 +481,122 @@ class CheckLaunchTest(unittest.TestCase):
             }
             namespace["ensure_isolated_result"](payload, RUN_ID, 17, root)
             result = json.loads((root / RUN_ID / "result.json").read_text())
+            status = json.loads((root / RUN_ID / "status.json").read_text())
         self.assertEqual("failed", result["result"])
         self.assertEqual(17, result["exit_code"])
         self.assertIn("without-result", result["failure_reason"])
+        self.assertEqual(
+            {
+                "run_id": RUN_ID,
+                "phase": "failed",
+                "result": "failed",
+                "exit_code": 17,
+                "failure_reason": "isolated-check-exit-17-without-result",
+            },
+            status,
+        )
+
+    def test_existing_isolated_result_replaces_pending_status(self) -> None:
+        function = next(
+            node
+            for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name == "ensure_isolated_result"
+        )
+
+        def atomic_json(path, document, exclusive=False):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(document))
+
+        namespace = {
+            "atomic_json": atomic_json,
+            "json": json,
+            "utc_now": lambda: "2026-10-15T12:00:00Z",
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_directory = root / RUN_ID
+            run_directory.mkdir()
+            (run_directory / "result.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": RUN_ID,
+                        "result": "passed",
+                        "exit_code": 0,
+                        "failure_reason": None,
+                    }
+                )
+            )
+            (run_directory / "status.json").write_text(
+                json.dumps(
+                    {"run_id": RUN_ID, "phase": "targets", "result": "pending"}
+                )
+            )
+            created = namespace["ensure_isolated_result"](
+                {"workspace": "isolated"}, RUN_ID, 0, root
+            )
+            status = json.loads((run_directory / "status.json").read_text())
+        self.assertFalse(created)
+        self.assertEqual(
+            {
+                "run_id": RUN_ID,
+                "phase": "complete",
+                "result": "passed",
+                "exit_code": 0,
+            },
+            status,
+        )
+
+    def test_isolated_result_create_race_uses_immutable_winner(self) -> None:
+        function = next(
+            node
+            for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name == "ensure_isolated_result"
+        )
+        winner = {
+            "run_id": RUN_ID,
+            "result": "passed",
+            "exit_code": 0,
+            "failure_reason": None,
+        }
+
+        def atomic_json(path, document, exclusive=False):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if exclusive:
+                path.write_text(json.dumps(winner))
+                raise FileExistsError(path)
+            path.write_text(json.dumps(document))
+
+        namespace = {
+            "atomic_json": atomic_json,
+            "json": json,
+            "utc_now": lambda: "2026-10-15T12:00:00Z",
+        }
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            created = namespace["ensure_isolated_result"](
+                {
+                    "workspace": "isolated",
+                    "device": "salami",
+                    "project_sha": SHA_A,
+                    "repositories": {},
+                },
+                RUN_ID,
+                1,
+                root,
+            )
+            status = json.loads((root / RUN_ID / "status.json").read_text())
+        self.assertFalse(created)
+        self.assertEqual(
+            {
+                "run_id": RUN_ID,
+                "phase": "complete",
+                "result": "passed",
+                "exit_code": 0,
+            },
+            status,
+        )
 
     def test_target_script_sources_environment_once_without_set_u(self) -> None:
         self.assertEqual(1, CHECK_TARGET_SCRIPT.count("source build/envsetup.sh"))
