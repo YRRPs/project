@@ -8,6 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from yrrp_release.checks import start_check
 from yrrp_release.jobs import JobProtocolError, wait_for_job
 from yrrp_release.launcher import (
     ReleaseError,
@@ -26,9 +27,13 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     commands = parser.add_subparsers(dest="command", required=True)
     prepare = commands.add_parser("prepare")
     launch = commands.add_parser("launch")
-    for command in (prepare, launch):
+    check = commands.add_parser("check")
+    for command in (prepare, launch, check):
         command.add_argument("--project-sha", required=True)
         command.add_argument("--repo", action="append", default=[], metavar="PATH=SHA")
+    check.add_argument("--workspace", required=True, choices=("isolated", "release"))
+    check.add_argument("--device", required=True)
+    check.add_argument("--target", action="append", default=[])
     launch.add_argument("--approval", required=True)
     launch.add_argument("--manifest-sha256", required=True)
     launch.add_argument("--channel", required=True, metavar="DEVICE/TYPE")
@@ -50,6 +55,14 @@ def run(arguments: argparse.Namespace) -> dict:
     repositories = parse_repository_arguments(arguments.repo)
     if arguments.command == "prepare":
         return prepare_release(project_sha, repositories)
+    if arguments.command == "check":
+        return start_check(
+            workspace=arguments.workspace,
+            project_sha=project_sha,
+            repositories=repositories,
+            device=arguments.device,
+            target_ids=arguments.target,
+        )
     manifest_sha256 = validate_sha256(arguments.manifest_sha256, "manifest SHA-256")
     return launch_release(
         arguments.approval,

@@ -6,8 +6,16 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
+from .check_remote import CHECK_TARGET_SCRIPT, REMOTE_CHECK_SCRIPT
 from .jobs import parse_run_id, paths_for_run
-from .launcher import validate_repo_path, validate_sha, validate_sha256
+from .launcher import (
+    parse_repository_arguments,
+    run_remote,
+    validate_repo_path,
+    validate_sha,
+    validate_sha256,
+    verify_local_project,
+)
 from .targets import parse_targets, validate_device
 
 ATEST_SUMMARY_PATTERN = re.compile(
@@ -37,6 +45,54 @@ TARGET_KEYS = frozenset(
 )
 
 
+def start_check(
+    *,
+    workspace: str,
+    project_sha: str,
+    repositories: dict[str, str],
+    device: str,
+    target_ids: Sequence[str],
+) -> dict[str, object]:
+    if workspace not in ("isolated", "release"):
+        raise ValueError(f"unsupported check workspace: {workspace!r}")
+    validated_project = validate_sha(project_sha, "project SHA")
+    repository_arguments = [f"{path}={sha}" for path, sha in repositories.items()]
+    validated_repositories = parse_repository_arguments(repository_arguments)
+    validated_device = validate_device(device)
+    validated_targets = [target.id for target in parse_targets(list(target_ids))]
+    verify_local_project(validated_project)
+    acknowledgment = run_remote(
+        REMOTE_CHECK_SCRIPT,
+        {
+            "workspace": workspace,
+            "project_sha": validated_project,
+            "repositories": validated_repositories,
+            "device": validated_device,
+            "targets": validated_targets,
+        },
+    )
+    return _validate_acknowledgment(acknowledgment, workspace)
+
+
+def _validate_acknowledgment(
+    document: object, expected_workspace: str
+) -> dict[str, object]:
+    acknowledgment = _mapping(document, "check acknowledgment")
+    expected_keys = frozenset({"run_id", "workspace", "status", "log"})
+    _require_keys(acknowledgment, expected_keys, "check acknowledgment")
+    run_id = _text(acknowledgment["run_id"], "check acknowledgment.run_id")
+    if parse_run_id(run_id) != "check":
+        raise ValueError("check acknowledgment has non-check run ID")
+    if acknowledgment["workspace"] != expected_workspace:
+        raise ValueError("check acknowledgment workspace does not match request")
+    paths = paths_for_run(run_id)
+    if acknowledgment["status"] != str(paths.status):
+        raise ValueError("check acknowledgment has unexpected status path")
+    if acknowledgment["log"] != str(paths.log):
+        raise ValueError("check acknowledgment has unexpected log path")
+    return copy.deepcopy(acknowledgment)
+
+
 def parse_atest_result(output: str) -> int:
     matches = list(ATEST_SUMMARY_PATTERN.finditer(output))
     if len(matches) != 1:
@@ -60,7 +116,8 @@ def validate_check_result(document: object) -> dict[str, object]:
         raise ValueError("check result has unsupported workspace")
     validate_device(_text(check["device"], "check result.device"))
     source = _validate_source(check["source"])
-    targets = _validate_targets(check["targets"])
+    result = _result(check["result"], "check result.result")
+    targets = _validate_targets(check["targets"], allow_empty=result == "failed")
     started = _timestamp(check["started_at"], "check result.started_at")
     completed = _timestamp(check["completed_at"], "check result.completed_at")
     if completed < started:
@@ -68,7 +125,6 @@ def validate_check_result(document: object) -> dict[str, object]:
     expected_log = str(paths_for_run(run_id).log)
     if check["log"] != expected_log:
         raise ValueError("check result log path does not match run ID")
-    result = _result(check["result"], "check result.result")
     exit_code = _exit_code(check["exit_code"], "check result.exit_code")
     failure_reason = check["failure_reason"]
     _validate_outcome(result, exit_code, failure_reason, targets)
@@ -131,9 +187,13 @@ def _validate_source(value: object) -> dict[str, object]:
     }
 
 
-def _validate_targets(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list) or not value:
-        raise TypeError("check result.targets must be a non-empty list")
+def _validate_targets(
+    value: object, *, allow_empty: bool = False
+) -> list[dict[str, object]]:
+    if not isinstance(value, list):
+        raise TypeError("check result.targets must be a list")
+    if not value and not allow_empty:
+        raise TypeError("passed check result.targets must be non-empty")
     seen: set[str] = set()
     validated: list[dict[str, object]] = []
     for index, raw in enumerate(value):
@@ -200,7 +260,7 @@ def _validate_outcome(
         if exit_code != 0 or not all_passed or failure_reason is not None:
             raise ValueError("passed check result has inconsistent outcome evidence")
         return
-    if exit_code == 0 or all_passed:
+    if exit_code == 0 or (targets and all_passed):
         raise ValueError("failed check result has inconsistent outcome evidence")
     if not isinstance(failure_reason, str) or not failure_reason.strip():
         raise TypeError("failed check result requires a failure reason")

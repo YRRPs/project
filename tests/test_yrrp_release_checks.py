@@ -4,6 +4,7 @@ import copy
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
@@ -11,8 +12,11 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from yrrp_release.checks import (
+    CHECK_TARGET_SCRIPT,
+    REMOTE_CHECK_SCRIPT,
     match_check_to_source,
     parse_atest_result,
+    start_check,
     validate_check_result,
 )
 
@@ -131,6 +135,14 @@ class CheckResultValidationTest(unittest.TestCase):
             with self.subTest(document=document), self.assertRaises((TypeError, ValueError)):
                 validate_check_result(document)
 
+    def test_accepts_failure_before_any_target_starts(self) -> None:
+        document = valid_result()
+        document["targets"] = []
+        document["result"] = "failed"
+        document["exit_code"] = 1
+        document["failure_reason"] = "source synchronization failed"
+        self.assertEqual([], validate_check_result(document)["targets"])
+
     def test_accepts_failed_atest_before_test_execution(self) -> None:
         document = valid_result()
         document["result"] = "failed"
@@ -207,6 +219,86 @@ class SourceMatchTest(unittest.TestCase):
             prepared[field] = changed
             with self.subTest(field=field), self.assertRaises(ValueError):
                 match_check_to_source(valid_result(), prepared, ("m:ThemePicker",))
+
+
+class CheckLaunchTest(unittest.TestCase):
+    @patch("yrrp_release.checks.run_remote")
+    @patch("yrrp_release.checks.verify_local_project")
+    def test_start_check_sends_only_validated_json(self, verify, remote) -> None:
+        remote.return_value = {
+            "run_id": RUN_ID,
+            "workspace": "isolated",
+            "status": f"/opt/android/out/yrrp-checks/{RUN_ID}/status.json",
+            "log": f"/opt/android/out/yrrp-checks/{RUN_ID}/job.log",
+        }
+        result = start_check(
+            workspace="isolated",
+            project_sha=SHA_A,
+            repositories={"packages/apps/ThemePicker": SHA_B},
+            device="salami",
+            target_ids=["m:ThemePicker", "atest:ThemePickerRoboTests"],
+        )
+        verify.assert_called_once_with(SHA_A)
+        self.assertEqual(
+            {
+                "workspace": "isolated",
+                "project_sha": SHA_A,
+                "repositories": {"packages/apps/ThemePicker": SHA_B},
+                "device": "salami",
+                "targets": ["m:ThemePicker", "atest:ThemePickerRoboTests"],
+            },
+            remote.call_args.args[1],
+        )
+        self.assertEqual(RUN_ID, result["run_id"])
+
+    @patch("yrrp_release.checks.run_remote")
+    @patch("yrrp_release.checks.verify_local_project")
+    def test_invalid_request_never_contacts_builder(self, verify, remote) -> None:
+        cases = (
+            {"workspace": "other", "device": "salami", "targets": ["m:ThemePicker"]},
+            {"workspace": "isolated", "device": "other", "targets": ["m:ThemePicker"]},
+            {"workspace": "isolated", "device": "salami", "targets": ["m:Unknown"]},
+        )
+        for case in cases:
+            with self.subTest(case=case), self.assertRaises(ValueError):
+                start_check(
+                    workspace=case["workspace"],
+                    project_sha=SHA_A,
+                    repositories={},
+                    device=case["device"],
+                    target_ids=case["targets"],
+                )
+        verify.assert_not_called()
+        remote.assert_not_called()
+
+    def test_remote_check_contract_uses_shared_lock_and_detached_screen(self) -> None:
+        self.assertIn("/home/android/.yrrp-build-launch.lock", REMOTE_CHECK_SCRIPT)
+        self.assertIn("fcntl.LOCK_EX | fcntl.LOCK_NB", REMOTE_CHECK_SCRIPT)
+        self.assertIn('"screen", "-L", "-Logfile"', REMOTE_CHECK_SCRIPT)
+        self.assertIn('"-dmS", run_id', REMOTE_CHECK_SCRIPT)
+        self.assertIn('atomic_json(result_path', REMOTE_CHECK_SCRIPT)
+
+    def test_isolated_mounts_do_not_share_release_source_or_output(self) -> None:
+        self.assertIn(
+            "/mnt/fast/docker/android/check-workspace:/opt/android:rw",
+            REMOTE_CHECK_SCRIPT,
+        )
+        self.assertIn("/mnt/fast/docker/android/ccache:/ccache:rw", REMOTE_CHECK_SCRIPT)
+        self.assertIn(
+            "/mnt/fast/docker/android/project:/opt/yrrp/project:ro",
+            REMOTE_CHECK_SCRIPT,
+        )
+        self.assertNotIn(
+            "/mnt/fast/docker/android/workspace:/opt/android",
+            REMOTE_CHECK_SCRIPT,
+        )
+
+    def test_target_script_sources_environment_once_without_set_u(self) -> None:
+        self.assertEqual(1, CHECK_TARGET_SCRIPT.count("source build/envsetup.sh"))
+        self.assertEqual(1, CHECK_TARGET_SCRIPT.count("breakfast"))
+        self.assertNotIn("set -u", CHECK_TARGET_SCRIPT)
+        self.assertIn('run_one m "${compile_csv}"', CHECK_TARGET_SCRIPT)
+        self.assertIn('atest "${atest_targets[${suite_index}]}"', CHECK_TARGET_SCRIPT)
 
 
 if __name__ == "__main__":

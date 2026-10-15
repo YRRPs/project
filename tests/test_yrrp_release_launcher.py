@@ -318,6 +318,32 @@ class CliContractTest(unittest.TestCase):
         self.assertIn("m:ThemePicker", result["targets"])
         self.assertFalse(hasattr(arguments, "project_sha"))
 
+    def test_cli_check_passes_validated_request_to_launcher(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        arguments = namespace["parse_args"]([
+            "check",
+            "--workspace", "isolated",
+            "--project-sha", SHA_A,
+            "--repo", f"packages/apps/ThemePicker={SHA_B}",
+            "--device", "salami",
+            "--target", "m:ThemePicker",
+        ])
+        calls = []
+        namespace["run"].__globals__["start_check"] = (
+            lambda **kwargs: calls.append(kwargs) or {"run_id": "check-id"}
+        )
+        self.assertEqual({"run_id": "check-id"}, namespace["run"](arguments))
+        self.assertEqual(
+            [{
+                "workspace": "isolated",
+                "project_sha": SHA_A,
+                "repositories": {"packages/apps/ThemePicker": SHA_B},
+                "device": "salami",
+                "target_ids": ["m:ThemePicker"],
+            }],
+            calls,
+        )
+
     def test_cli_wait_streams_events_without_result_wrapper(self) -> None:
         namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
         run_id = "check-20261015-123456-a1b2c3d4"
