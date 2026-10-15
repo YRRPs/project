@@ -59,6 +59,12 @@ while True:
             last_event = encoded
     if result_path.is_file():
         result = json.loads(result_path.read_text())
+        if not isinstance(result, dict):
+            raise SystemExit("job result is not a JSON object")
+        result = dict(result)
+        result.setdefault(
+            "phase", "complete" if result.get("result") == "passed" else "failed"
+        )
         encoded = json.dumps(result, sort_keys=True)
         if encoded != last_event:
             print(encoded, flush=True)
@@ -194,10 +200,14 @@ def _validated_event(line: str, run_id: str) -> dict[str, object]:
         raise JobProtocolError("remote wait event must be a JSON object")
     if event.get("run_id") != run_id:
         raise JobProtocolError("remote wait event has wrong run ID")
-    if not isinstance(event.get("phase"), str) or not isinstance(
-        event.get("result"), str
-    ):
-        raise JobProtocolError("remote wait event lacks phase or result")
+    result = event.get("result")
+    if not isinstance(result, str):
+        raise JobProtocolError("remote wait event lacks result")
+    if "phase" not in event and result != "pending":
+        event = dict(event)
+        event["phase"] = "complete" if result == "passed" else "failed"
+    if not isinstance(event.get("phase"), str):
+        raise JobProtocolError("remote wait event lacks phase")
     return event
 
 
@@ -223,10 +233,11 @@ def wait_for_job(
     for line in process.stdout:
         event = _validated_event(line, run_id)
         key = (cast(str, event["phase"]), cast(str, event["result"]))
-        if key != last_key:
+        is_final = event["result"] != "pending"
+        if is_final or key != last_key:
             emit(event)
             last_key = key
-        if event["result"] != "pending":
+        if is_final:
             exit_code = event.get("exit_code")
             if not isinstance(exit_code, int) or isinstance(exit_code, bool):
                 raise JobProtocolError("final result has invalid exit code")

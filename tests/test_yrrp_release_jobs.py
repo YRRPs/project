@@ -142,6 +142,46 @@ class WaitProtocolTest(unittest.TestCase):
         self.assertEqual([phase, final], emitted)
         self.assertEqual({"run_id": CHECK_RUN}, json.loads(process.stdin.getvalue()))
 
+    def test_accepts_check_result_without_stored_phase(self) -> None:
+        result = {
+            "schema_version": 1,
+            "run_id": CHECK_RUN,
+            "workspace": "release",
+            "result": "passed",
+            "exit_code": 0,
+        }
+        process = FakeProcess([json.dumps(result) + "\n"], 0)
+        emitted: list[dict] = []
+        self.assertEqual(
+            0,
+            wait_for_job(CHECK_RUN, emitted.append, popen=lambda *a, **k: process),
+        )
+        self.assertEqual("complete", emitted[0]["phase"])
+        self.assertEqual("release", emitted[0]["workspace"])
+
+    def test_emits_rich_final_result_after_same_phase_status(self) -> None:
+        status = {
+            "run_id": ROLLBACK_RUN,
+            "phase": "complete",
+            "result": "passed",
+            "exit_code": 0,
+        }
+        result = {
+            **status,
+            "channel": "salami/gapps",
+            "build_id": "20261013-151101",
+        }
+        process = FakeProcess(
+            [json.dumps(status) + "\n", json.dumps(result) + "\n"],
+            0,
+        )
+        emitted: list[dict] = []
+        self.assertEqual(
+            0,
+            wait_for_job(ROLLBACK_RUN, emitted.append, popen=lambda *a, **k: process),
+        )
+        self.assertEqual([status, result], emitted)
+
     def test_returns_failed_worker_exit_code(self) -> None:
         final = {
             "run_id": ROLLBACK_RUN,
