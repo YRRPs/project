@@ -8,6 +8,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from yrrp_release.jobs import JobProtocolError, wait_for_job
 from yrrp_release.launcher import (
     ReleaseError,
     launch_release,
@@ -34,6 +35,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     receipt = commands.add_parser("receipt")
     receipt.add_argument("--input", required=True, metavar="JSON-FILE-OR--")
     commands.add_parser("targets")
+    wait = commands.add_parser("wait")
+    wait.add_argument("--run-id", required=True)
     return parser.parse_args(argv)
 
 
@@ -71,8 +74,23 @@ def _load_receipt_input(source: str) -> dict:
 
 def main(argv: Sequence[str] | None = None) -> int:
     try:
-        result = run(parse_args(argv))
-    except (OSError, ReleaseError, TypeError, ValueError, subprocess.SubprocessError) as error:
+        arguments = parse_args(argv)
+        if arguments.command == "wait":
+            return wait_for_job(
+                arguments.run_id,
+                emit=lambda event: print(
+                    json.dumps(event, sort_keys=True), flush=True
+                ),
+            )
+        result = run(arguments)
+    except (
+        JobProtocolError,
+        OSError,
+        ReleaseError,
+        TypeError,
+        ValueError,
+        subprocess.SubprocessError,
+    ) as error:
         print(f"release error: {error}", file=sys.stderr)
         return 2
     print(json.dumps(result, sort_keys=True))

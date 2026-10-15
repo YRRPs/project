@@ -318,6 +318,28 @@ class CliContractTest(unittest.TestCase):
         self.assertIn("m:ThemePicker", result["targets"])
         self.assertFalse(hasattr(arguments, "project_sha"))
 
+    def test_cli_wait_streams_events_without_result_wrapper(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        run_id = "check-20261015-123456-a1b2c3d4"
+        event = {
+            "run_id": run_id,
+            "phase": "failed",
+            "result": "failed",
+            "exit_code": 17,
+        }
+
+        def fake_wait(value, emit):
+            self.assertEqual(run_id, value)
+            emit(event)
+            return 17
+
+        namespace["main"].__globals__["wait_for_job"] = fake_wait
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            exit_code = namespace["main"](["wait", "--run-id", run_id])
+        self.assertEqual(17, exit_code)
+        self.assertEqual([event], [json.loads(line) for line in output.getvalue().splitlines()])
+
     def test_cli_prepare_takes_no_channel(self) -> None:
         parse_args = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))["parse_args"]
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
