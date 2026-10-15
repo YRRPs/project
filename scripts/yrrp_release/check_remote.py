@@ -70,11 +70,34 @@ _TARGET_REGISTRY = {
     for identifier, target in TARGETS.items()
 }
 
+ISOLATED_WORKSPACE_SETUP_SCRIPT = r'''
+import os
+import shutil
+import sys
+from pathlib import Path
+
+workspace = Path(sys.argv[1])
+uid = int(sys.argv[2])
+gid = int(sys.argv[3])
+for child in workspace.iterdir():
+    if child.is_dir() and not child.is_symlink():
+        shutil.rmtree(child)
+    else:
+        child.unlink()
+os.chown(workspace, uid, gid)
+workspace.chmod(0o755)
+home = workspace / ".home"
+home.mkdir(mode=0o700)
+os.chown(home, uid, gid)
+home.chmod(0o700)
+'''
+
 _REMOTE_CHECK_BODY = r'''
 import json
 import os
 import re
 import tempfile
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -164,30 +187,45 @@ def ensure_isolated_result(payload, run_id, exit_code, check_root=None):
     if check_root is None:
         check_root = CHECK_ROOT
     result_path = check_root / run_id / "result.json"
-    if result_path.is_file():
-        return False
-    failure_code = exit_code if exit_code != 0 else 1
-    reason = f"isolated-check-exit-{failure_code}-without-result"
-    timestamp = utc_now()
-    atomic_json(result_path, {
-        "schema_version": 1,
+    created = not result_path.is_file()
+    if created:
+        failure_code = exit_code if exit_code != 0 else 1
+        reason = f"isolated-check-exit-{failure_code}-without-result"
+        timestamp = utc_now()
+        try:
+            atomic_json(result_path, {
+                "schema_version": 1,
+                "run_id": run_id,
+                "workspace": payload["workspace"],
+                "device": payload["device"],
+                "source": {
+                    "project_sha": payload["project_sha"],
+                    "repositories": payload["repositories"],
+                    "manifest_sha256": "0" * 64,
+                },
+                "targets": [],
+                "started_at": timestamp,
+                "completed_at": timestamp,
+                "log": str(check_root / run_id / "job.log"),
+                "result": "failed",
+                "exit_code": failure_code,
+                "failure_reason": reason,
+            }, exclusive=True)
+        except FileExistsError:
+            created = False
+    result_document = json.loads(result_path.read_text())
+    result_name = result_document["result"]
+    terminal_status = {
         "run_id": run_id,
-        "workspace": payload["workspace"],
-        "device": payload["device"],
-        "source": {
-            "project_sha": payload["project_sha"],
-            "repositories": payload["repositories"],
-            "manifest_sha256": "0" * 64,
-        },
-        "targets": [],
-        "started_at": timestamp,
-        "completed_at": timestamp,
-        "log": str(check_root / run_id / "job.log"),
-        "result": "failed",
-        "exit_code": failure_code,
-        "failure_reason": reason,
-    }, exclusive=True)
-    return True
+        "phase": "complete" if result_name == "passed" else "failed",
+        "result": result_name,
+        "exit_code": result_document["exit_code"],
+    }
+    failure_reason = result_document.get("failure_reason")
+    if failure_reason is not None:
+        terminal_status["failure_reason"] = failure_reason
+    atomic_json(check_root / run_id / "status.json", terminal_status)
+    return created
 
 
 def parse_target_results(run_directory, requested):
@@ -234,6 +272,37 @@ def parse_target_results(run_directory, requested):
     return results
 
 
+def manifest_repository_remotes(manifest_xml):
+    try:
+        manifest = ET.fromstring(manifest_xml)
+    except ET.ParseError as error:
+        raise SystemExit("resolved repo manifest is invalid XML") from error
+    defaults = manifest.findall("default")
+    if len(defaults) > 1:
+        raise SystemExit("resolved repo manifest has multiple defaults")
+    default_remote = defaults[0].get("remote") if defaults else None
+    remotes = {}
+    for project in manifest.iter("project"):
+        relative = project.get("path") or project.get("name")
+        remote = project.get("remote") or default_remote
+        if not relative or not remote:
+            raise SystemExit("resolved repo manifest project has no path or remote")
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", remote):
+            raise SystemExit(f"resolved repo manifest has invalid remote: {remote}")
+        if relative in remotes:
+            raise SystemExit(f"resolved repo manifest has duplicate path: {relative}")
+        remotes[relative] = remote
+    return remotes
+
+
+def fetch_repository_revision(root, remote_name, expected_sha):
+    if remote_name not in output("git", "remote", cwd=root).splitlines():
+        raise SystemExit(f"repository is missing manifest remote: {remote_name}")
+    run("git", "fetch", "--no-tags", remote_name, expected_sha, cwd=root)
+    run("git", "cat-file", "-e", f"{expected_sha}^{{commit}}", cwd=root)
+    run("git", "checkout", "--detach", expected_sha, cwd=root)
+
+
 def synchronize_check_source(payload, initialize):
     if initialize and not (ANDROID / ".repo").is_dir():
         run(
@@ -242,15 +311,15 @@ def synchronize_check_source(payload, initialize):
         )
         run("repo", "sync", "-c", "--no-tags", "--no-clone-bundle", cwd=ANDROID)
     validate_all_repositories_clean()
+    manifest_remotes = manifest_repository_remotes(
+        output(REPO, "manifest", "-r", cwd=ANDROID)
+    )
     for relative, expected_sha in sorted(payload["repositories"].items()):
         run(REPO, "sync", relative, cwd=ANDROID)
-        root = ANDROID / relative
-        remote_url = output("git", "remote", "get-url", "origin", cwd=root)
-        if not remote_url:
-            raise SystemExit(f"repository has no origin remote: {relative}")
-        run("git", "fetch", "--no-tags", "origin", expected_sha, cwd=root)
-        run("git", "cat-file", "-e", f"{expected_sha}^{{commit}}", cwd=root)
-        run("git", "checkout", "--detach", expected_sha, cwd=root)
+        remote_name = manifest_remotes.get(relative)
+        if remote_name is None:
+            raise SystemExit(f"repository is missing from resolved manifest: {relative}")
+        fetch_repository_revision(ANDROID / relative, remote_name, expected_sha)
     return capture_source(payload["project_sha"], payload["repositories"])
 
 
@@ -326,6 +395,8 @@ REMOTE_CHECK_WORKER_SCRIPT = (
     + repr(_TARGET_REGISTRY)
     + "\nCHECK_TARGET_SCRIPT = "
     + repr(CHECK_TARGET_SCRIPT)
+    + "\nISOLATED_WORKSPACE_SETUP_SCRIPT = "
+    + repr(ISOLATED_WORKSPACE_SETUP_SCRIPT)
     + "\nREMOTE_CHECK_INNER_SCRIPT = "
     + repr(REMOTE_CHECK_INNER_SCRIPT)
     + _REMOTE_CHECK_BODY
@@ -359,14 +430,15 @@ try:
         run(
             "docker", "run", "--rm", "--user", "0:0",
             "-v", "/mnt/fast/docker/android/check-workspace:/check-workspace:rw",
-            "--entrypoint", "install", inspection[1],
-            "-d", "-m", "0755", "-o", "950", "-g", "950", "/check-workspace",
+            "--entrypoint", "python3", inspection[1], "-c",
+            ISOLATED_WORKSPACE_SETUP_SCRIPT, "/check-workspace", "950", "950",
         )
         host_results = (
             "/mnt/fast/docker/android/workspace/out/yrrp-checks/" + run_id
         )
         command = [
             "docker", "run", "--rm", "--user", "950:950",
+            "--env", "HOME=/opt/android/.home",
             "-v", "/mnt/fast/docker/android/check-workspace:/opt/android:rw",
             "-v", "/mnt/fast/docker/android/ccache:/ccache:rw",
             "-v", "/mnt/fast/docker/android/project:/opt/yrrp/project:ro",

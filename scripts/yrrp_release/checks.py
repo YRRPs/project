@@ -8,6 +8,7 @@ from typing import Any
 
 from .check_remote import (
     CHECK_TARGET_SCRIPT,
+    ISOLATED_WORKSPACE_SETUP_SCRIPT,
     REMOTE_CHECK_INNER_SCRIPT,
     REMOTE_CHECK_SCRIPT,
 )
