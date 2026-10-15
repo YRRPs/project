@@ -347,21 +347,87 @@ raise SystemExit(launch_worker(expected, ack_directory))
 '''
 
 REMOTE_PREPARE_SCRIPT = _REMOTE_COMMON + r'''
+import re
+
+CHECK_ROOT = Path("/opt/android/out/yrrp-checks")
+CHECK_RUN_PATTERN = re.compile(r"check-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}")
+
+
+def load_required_check(payload, source, check_root=None):
+    if check_root is None:
+        check_root = CHECK_ROOT
+    run_id = payload.get("required_check")
+    required_targets = payload.get("required_targets", [])
+    if run_id is None:
+        if required_targets:
+            raise SystemExit("required targets need a required check")
+        return None
+    if not isinstance(run_id, str) or not re.fullmatch(
+        r"check-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", run_id
+    ):
+        raise SystemExit("required check run ID is invalid")
+    if not isinstance(required_targets, list) or not required_targets:
+        raise SystemExit("required check needs at least one target")
+    if len(set(required_targets)) != len(required_targets):
+        raise SystemExit("required check targets contain duplicates")
+    result_path = check_root / run_id / "result.json"
+    if not result_path.is_file() or result_path.is_symlink():
+        raise SystemExit("required check result is missing")
+    document = json.loads(result_path.read_text())
+    if not isinstance(document, dict):
+        raise SystemExit("required check result is not a JSON object")
+    if document.get("run_id") != run_id:
+        raise SystemExit("required check result has wrong run ID")
+    if document.get("workspace") != "release" or document.get("result") != "passed":
+        raise SystemExit("required check did not pass in release workspace")
+    expected_source = {
+        "project_sha": source["project_sha"],
+        "repositories": source["repositories"],
+        "manifest_sha256": source["manifest_sha256"],
+    }
+    if document.get("source") != expected_source:
+        raise SystemExit("required check source does not match prepared source")
+    completed = set()
+    targets = document.get("targets")
+    if not isinstance(targets, list):
+        raise SystemExit("required check target evidence is invalid")
+    for target in targets:
+        if not isinstance(target, dict) or target.get("result") != "passed":
+            continue
+        ids = target.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(value, str) for value in ids):
+            raise SystemExit("required check target IDs are invalid")
+        if target.get("executor") == "atest":
+            executed = target.get("executed_tests")
+            if isinstance(executed, bool) or not isinstance(executed, int) or executed <= 0:
+                raise SystemExit("required atest target did not execute tests")
+        completed.update(ids)
+    missing = [target for target in required_targets if target not in completed]
+    if missing:
+        raise SystemExit("required check is missing targets: " + ", ".join(missing))
+    return document
+
+
 def prepare_source(payload):
     reject_active_release()
     validate_signing_and_network()
     validate_all_repositories_clean()
     synchronize_project(payload["project_sha"])
     synchronize_repositories(payload["repositories"])
-    return capture_source(
+    source = capture_source(
         payload["project_sha"], payload["repositories"], include_manifest=True
     )
+    check = load_required_check(payload, source)
+    return {
+        "source": source,
+        "source_checks": [check] if check is not None else [],
+    }
 
 
 payload = json.load(sys.stdin)
 with acquire_nonblocking_lock():
-    source = prepare_source(payload)
-print(json.dumps(source, sort_keys=True))
+    evidence = prepare_source(payload)
+print(json.dumps(evidence, sort_keys=True))
 '''
 
 REMOTE_LAUNCH_SCRIPT = (
@@ -559,13 +625,32 @@ def _format_remote_failure(error: subprocess.CalledProcessError) -> str:
 def prepare_release(
     project_sha: str,
     repositories: dict[str, str],
+    *,
+    required_check: str | None = None,
+    required_targets: Sequence[str] = (),
 ) -> dict[str, Any]:
+    from .jobs import parse_run_id
+    from .targets import parse_targets
+
+    if (required_check is None) != (not required_targets):
+        raise ValueError("required check and required targets must be provided together")
+    validated_targets: list[str] = []
+    if required_check is not None:
+        if parse_run_id(required_check) != "check":
+            raise ValueError("required check must use a check run ID")
+        validated_targets = [
+            target.id for target in parse_targets(list(required_targets))
+        ]
     project_sha, repositories = _validated_request(project_sha, repositories)
     verify_local_project(project_sha)
-    return run_remote(
-        REMOTE_PREPARE_SCRIPT,
-        {"project_sha": project_sha, "repositories": repositories},
-    )
+    payload: dict[str, Any] = {
+        "project_sha": project_sha,
+        "repositories": repositories,
+    }
+    if required_check is not None:
+        payload["required_check"] = required_check
+        payload["required_targets"] = validated_targets
+    return run_remote(REMOTE_PREPARE_SCRIPT, payload)
 
 
 def launch_release(

@@ -31,6 +31,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     for command in (prepare, launch, check):
         command.add_argument("--project-sha", required=True)
         command.add_argument("--repo", action="append", default=[], metavar="PATH=SHA")
+    prepare.add_argument("--require-check")
+    prepare.add_argument("--require-target", action="append", default=[])
     check.add_argument("--workspace", required=True, choices=("isolated", "release"))
     check.add_argument("--device", required=True)
     check.add_argument("--target", action="append", default=[])
@@ -54,7 +56,12 @@ def run(arguments: argparse.Namespace) -> dict:
     project_sha = validate_sha(arguments.project_sha, "project SHA")
     repositories = parse_repository_arguments(arguments.repo)
     if arguments.command == "prepare":
-        return prepare_release(project_sha, repositories)
+        return prepare_release(
+            project_sha,
+            repositories,
+            required_check=arguments.require_check,
+            required_targets=arguments.require_target,
+        )
     if arguments.command == "check":
         return start_check(
             workspace=arguments.workspace,

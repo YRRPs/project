@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import runpy
+import re
 import shutil
 import shlex
 import subprocess
@@ -215,6 +216,40 @@ class PublicLauncherTest(unittest.TestCase):
         })
         self.assertEqual(SHA_A, result["project_sha"])
 
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_prepare_sends_required_check_and_targets(self, verify, remote) -> None:
+        run_id = "check-20261015-123456-a1b2c3d4"
+        remote.return_value = {"source": {"project_sha": SHA_A}, "source_checks": []}
+        prepare_release(
+            SHA_A,
+            {"frameworks/base": SHA_B},
+            required_check=run_id,
+            required_targets=("m:SystemUI",),
+        )
+        remote.assert_called_once_with(
+            REMOTE_PREPARE_SCRIPT,
+            {
+                "project_sha": SHA_A,
+                "repositories": {"frameworks/base": SHA_B},
+                "required_check": run_id,
+                "required_targets": ["m:SystemUI"],
+            },
+        )
+
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_prepare_rejects_incomplete_check_gate(self, verify, remote) -> None:
+        cases = (
+            {"required_check": "check-20261015-123456-a1b2c3d4"},
+            {"required_targets": ("m:SystemUI",)},
+        )
+        for arguments in cases:
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                prepare_release(SHA_A, {}, **arguments)
+        verify.assert_not_called()
+        remote.assert_not_called()
+
     def test_launch_requires_exact_literal_approval(self) -> None:
         for approval in ("build and release", "Build and release ", "Build & release", ""):
             with self.subTest(approval=approval), self.assertRaisesRegex(
@@ -366,6 +401,28 @@ class CliContractTest(unittest.TestCase):
         self.assertEqual(17, exit_code)
         self.assertEqual([event], [json.loads(line) for line in output.getvalue().splitlines()])
 
+    def test_cli_prepare_passes_required_check_and_targets(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        run_id = "check-20261015-123456-a1b2c3d4"
+        arguments = namespace["parse_args"]([
+            "prepare",
+            "--project-sha", SHA_A,
+            "--require-check", run_id,
+            "--require-target", "m:SystemUI",
+        ])
+        calls = []
+        namespace["run"].__globals__["prepare_release"] = (
+            lambda *args, **kwargs: calls.append((args, kwargs)) or {}
+        )
+        namespace["run"](arguments)
+        self.assertEqual(
+            [((SHA_A, {}), {
+                "required_check": run_id,
+                "required_targets": ["m:SystemUI"],
+            })],
+            calls,
+        )
+
     def test_cli_prepare_takes_no_channel(self) -> None:
         parse_args = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))["parse_args"]
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -373,6 +430,45 @@ class CliContractTest(unittest.TestCase):
 
 
 class RemotePrepareContractTest(unittest.TestCase):
+    def test_prepare_loads_only_matching_successful_check(self) -> None:
+        namespace = load_embedded_functions(
+            REMOTE_PREPARE_SCRIPT,
+            {"load_required_check"},
+            {"json": json, "Path": Path, "re": re},
+        )
+        load = namespace["load_required_check"]
+        run_id = "check-20261015-123456-a1b2c3d4"
+        source = {
+            "project_sha": SHA_A,
+            "repositories": {"frameworks/base": SHA_B},
+            "manifest_sha256": "c" * 64,
+        }
+        result = {
+            "run_id": run_id,
+            "workspace": "release",
+            "result": "passed",
+            "source": source,
+            "targets": [{
+                "ids": ["m:SystemUI"],
+                "result": "passed",
+                "executor": "m",
+            }],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_directory = root / run_id
+            run_directory.mkdir()
+            (run_directory / "result.json").write_text(json.dumps(result))
+            payload = {
+                "required_check": run_id,
+                "required_targets": ["m:SystemUI"],
+            }
+            self.assertEqual(result, load(payload, source, root))
+            result["source"] = {**source, "manifest_sha256": "d" * 64}
+            (run_directory / "result.json").write_text(json.dumps(result))
+            with self.assertRaisesRegex(SystemExit, "source"):
+                load(payload, source, root)
+
     def test_prepare_uses_nonblocking_shared_release_lock(self) -> None:
         self.assertIn("/home/android/.yrrp-build-launch.lock", REMOTE_PREPARE_SCRIPT)
         self.assertIn("fcntl.LOCK_EX | fcntl.LOCK_NB", REMOTE_PREPARE_SCRIPT)
