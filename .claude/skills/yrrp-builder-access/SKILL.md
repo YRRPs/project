@@ -36,6 +36,12 @@ ssh AndroidBuilder "flock -n /home/android/.yrrp-build-launch.lock bash -lc '<on
 
 Stop if busy. Never remove, replace, or bypass the lock. Read-only inspection is lock-free. Direct `repo sync`, checkout, reset, pull, cherry-pick, patching, and scripted edits are forbidden outside release-manager-controlled lock ownership.
 
+## Fixed source checks
+
+List allowed IDs with `python3 scripts/yrrp-release.py targets`. Only the release manager runs checks. Use `check --workspace isolated` for tested PR heads and `check --workspace release` for actual merged SHAs. Both accept only fixed target IDs and return a generated run ID, status path, and log path. Follow either with `python3 scripts/yrrp-release.py wait --run-id <returned-run-id>`.
+
+The isolated worker uses `/mnt/fast/docker/android/check-workspace`, shared ccache, and a disposable sibling container. It never mounts release source or output as its Android workspace. The release check uses `/opt/android`; only its successful exact source evidence can satisfy `prepare --require-check ... --require-target ...`. `m` evidence proves compilation. `atest` evidence proves execution only when it records a positive test count.
+
 ## Build, screen, and evidence
 
 The fixed launcher creates the detached `yrrp-ota-build` screen and keeps the lock descriptor in the signing process. Do not start the signer directly. Monitor `/home/android/signed-build.status`, `screen -list`, and the exact `log` path returned by `yrrp-release.py launch` (currently `/opt/android/out/signed/yrrp-ota-build-<timestamp>.log`). Do not guess or substitute a fixed log filename. Use the returned path for the tail command:

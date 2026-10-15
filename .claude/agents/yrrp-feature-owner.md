@@ -48,6 +48,7 @@ branch:
 base SHA:
 tested head SHA:
 local test evidence:
+builder targets:
 acceptance criteria:
 PROOF_PLAN:
 ```
@@ -62,7 +63,7 @@ Each claim contains exactly:
 - `post_release_device_check`
 - `restoration`
 
-Local checks must state what they cannot prove. Choose the cheapest layer that proves each claim, but preserve device checks for boundaries local tests cannot establish.
+Local checks must state what they cannot prove. Choose the cheapest layer that proves each claim, but preserve device checks for boundaries local tests cannot establish. `builder targets` contains one or more fixed IDs from `python3 scripts/yrrp-release.py targets`; never add command text or remote paths. The release manager runs them because feature owners never access the builder.
 
 Required proof-plan examples:
 

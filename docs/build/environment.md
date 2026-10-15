@@ -38,6 +38,12 @@ python3 scripts/yrrp-release.py prepare \
 
 Preparation checks idle state, signing/network prerequisites, checkout cleanliness, exact scoped repository SHAs, and a revision-locked manifest. It returns the project SHA, repository SHAs, manifest, and manifest SHA-256 without building. The release manager presents that evidence for the separate **Build and release** approval, then passes the same SHAs and exact digest to `launch`.
 
+## Fixed checks and approval evidence
+
+Feature owners never access the builder. The release manager lists allowlisted IDs with `python3 scripts/yrrp-release.py targets`, runs tested PR heads with `--workspace isolated`, and runs actual merged SHAs with `--workspace release`. Follow every detached check with `python3 scripts/yrrp-release.py wait --run-id <run-id>`. The isolated checkout lives at `/mnt/fast/docker/android/check-workspace` and never becomes release source.
+
+`m` proves compilation only. `atest` proves execution only with a positive test count. Before approval, run `prepare --require-check <release-run-id> --require-target <fixed-id>` for every required target. Preparation rejects isolated, failed, stale, mismatched, or incomplete evidence.
+
 ## Detached operation and recreation
 
 The fixed launcher runs the release in `screen` and writes `/home/android/signed-build.status`. Monitor that status plus the exact `log` path returned by `yrrp-release.py launch` (currently `/opt/android/out/signed/yrrp-ota-build-<timestamp>.log`); never guess a fixed log filename. Report the returned path and observed values, and do not infer completion from elapsed time. Source, keys, output, and ccache survive container recreation; container-layer changes do not.

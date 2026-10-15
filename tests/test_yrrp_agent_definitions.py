@@ -74,6 +74,7 @@ FEATURE_READY_FIELDS = (
     "base SHA",
     "tested head SHA",
     "local test evidence",
+    "builder targets",
     "acceptance criteria",
     "PROOF_PLAN",
 )
@@ -94,14 +95,16 @@ INTAKE_OPTIONS = (
 VERDICTS = ("PROVEN", "FAILED", "UNPROVEN")
 RELEASE_DUTIES = (
     "Review every submitted PR against its acceptance criteria, evidence, proof plan, and current default branch.",
+    "Run every declared builder target in the isolated check workspace against the tested PR head, wait for completion, and return failures to the feature owner before merge.",
     "Before each merge, compute a stable patch ID for the tested PR diff. Merge only the selected PRs, capture each actual merged default-branch SHA, compute the merged diff patch ID, and require both patch IDs to match; otherwise return the PR for retesting.",
     "Fetch origin and create a clean dedicated release worktree beneath `.workdirs/`, detached at the exact merged project SHA.",
-    "Run the fixed `prepare` command from that release checkout with the project SHA and every selected repository SHA.",
-    "Present the returned project, repository, local-manifest filename/hash, and revision-locked manifest evidence through `AskUserQuestion` with the exact approval option `Build and release`.",
+    "Run the same required builder targets in the release workspace against actual merged SHAs and wait for every target to pass.",
+    "Run the fixed `prepare --require-check` command from that release checkout with every required target, the project SHA, and every selected repository SHA.",
+    "Present the returned source, local-manifest, revision-locked manifest, and source-check evidence through `AskUserQuestion` with the exact approval option `Build and release`.",
     "Only after that approval, run the fixed `launch` command with the same SHAs, exact returned manifest SHA-256, and the approved `--channel`.",
     "Monitor the approved build, then verify checksums, signatures, container health, public endpoints, and device behavior.",
     "Coordinate every proof claim serially and assign exactly one verdict.",
-    "Create one immutable Markdown receipt per channel release under `.claude/releases/<build-id>.md` for vanilla or `.claude/releases/<type>-<build-id>.md` for other types, with no-overwrite semantics.",
+    "Create one immutable Markdown receipt per channel release under `.claude/releases/<build-id>.md` for vanilla or `.claude/releases/<type>-<build-id>.md` for other types, with no-overwrite semantics and validated `source_checks`.",
 )
 OBSOLETE_RUNTIME_TOKENS = (
     "yrrp-build-" + "campaign",
@@ -450,6 +453,26 @@ class AgentDefinitionTest(unittest.TestCase):
         launch = body.index("yrrp-release.py launch")
         self.assertLess(prepare, approval)
         self.assertLess(approval, launch)
+
+    def test_release_manager_uses_fixed_checks_wait_and_rollback(self) -> None:
+        body = RELEASE_MANAGER.read_text()
+        for phrase in (
+            "yrrp-release.py targets",
+            "yrrp-release.py check",
+            "--workspace isolated",
+            "--workspace release",
+            "yrrp-release.py wait --run-id",
+            "prepare --require-check",
+            "--require-target",
+            "source_checks",
+            "yrrp-release.py rollback",
+            "Rollback <channel> to <build-id>",
+        ):
+            self.assertIn(phrase, body)
+        duties = body.split("## Review, merge, build, and verify", 1)[1].split("##", 1)[0]
+        self.assertLess(duties.index("isolated check workspace"), duties.index("Before each merge"))
+        self.assertLess(duties.index("release workspace"), duties.index("prepare --require-check"))
+        self.assertLess(body.index("prepare --require-check"), body.index("**Build and release** — launch"))
 
     def test_release_runs_from_clean_exact_sha_worktree(self) -> None:
         for path in RELEASE_CHECKOUT_GUIDANCE:

@@ -109,6 +109,31 @@ class SourcePolicyTest(unittest.TestCase):
             design,
         )
 
+    def test_builder_check_and_rollback_contract_is_documented(self) -> None:
+        paths = (
+            README,
+            ROOT / "docs/build/environment.md",
+            ROOT / "docs/build/signing.md",
+            ROOT / "docs/design/downstream-workflow.md",
+            ROOT / ".claude/skills/yrrp-builder-access/SKILL.md",
+            ROOT / ".claude/skills/yrrp-signed-ota-release/SKILL.md",
+        )
+        combined = "\n".join(path.read_text() for path in paths).lower()
+        for phrase in (
+            "yrrp-release.py targets",
+            "--workspace isolated",
+            "--workspace release",
+            "yrrp-release.py wait --run-id",
+            "prepare --require-check",
+            "--require-target",
+            "deployment record",
+            "--receipt-input",
+            "rollback <channel> to <build-id>",
+            "feature owners never access the builder",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, combined)
+
     def test_project_tracks_no_framework_patch_payloads(self) -> None:
         payloads = (
             []

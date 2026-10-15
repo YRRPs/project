@@ -101,6 +101,20 @@ Always pass the release's `--channel`. Both scripts default to `salami/vanilla` 
 
 The invoked script non-blockingly acquires and holds `/home/android/.yrrp-build-launch.lock` for the entire operation and refuses if the lock is busy. Prior read-only inspection may diagnose an active release, but it is not the locking mechanism and never authorizes a retry. Run the chosen retry detached, preserve its exit code and output, and repeat the affected checksum/container/public checks. Do not rebuild or re-sign for an OTA-server-only change. A redeploy of a release that already has an incremental must pass the same incremental again.
 
+## Fixed rollback
+
+Every successful deployment publishes an immutable deployment record binding channel, build ID, full OTA, target-files, checksum manifest, optional incremental metadata, sizes, and SHA-256 values. To restore one recorded build, require separate exact approval and run:
+
+```bash
+python3 scripts/yrrp-release.py rollback \
+  --approval 'Rollback <channel> to <build-id>' \
+  --channel <channel> \
+  --build-id <build-id>
+python3 scripts/yrrp-release.py wait --run-id <returned-run-id>
+```
+
+For a historical build without a deployment record, add `--receipt-input <preserved-input.json>`. The command imports only channel-derived basenames, sizes, and verified digests, then the builder independently rechecks every artifact. Never pass artifact paths or rely on `deploy-ota-release.sh`'s default channel. A production rollback remains externally visible and always needs this separate approval.
+
 ## 7. Immutable receipt
 
 Feed the completed release evidence to the fixed receipt command and require its returned path:
