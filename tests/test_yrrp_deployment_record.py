@@ -17,6 +17,7 @@ if str(SCRIPTS) not in sys.path:
 from yrrp_ota.channel import GAPPS
 from yrrp_release.deployment_record import (
     build_deployment_record,
+    prepare_deployment_record,
     publish_deployment_record,
     validate_deployment_record,
     verify_record_artifacts,
@@ -82,7 +83,23 @@ class DeploymentRecordTest(unittest.TestCase):
         self.write_checksums([self.ota, self.target, incremental])
         record = self.build(incremental)
         self.assertEqual("123456789", record["incremental"]["source_incremental"])
-        self.assertEqual(incremental, verify_record_artifacts(record, self.root)["incremental"])
+        paths = verify_record_artifacts(record, self.root)
+        self.assertEqual(incremental, paths["incremental"])
+        self.assertEqual(Path(f"{incremental}.json"), paths["incremental_metadata"])
+        Path(f"{incremental}.json").unlink()
+        with self.assertRaises(ValueError):
+            verify_record_artifacts(record, self.root)
+
+    def test_rejects_modified_incremental_metadata(self) -> None:
+        incremental = self.root / GAPPS.incremental_ota_name(SOURCE_BUILD, BUILD_ID)
+        incremental.write_bytes(b"incremental")
+        metadata = Path(f"{incremental}.json")
+        metadata.write_text(json.dumps({"source_incremental": "123456789"}))
+        self.write_checksums([self.ota, self.target, incremental])
+        record = self.build(incremental)
+        metadata.write_text(json.dumps({"source_incremental": "987654321"}))
+        with self.assertRaises(ValueError):
+            verify_record_artifacts(record, self.root)
 
     def test_rejects_wrong_names_digests_sizes_and_unknown_keys(self) -> None:
         mutations = []
@@ -123,6 +140,22 @@ class DeploymentRecordTest(unittest.TestCase):
         changed["created_at"] = "2026-10-15T12:51:00Z"
         with self.assertRaises(FileExistsError):
             publish_deployment_record(changed, self.root)
+
+    def test_prepare_reuses_existing_record_bytes(self) -> None:
+        original = self.build()
+        path = publish_deployment_record(original, self.root)
+        prepared = prepare_deployment_record(
+            channel=GAPPS,
+            build_id=BUILD_ID,
+            signed_root=self.root,
+            ota_name=self.ota.name,
+            target_files_name=self.target.name,
+            incremental_name=None,
+            created_at=datetime(2026, 10, 16, 10, 0, tzinfo=timezone.utc),
+            deployer_project_sha="f" * 40,
+        )
+        self.assertEqual(original, prepared)
+        self.assertEqual(json.loads(path.read_text()), prepared)
 
     def test_validation_returns_copy(self) -> None:
         record = self.build()

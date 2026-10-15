@@ -42,7 +42,7 @@ Preparation checks idle state, signing/network prerequisites, checkout cleanline
 
 Feature owners never access the builder. The release manager lists allowlisted IDs with `python3 scripts/yrrp-release.py targets`, runs tested PR heads with `--workspace isolated`, and runs actual merged SHAs with `--workspace release`. Follow every detached check with `python3 scripts/yrrp-release.py wait --run-id <run-id>`. The isolated checkout lives at `/mnt/fast/docker/android/check-workspace` and never becomes release source.
 
-`m` proves compilation only. `atest` proves execution only with a positive test count. Before approval, run `prepare --require-check <release-run-id> --require-target <fixed-id>` for every required target. Preparation rejects isolated, failed, stale, mismatched, or incomplete evidence.
+`m` proves compilation only. `atest` proves execution only with a positive test count. Before approval, run `prepare --require-check <release-run-id> --require-target <fixed-id> --device <device>` for every required target. Preparation rejects isolated, failed, stale, mismatched, incomplete, or wrong-device evidence. Launch repeats the same check ID, targets, and device and requires channel-device equality.
 
 ## Detached operation and recreation
 

@@ -17,6 +17,7 @@ from yrrp_release.rollback import (
     rollback_approval,
     start_rollback,
 )
+from yrrp_release.rollback_remote import _REMOTE_JOB_BODY
 
 BUILD_ID = "20261013-151101"
 SHA = "a" * 40
@@ -118,6 +119,10 @@ class RollbackLaunchTest(unittest.TestCase):
                 )
         project_sha.assert_not_called()
         remote.assert_not_called()
+
+    def test_legacy_artifacts_use_bounded_hashing(self) -> None:
+        self.assertNotIn("path.read_bytes()", _REMOTE_JOB_BODY)
+        self.assertIn("for chunk in iter", _REMOTE_JOB_BODY)
 
     def test_remote_contract_holds_shared_lock_and_uses_fixed_deployer(self) -> None:
         self.assertIn("/home/android/.yrrp-build-launch.lock", REMOTE_ROLLBACK_SCRIPT)

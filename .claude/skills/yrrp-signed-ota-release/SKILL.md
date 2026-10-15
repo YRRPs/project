@@ -19,10 +19,13 @@ The release manager supplies the actual merged default-branch SHA of this projec
 python3 scripts/yrrp-release.py prepare \
   --project-sha <40-hex-project-sha> \
   --repo frameworks/base=<40-hex-merged-sha> \
-  --repo packages/apps/Settings=<40-hex-merged-sha>
+  --repo packages/apps/Settings=<40-hex-merged-sha> \
+  --require-check <release-check-run-id> \
+  --require-target <fixed-id> \
+  --device <device>
 ```
 
-Repeat `--repo PATH=SHA` only for selected repositories. `prepare` acquires the shared lock, validates signing/network/build-idle preconditions, updates the read-only project bind through a trusted Docker sibling, checks the whole checkout is clean, scoped-syncs exact requested SHAs, and returns JSON evidence including project SHA, repository SHAs, validated local-manifest filenames/hashes, revision-locked manifest text, and `manifest_sha256`. It does not start a build.
+Repeat `--repo PATH=SHA` only for selected repositories and `--require-target` for every declared fixed target. `prepare` acquires the shared lock, validates signing/network/build-idle preconditions, updates the read-only project bind through a trusted Docker sibling, checks the whole checkout is clean, scoped-syncs exact requested SHAs, and strictly validates the release-workspace check's schema, source, device, commands, exit codes, timestamps, and target results. It returns source evidence, `source_checks`, and `manifest_sha256` without starting a build.
 
 If signing validation fails, stop and invoke `yrrp-signing-keys`. If any revision or cleanliness evidence differs from the reviewed merge, stop; never substitute a nearby branch head.
 
@@ -66,10 +69,13 @@ python3 scripts/yrrp-release.py launch \
   --repo frameworks/base=<same-merged-sha> \
   --repo packages/apps/Settings=<same-merged-sha> \
   --manifest-sha256 <exact-prepare-manifest-sha256> \
-  --channel <approved-device>/<approved-type>
+  --channel <approved-device>/<approved-type> \
+  --require-check <same-release-check-run-id> \
+  --require-target <same-fixed-id> \
+  --device <same-device>
 ```
 
-`--channel` is required. Launch reacquires the shared lock, rechecks source and manifest against the approved digest, and starts the fixed signer detached in `screen` with that channel. Its JSON result returns `channel`, `log`, and `source`; confirm `channel` matches the approval. Never invoke `scripts/sign-lineage-build.sh` directly.
+`--channel`, `--require-check`, every `--require-target`, and `--device` are required. Launch reacquires the shared lock, rechecks source and manifest, strictly revalidates the same check evidence, requires its device to match the channel, and starts the fixed signer detached in `screen`. Its JSON result returns `channel`, `log`, `source`, and `source_checks`; confirm all match approval. Never invoke `scripts/sign-lineage-build.sh` directly.
 
 ## 5. Monitor and verify
 

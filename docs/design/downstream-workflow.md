@@ -24,6 +24,7 @@ From that checkout, bind preparation to the release-workspace result:
 python3 scripts/yrrp-release.py prepare \
   --require-check <release-check-run-id> \
   --require-target <fixed-id> \
+  --device <device> \
   --project-sha <actual-project-sha> \
   --repo frameworks/base=<actual-merged-sha> \
   --repo packages/apps/Settings=<actual-merged-sha>

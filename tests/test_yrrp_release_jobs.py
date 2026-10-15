@@ -20,6 +20,7 @@ from yrrp_release.jobs import (
     new_run_id,
     parse_run_id,
     paths_for_run,
+    REMOTE_WAIT_SCRIPT,
     wait_for_job,
     write_result,
     write_status,
@@ -105,10 +106,12 @@ class NonClosingStringIO(io.StringIO):
 
 
 class FakeProcess:
-    def __init__(self, lines: list[str], returncode: int) -> None:
+    def __init__(
+        self, lines: list[str], returncode: int, stderr: str = ""
+    ) -> None:
         self.stdin = NonClosingStringIO()
         self.stdout = io.StringIO("".join(lines))
-        self.stderr = io.StringIO()
+        self.stderr = io.StringIO(stderr)
         self.returncode = returncode
 
     def wait(self) -> int:
@@ -116,6 +119,11 @@ class FakeProcess:
 
 
 class WaitProtocolTest(unittest.TestCase):
+    def test_remote_wait_has_no_wall_clock_deadline_while_screen_lives(self) -> None:
+        self.assertIn("while True:", REMOTE_WAIT_SCRIPT)
+        self.assertNotIn("range(3000)", REMOTE_WAIT_SCRIPT)
+        self.assertNotIn("timed out waiting", REMOTE_WAIT_SCRIPT)
+
     def test_emits_unique_phases_and_final_result(self) -> None:
         phase = {"run_id": CHECK_RUN, "phase": "source-sync", "result": "pending"}
         final = {
@@ -156,10 +164,14 @@ class WaitProtocolTest(unittest.TestCase):
 
         incomplete = FakeProcess(
             [json.dumps({"run_id": CHECK_RUN, "phase": "source-sync", "result": "pending"}) + "\n"],
-            0,
+            2,
+            stderr="detached job exited without final result\n",
         )
-        with self.assertRaisesRegex(JobProtocolError, "final result"):
+        with self.assertRaises(JobProtocolError) as caught:
             wait_for_job(CHECK_RUN, lambda event: None, popen=lambda *a, **k: incomplete)
+        message = str(caught.exception)
+        self.assertIn("detached job exited without final result", message)
+        self.assertIn(str(paths_for_run(CHECK_RUN).log), message)
 
 
 if __name__ == "__main__":

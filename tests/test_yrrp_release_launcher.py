@@ -49,6 +49,9 @@ WORKER_EXPECTED = {
     "repositories": {},
     "manifest_sha256": "c" * 64,
     "channel": "salami/vanilla",
+    "required_check": "check-20261015-123456-a1b2c3d4",
+    "required_targets": ["m:SystemUI"],
+    "required_device": "salami",
 }
 
 
@@ -226,6 +229,7 @@ class PublicLauncherTest(unittest.TestCase):
             {"frameworks/base": SHA_B},
             required_check=run_id,
             required_targets=("m:SystemUI",),
+            required_device="salami",
         )
         remote.assert_called_once_with(
             REMOTE_PREPARE_SCRIPT,
@@ -234,6 +238,7 @@ class PublicLauncherTest(unittest.TestCase):
                 "repositories": {"frameworks/base": SHA_B},
                 "required_check": run_id,
                 "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
             },
         )
 
@@ -243,6 +248,10 @@ class PublicLauncherTest(unittest.TestCase):
         cases = (
             {"required_check": "check-20261015-123456-a1b2c3d4"},
             {"required_targets": ("m:SystemUI",)},
+            {
+                "required_check": "check-20261015-123456-a1b2c3d4",
+                "required_targets": ("m:SystemUI",),
+            },
         )
         for arguments in cases:
             with self.subTest(arguments=arguments), self.assertRaises(ValueError):
@@ -255,7 +264,16 @@ class PublicLauncherTest(unittest.TestCase):
             with self.subTest(approval=approval), self.assertRaisesRegex(
                 ValueError, "exact approval"
             ):
-                launch_release(approval, SHA_A, {}, "c" * 64, channel="salami/vanilla")
+                launch_release(
+                    approval,
+                    SHA_A,
+                    {},
+                    "c" * 64,
+                    channel="salami/vanilla",
+                    required_check="check-20261015-123456-a1b2c3d4",
+                    required_targets=("m:SystemUI",),
+                    required_device="salami",
+                )
 
     @patch("yrrp_release.launcher.run_remote")
     @patch("yrrp_release.launcher.verify_local_project")
@@ -273,6 +291,9 @@ class PublicLauncherTest(unittest.TestCase):
             {"frameworks/base": SHA_B},
             "c" * 64,
             channel="salami/gapps",
+            required_check="check-20261015-123456-a1b2c3d4",
+            required_targets=("m:SystemUI",),
+            required_device="salami",
         )
         verify.assert_called_once_with(SHA_A)
         remote.assert_called_once_with(
@@ -282,9 +303,29 @@ class PublicLauncherTest(unittest.TestCase):
                 "repositories": {"frameworks/base": SHA_B},
                 "manifest_sha256": "c" * 64,
                 "channel": "salami/gapps",
+                "required_check": "check-20261015-123456-a1b2c3d4",
+                "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
             },
         )
         self.assertEqual(evidence, result)
+
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_launch_rejects_check_device_different_from_channel(self, verify, remote) -> None:
+        with self.assertRaisesRegex(ValueError, "device"):
+            launch_release(
+                APPROVAL,
+                SHA_A,
+                {},
+                "c" * 64,
+                channel="xueying/gapps",
+                required_check="check-20261015-123456-a1b2c3d4",
+                required_targets=("m:SystemUI",),
+                required_device="salami",
+            )
+        verify.assert_not_called()
+        remote.assert_not_called()
 
     @patch("yrrp_release.launcher.run_remote")
     @patch("yrrp_release.launcher.verify_local_project")
@@ -293,7 +334,16 @@ class PublicLauncherTest(unittest.TestCase):
             with self.subTest(channel=channel), self.assertRaisesRegex(
                 ValueError, "channel"
             ):
-                launch_release(APPROVAL, SHA_A, {}, "b" * 64, channel=channel)
+                launch_release(
+                    APPROVAL,
+                    SHA_A,
+                    {},
+                    "b" * 64,
+                    channel=channel,
+                    required_check="check-20261015-123456-a1b2c3d4",
+                    required_targets=("m:SystemUI",),
+                    required_device="salami",
+                )
         verify.assert_not_called()
         remote.assert_not_called()
 
@@ -315,6 +365,9 @@ class CliContractTest(unittest.TestCase):
             "--manifest-sha256", "c" * 64,
             "--repo", f"frameworks/base={SHA_B}",
             "--channel", "salami/gapps",
+            "--require-check", "check-20261015-123456-a1b2c3d4",
+            "--require-target", "m:SystemUI",
+            "--device", "salami",
         ])
         self.assertEqual("c" * 64, arguments.manifest_sha256)
         self.assertEqual("salami/gapps", arguments.channel)
@@ -337,13 +390,24 @@ class CliContractTest(unittest.TestCase):
             "--approval", "Build and release",
             "--manifest-sha256", "b" * 64,
             "--channel", "salami/gapps",
+            "--require-check", "check-20261015-123456-a1b2c3d4",
+            "--require-target", "m:SystemUI",
+            "--device", "salami",
         ])
         calls = []
         namespace["run"].__globals__["launch_release"] = (
             lambda *args, **kwargs: calls.append((args, kwargs)) or {}
         )
         namespace["run"](arguments)
-        self.assertEqual([((APPROVAL, SHA_A, {}, "b" * 64), {"channel": "salami/gapps"})], calls)
+        self.assertEqual(
+            [((APPROVAL, SHA_A, {}, "b" * 64), {
+                "channel": "salami/gapps",
+                "required_check": "check-20261015-123456-a1b2c3d4",
+                "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
+            })],
+            calls,
+        )
 
     def test_cli_targets_returns_registry_without_remote_source_fields(self) -> None:
         namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
@@ -433,6 +497,7 @@ class CliContractTest(unittest.TestCase):
             "--project-sha", SHA_A,
             "--require-check", run_id,
             "--require-target", "m:SystemUI",
+            "--device", "salami",
         ])
         calls = []
         namespace["run"].__globals__["prepare_release"] = (
@@ -443,6 +508,7 @@ class CliContractTest(unittest.TestCase):
             [((SHA_A, {}), {
                 "required_check": run_id,
                 "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
             })],
             calls,
         )
@@ -458,7 +524,7 @@ class RemotePrepareContractTest(unittest.TestCase):
         namespace = load_embedded_functions(
             REMOTE_PREPARE_SCRIPT,
             {"load_required_check"},
-            {"json": json, "Path": Path, "re": re},
+            {"json": json, "Path": Path, "re": re, "sys": sys},
         )
         load = namespace["load_required_check"]
         run_id = "check-20261015-123456-a1b2c3d4"
@@ -468,15 +534,26 @@ class RemotePrepareContractTest(unittest.TestCase):
             "manifest_sha256": "c" * 64,
         }
         result = {
+            "schema_version": 1,
             "run_id": run_id,
             "workspace": "release",
-            "result": "passed",
+            "device": "salami",
             "source": source,
             "targets": [{
                 "ids": ["m:SystemUI"],
-                "result": "passed",
                 "executor": "m",
+                "argv": ["m", "SystemUI"],
+                "result": "passed",
+                "exit_code": 0,
+                "started_at": "2026-10-15T12:35:00Z",
+                "completed_at": "2026-10-15T12:36:00Z",
             }],
+            "started_at": "2026-10-15T12:34:56Z",
+            "completed_at": "2026-10-15T12:36:01Z",
+            "log": f"/opt/android/out/yrrp-checks/{run_id}/job.log",
+            "result": "passed",
+            "exit_code": 0,
+            "failure_reason": None,
         }
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -486,8 +563,15 @@ class RemotePrepareContractTest(unittest.TestCase):
             payload = {
                 "required_check": run_id,
                 "required_targets": ["m:SystemUI"],
+                "required_device": "salami",
             }
             self.assertEqual(result, load(payload, source, root))
+            malformed = json.loads(json.dumps(result))
+            malformed["targets"][0]["argv"] = ["sh", "-c", "false"]
+            malformed["targets"][0]["exit_code"] = 99
+            (run_directory / "result.json").write_text(json.dumps(malformed))
+            with self.assertRaisesRegex(SystemExit, "evidence is invalid"):
+                load(payload, source, root)
             result["source"] = {**source, "manifest_sha256": "d" * 64}
             (run_directory / "result.json").write_text(json.dumps(result))
             with self.assertRaisesRegex(SystemExit, "source"):
@@ -803,6 +887,11 @@ class RemoteLaunchContractTest(unittest.TestCase):
             "reject_active_release": lambda **_: None,
             "validate_signing_and_network": lambda: None,
             "validate_signer_entry": lambda: None,
+            "load_required_check": lambda expected, source: {
+                "run_id": expected["required_check"],
+                "source": source,
+                "device": expected["required_device"],
+            },
         }
         return load_embedded_functions(
             REMOTE_LAUNCH_WORKER_SCRIPT, self.WORKER_FUNCTIONS, namespace

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import ast
 import copy
+import json
+import re
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +17,7 @@ if str(SCRIPTS) not in sys.path:
 
 from yrrp_release.checks import (
     CHECK_TARGET_SCRIPT,
+    REMOTE_CHECK_INNER_SCRIPT,
     REMOTE_CHECK_SCRIPT,
     match_check_to_source,
     parse_atest_result,
@@ -190,6 +195,15 @@ class SourceMatchTest(unittest.TestCase):
                 valid_result(), valid_result()["source"], ("m:SystemUI",)
             )
 
+    def test_rejects_check_for_different_required_device(self) -> None:
+        with self.assertRaisesRegex(ValueError, "device"):
+            match_check_to_source(
+                valid_result(),
+                valid_result()["source"],
+                ("m:ThemePicker",),
+                required_device="xueying",
+            )
+
     def test_rejects_isolated_failed_or_stale_evidence(self) -> None:
         documents = []
         isolated = valid_result()
@@ -292,6 +306,71 @@ class CheckLaunchTest(unittest.TestCase):
             "/mnt/fast/docker/android/workspace:/opt/android",
             REMOTE_CHECK_SCRIPT,
         )
+
+    def test_result_parser_accepts_interleaved_request_order(self) -> None:
+        function = next(
+            node
+            for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name == "parse_target_results"
+        )
+        registry = {
+            "m:SystemUI": ["m", "SystemUI"],
+            "atest:SystemUITests_presubmit": ["atest", "SystemUITests_presubmit"],
+        }
+        pattern = re.compile(
+            r"^[^:\n]+: Passed: (?P<passed>[0-9]+), Failed: (?P<failed>[0-9]+), "
+            r"Ignored: (?P<ignored>[0-9]+)$",
+            re.MULTILINE,
+        )
+        namespace = {"Path": Path, "TARGET_REGISTRY": registry, "ATEST_PATTERN": pattern}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "compile.log").write_text("compiled\n")
+            (root / "atest.log").write_text(
+                "SystemUITests_presubmit: Passed: 2, Failed: 0, Ignored: 0\n"
+            )
+            (root / "target-results.tsv").write_text(
+                "m\tm:SystemUI\t0\t2026-10-15T12:00:00Z\t2026-10-15T12:01:00Z\t"
+                + str(root / "compile.log")
+                + "\natest\tatest:SystemUITests_presubmit\t0\t2026-10-15T12:01:00Z\t"
+                "2026-10-15T12:02:00Z\t"
+                + str(root / "atest.log")
+                + "\n"
+            )
+            results = namespace["parse_target_results"](
+                root,
+                ["atest:SystemUITests_presubmit", "m:SystemUI"],
+            )
+        self.assertEqual(2, len(results))
+        self.assertTrue(all(result["result"] == "passed" for result in results))
+
+    def test_isolated_exit_without_result_creates_failure_evidence(self) -> None:
+        function = next(
+            node
+            for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef) and node.name == "ensure_isolated_result"
+        )
+
+        def atomic_json(path, document, exclusive=False):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(document))
+
+        namespace = {"atomic_json": atomic_json, "utc_now": lambda: "2026-10-15T12:00:00Z"}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "remote", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            payload = {
+                "workspace": "isolated",
+                "device": "salami",
+                "project_sha": SHA_A,
+                "repositories": {},
+            }
+            namespace["ensure_isolated_result"](payload, RUN_ID, 17, root)
+            result = json.loads((root / RUN_ID / "result.json").read_text())
+        self.assertEqual("failed", result["result"])
+        self.assertEqual(17, result["exit_code"])
+        self.assertIn("without-result", result["failure_reason"])
 
     def test_target_script_sources_environment_once_without_set_u(self) -> None:
         self.assertEqual(1, CHECK_TARGET_SCRIPT.count("source build/envsetup.sh"))

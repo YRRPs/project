@@ -162,6 +162,36 @@ def write_status(run_id, phase, result="pending", exit_code=None, reason=None):
     atomic_json(CHECK_ROOT / run_id / "status.json", document)
 
 
+def ensure_isolated_result(payload, run_id, exit_code, check_root=None):
+    if check_root is None:
+        check_root = CHECK_ROOT
+    result_path = check_root / run_id / "result.json"
+    if result_path.is_file():
+        return False
+    failure_code = exit_code if exit_code != 0 else 1
+    reason = f"isolated-check-exit-{failure_code}-without-result"
+    timestamp = utc_now()
+    atomic_json(result_path, {
+        "schema_version": 1,
+        "run_id": run_id,
+        "workspace": payload["workspace"],
+        "device": payload["device"],
+        "source": {
+            "project_sha": payload["project_sha"],
+            "repositories": payload["repositories"],
+            "manifest_sha256": "0" * 64,
+        },
+        "targets": [],
+        "started_at": timestamp,
+        "completed_at": timestamp,
+        "log": str(check_root / run_id / "job.log"),
+        "result": "failed",
+        "exit_code": failure_code,
+        "failure_reason": reason,
+    }, exclusive=True)
+    return True
+
+
 def parse_target_results(run_directory, requested):
     results = []
     path = run_directory / "target-results.tsv"
@@ -199,7 +229,9 @@ def parse_target_results(run_directory, requested):
             result["executed_tests"] = executed
         results.append(result)
     flattened = [target_id for result in results for target_id in result["ids"]]
-    if all(result["result"] == "passed" for result in results) and flattened != requested:
+    if all(result["result"] == "passed" for result in results) and (
+        len(flattened) != len(requested) or set(flattened) != set(requested)
+    ):
         raise SystemExit("successful target result set does not match request")
     return results
 
@@ -351,7 +383,12 @@ try:
             sys.stdout.write(completed.stdout)
         if completed.stderr:
             sys.stderr.write(completed.stderr)
+        missing_result = ensure_isolated_result(
+            payload, run_id, completed.returncode
+        )
         exit_code = completed.returncode
+        if missing_result and exit_code == 0:
+            exit_code = 1
 except BaseException as error:
     reason = str(error).strip().replace("\n", " ") or error.__class__.__name__
     write_status(run_id, "failed", "failed", 1, reason)

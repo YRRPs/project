@@ -100,7 +100,7 @@ After merge, repeat the same target IDs through `python3 scripts/yrrp-release.py
 Run from that release checkout, repeating `--repo PATH=SHA` and `--require-target <fixed-id>` for every selected Android repository and required target:
 
 ```bash
-python3 scripts/yrrp-release.py prepare --project-sha <project-sha> --repo <path>=<merged-sha> --require-check <release-check-run-id> --require-target <fixed-id>
+python3 scripts/yrrp-release.py prepare --project-sha <project-sha> --repo <path>=<merged-sha> --require-check <release-check-run-id> --require-target <fixed-id> --device <device>
 ```
 
 Require JSON evidence for the exact project SHA, repository SHAs, validated local-manifest filename/hash pairs, revision-locked manifest, manifest SHA-256, and matched source checks. Each release builds one channel, `salami/vanilla`, `salami/gapps`, or `xueying/gapps`, and carries every other live channel over unchanged. Present those values and the channel to release through `AskUserQuestion` with exactly:
@@ -115,10 +115,10 @@ The earlier intake answer is not build approval. If any evidence differs from th
 Only after **Build and release**, run the same project and repository arguments plus the exact digest returned by prepare:
 
 ```bash
-python3 scripts/yrrp-release.py launch --approval 'Build and release' --project-sha <same-project-sha> --repo <same-path>=<same-merged-sha> --manifest-sha256 <exact-prepare-sha256> --channel <approved-device>/<approved-type>
+python3 scripts/yrrp-release.py launch --approval 'Build and release' --project-sha <same-project-sha> --repo <same-path>=<same-merged-sha> --manifest-sha256 <exact-prepare-sha256> --channel <approved-device>/<approved-type> --require-check <same-release-check-run-id> --require-target <same-fixed-id> --device <same-device>
 ```
 
-`--channel` is required. Do not substitute a branch head, omit a selected repository, regenerate the digest, change the approved channel, or call the signer directly. Release another channel in a separate launch after this release completes.
+`--channel`, `--require-check`, every `--require-target`, and `--device` are required. Launch revalidates the same check against unchanged source and requires its device to match the channel. Do not substitute a branch head, omit a selected repository or target, regenerate the digest, change the approved channel, or call the signer directly. Release another channel in a separate launch after this release completes.
 
 ## Fixed rollback
 

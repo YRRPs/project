@@ -13,10 +13,10 @@ One `yrrp-release-manager` session owns review, merge, exact source, build appro
 1. List fixed IDs with `python3 scripts/yrrp-release.py targets`. Run declared targets against tested PR heads with `check --workspace isolated`, then `python3 scripts/yrrp-release.py wait --run-id <run-id>`.
 2. Merge selected PRs and record each actual merged default-branch SHA.
 3. Repeat required targets against merged SHAs with `check --workspace release`, then wait for every target to pass.
-4. Run `python3 scripts/yrrp-release.py prepare --require-check <run-id> --require-target <fixed-id> --project-sha <sha> --repo <path>=<sha>`.
+4. Run `python3 scripts/yrrp-release.py prepare --require-check <run-id> --require-target <fixed-id> --device <device> --project-sha <sha> --repo <path>=<sha>`.
 5. Inspect returned source, local-manifest, revision-locked manifest, manifest SHA-256, and source-check evidence.
 6. Ask through `AskUserQuestion` with **Build and release** and **Stop**. Name the channel to release in the question.
-7. Only after **Build and release**, run `python3 scripts/yrrp-release.py launch --approval 'Build and release' --channel <device>/<type>` with the same SHA arguments and exact `--manifest-sha256` from prepare.
+7. Only after **Build and release**, run `python3 scripts/yrrp-release.py launch --approval 'Build and release' --channel <device>/<type> --require-check <same-run-id> --require-target <same-fixed-id> --device <same-device>` with the same SHA arguments and exact `--manifest-sha256` from prepare.
 8. Monitor the detached status/log, verify artifacts and service, run device proof plans serially, and write the receipt with `source_checks`. Preserve the input JSON, tested/merged patch-ID evidence, and complete revision-locked manifest XML.
 
 Both prepare and launch use `/home/android/.yrrp-build-launch.lock`. Launch rechecks source and manifest before starting. Never call `sign-lineage-build.sh` directly.

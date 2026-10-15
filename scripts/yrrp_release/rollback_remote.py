@@ -49,6 +49,14 @@ def write_status(run_id, phase, result="pending", exit_code=None, reason=None):
     atomic_json(ROLLBACK_ROOT / run_id / "status.json", document)
 
 
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def verify_legacy_identity(legacy, channel, build_id):
     if not isinstance(legacy, dict):
         raise SystemExit("legacy rollback record is invalid")
@@ -65,7 +73,7 @@ def verify_legacy_identity(legacy, channel, build_id):
             raise SystemExit(f"legacy rollback artifact is missing: {name}")
         if path.stat().st_size != expected.get("size"):
             raise SystemExit(f"legacy rollback artifact size mismatch: {name}")
-        if hashlib.sha256(path.read_bytes()).hexdigest() != expected.get("sha256"):
+        if sha256_file(path) != expected.get("sha256"):
             raise SystemExit(f"legacy rollback artifact digest mismatch: {name}")
     return artifacts
 

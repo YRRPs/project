@@ -133,6 +133,21 @@ class DeployOtaReleaseTest(unittest.TestCase):
         self.assertEqual(self.ota.name, document["full_ota"]["name"])
         self.assertEqual(self.target.name, document["target_files"]["name"])
 
+    def test_existing_record_is_reused_during_redeployment(self) -> None:
+        first = self.run_deploy("initial")
+        self.assertEqual(0, first.returncode, first.stderr)
+        record_path = (
+            self.ota.parent
+            / "deployments/salami/vanilla"
+            / f"{BUILD_ID}.json"
+        )
+        record = json.loads(record_path.read_text())
+        record["created_at"] = "2026-01-01T00:00:00Z"
+        record_path.write_text(json.dumps(record, sort_keys=True) + "\n")
+        second = self.run_deploy("initial")
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertEqual(record, json.loads(record_path.read_text()))
+
     def test_failed_candidate_does_not_publish_deployment_record(self) -> None:
         result = self.run_deploy("metadata_fail")
         self.assertNotEqual(0, result.returncode)
@@ -142,6 +157,19 @@ class DeployOtaReleaseTest(unittest.TestCase):
             / f"{BUILD_ID}.json"
         )
         self.assertFalse(record.exists())
+
+    def test_rejects_artifact_paths_outside_signed_root(self) -> None:
+        signed = self.root / "signed"
+        signed.mkdir()
+        for path in (self.ota, self.target, self.ota.parent / VANILLA.checksums_name(BUILD_ID)):
+            shutil.copy2(path, signed / path.name)
+        result = self.run_deploy(
+            "initial",
+            env_extra={"YRRP_SIGNED_ROOT": str(signed)},
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("must be directly beneath signed root", result.stderr)
+        self.assertFalse(self.log.exists())
 
     def test_refuses_to_replace_foreign_container(self) -> None:
         result = self.run_deploy("foreign")

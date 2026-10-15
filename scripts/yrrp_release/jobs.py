@@ -50,7 +50,7 @@ directory = roots[match.group("kind")] / run_id
 status_path = directory / "status.json"
 result_path = directory / "result.json"
 last_event = None
-for _ in range(3000):
+while True:
     if status_path.is_file():
         event = json.loads(status_path.read_text())
         encoded = json.dumps(event, sort_keys=True)
@@ -72,7 +72,6 @@ for _ in range(3000):
     if f".{run_id}" not in screens:
         raise SystemExit("detached job exited without final result")
     time.sleep(0.1)
-raise SystemExit("timed out waiting for detached job")
 '''
 
 
@@ -234,5 +233,10 @@ def wait_for_job(
             final_exit = exit_code
     process.wait()
     if final_exit is None:
-        raise JobProtocolError("remote wait ended without final result")
+        stderr_tail: list[str] = []
+        if process.stderr is not None:
+            stderr_tail = process.stderr.read().strip().splitlines()[-40:]
+        details = "\n".join(stderr_tail) or "remote wait ended without final result"
+        log = paths_for_run(run_id).log
+        raise JobProtocolError(f"{details}; job log: {log}")
     return final_exit

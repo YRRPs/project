@@ -30,7 +30,9 @@ RECORD_KEYS = frozenset(
 )
 ARTIFACT_KEYS = frozenset({"name", "size", "sha256"})
 CHECKSUM_KEYS = frozenset({"name", "sha256"})
-INCREMENTAL_KEYS = frozenset({"name", "size", "sha256", "source_incremental"})
+INCREMENTAL_KEYS = frozenset(
+    {"name", "size", "sha256", "source_incremental", "metadata"}
+)
 SOURCE_INCREMENTAL_PATTERN = re.compile(r"[0-9]+")
 
 
@@ -86,6 +88,48 @@ def deployment_record_from_receipt(
     }
 
 
+def prepare_deployment_record(
+    *,
+    channel: Channel,
+    build_id: str,
+    signed_root: Path,
+    ota_name: str,
+    target_files_name: str,
+    incremental_name: str | None,
+    created_at: datetime,
+    deployer_project_sha: str | None,
+) -> dict[str, object]:
+    record_path = _record_path(signed_root, channel, build_id)
+    if record_path.is_file() and not record_path.is_symlink():
+        existing = _read_json_object(record_path, "existing deployment record")
+        validated = validate_deployment_record(
+            existing, expected_channel=channel, expected_build_id=build_id
+        )
+        expected_incremental = (
+            validated["incremental"]["name"]
+            if validated["incremental"] is not None
+            else None
+        )
+        if (
+            validated["full_ota"]["name"] != ota_name
+            or validated["target_files"]["name"] != target_files_name
+            or expected_incremental != incremental_name
+        ):
+            raise ValueError("existing deployment record artifacts do not match deploy request")
+        verify_record_artifacts(validated, signed_root)
+        return validated
+    return build_deployment_record(
+        channel=channel,
+        build_id=build_id,
+        signed_root=signed_root,
+        ota_name=ota_name,
+        target_files_name=target_files_name,
+        incremental_name=incremental_name,
+        created_at=created_at,
+        deployer_project_sha=deployer_project_sha,
+    )
+
+
 def build_deployment_record(
     *,
     channel: Channel,
@@ -127,6 +171,9 @@ def build_deployment_record(
             raise ValueError("incremental metadata has invalid source_incremental")
         incremental = _artifact_record(signed_root, incremental_name)
         incremental["source_incremental"] = source_incremental
+        incremental["metadata"] = _artifact_record(
+            signed_root, f"{incremental_name}.json"
+        )
         record["incremental"] = incremental
         if source_build >= build_id:
             raise ValueError("incremental source build must precede target build")
@@ -189,6 +236,12 @@ def validate_deployment_record(
             source_incremental
         ):
             raise ValueError("deployment record incremental source is invalid")
+        _validate_artifact(
+            validated_incremental["metadata"],
+            "deployment record.incremental.metadata",
+            f"{validated_incremental['name']}.json",
+            ARTIFACT_KEYS,
+        )
     return copy.deepcopy(record)
 
 
@@ -212,6 +265,18 @@ def verify_record_artifacts(
         if _sha256(path) != artifact["sha256"]:
             raise ValueError(f"deployment record {field} digest mismatch")
         paths[field] = path
+    incremental = validated["incremental"]
+    if incremental is not None:
+        metadata = incremental["metadata"]
+        metadata_path = _contained_file(signed_root, metadata["name"])
+        if metadata_path.stat().st_size != metadata["size"]:
+            raise ValueError("deployment record incremental metadata size mismatch")
+        if _sha256(metadata_path) != metadata["sha256"]:
+            raise ValueError("deployment record incremental metadata digest mismatch")
+        metadata_document = _read_json_object(metadata_path, "incremental metadata")
+        if metadata_document.get("source_incremental") != incremental["source_incremental"]:
+            raise ValueError("incremental metadata source does not match deployment record")
+        paths["incremental_metadata"] = metadata_path
     _verify_checksum_manifest(validated, paths)
     return paths
 
@@ -225,7 +290,7 @@ def publish_deployment_record(record: object, signed_root: Path) -> Path:
     normalized = validate_deployment_record(
         validated, expected_channel=channel, expected_build_id=build_id
     )
-    path = signed_root / "deployments" / channel.device / channel.type / f"{build_id}.json"
+    path = _record_path(signed_root, channel, build_id)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     encoded = (json.dumps(normalized, sort_keys=True) + "\n").encode()
     if path.exists():
@@ -238,6 +303,10 @@ def publish_deployment_record(record: object, signed_root: Path) -> Path:
         output.flush()
         os.fsync(output.fileno())
     return path
+
+
+def _record_path(root: Path, channel: Channel, build_id: str) -> Path:
+    return root / "deployments" / channel.device / channel.type / f"{build_id}.json"
 
 
 def _artifact_record(root: Path, name: str) -> dict[str, object]:
@@ -395,7 +464,7 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parse_args(argv)
     try:
         if arguments.command == "prepare":
-            record = build_deployment_record(
+            record = prepare_deployment_record(
                 channel=Channel.parse(arguments.channel),
                 build_id=arguments.build_id,
                 signed_root=arguments.signed_root,

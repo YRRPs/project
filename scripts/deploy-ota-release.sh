@@ -89,6 +89,14 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || fail "required command missing: $1"
 }
 
+require_signed_artifact() {
+    local path=$1 canonical
+    canonical=$(realpath -e "${path}") || fail "signed artifact is missing: ${path}"
+    [[ $(dirname "${canonical}") == "${signed_root_canonical}" ]] \
+        || fail "artifact must be directly beneath signed root: ${path}"
+    printf '%s\n' "${canonical}"
+}
+
 wait_for_health() {
     local target=$1
     local deadline=$((SECONDS + health_timeout))
@@ -212,6 +220,15 @@ yrrp_require_build_lock_free || exit 1
 require_command docker
 require_command flock
 require_command python3
+require_command realpath
+signed_root_canonical=$(realpath -e "${signed_root}") \
+    || fail "signed root is missing: ${signed_root}"
+ota=$(require_signed_artifact "${ota}")
+target_files=$(require_signed_artifact "${target_files}")
+if [[ -n ${incremental} ]]; then
+    incremental=$(require_signed_artifact "${incremental}")
+fi
+readonly signed_root_canonical
 [[ -S /var/run/docker.sock ]] || fail "Docker socket is unavailable"
 [[ -x "${prepare_script}" ]] || fail "release preparer is missing or not executable: ${prepare_script}"
 [[ ${OTA_PUBLIC_BASE_URL:-} == https://* ]] || fail "OTA_PUBLIC_BASE_URL must use HTTPS"
@@ -262,7 +279,7 @@ fi
 record_args=(
     --channel "${channel}"
     --build-id "${build_id}"
-    --signed-root "${signed_root}"
+    --signed-root "${signed_root_canonical}"
     --ota-name "$(basename "${ota}")"
     --target-files-name "$(basename "${target_files}")"
     --output "${context}/deployment-record.json"
@@ -319,7 +336,7 @@ wait_for_health "${container_name}" || fail "candidate OTA container did not bec
 verify_candidate || fail "candidate OTA endpoint verification failed"
 PYTHONPATH="${script_dir}" python3 -m "${deployment_record_module}" publish \
     --record "${context}/deployment-record.json" \
-    --signed-root "${signed_root}"
+    --signed-root "${signed_root_canonical}"
 
 deployment_complete=true
 report complete

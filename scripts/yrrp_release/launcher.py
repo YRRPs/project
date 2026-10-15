@@ -55,6 +55,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -236,6 +237,47 @@ def capture_source(expected_project_sha, repositories, include_manifest=False):
     return source
 
 
+def load_required_check(payload, source, check_root=None):
+    if check_root is None:
+        check_root = Path("/opt/android/out/yrrp-checks")
+    run_id = payload.get("required_check")
+    required_targets = payload.get("required_targets", [])
+    required_device = payload.get("required_device")
+    if run_id is None:
+        if required_targets or required_device is not None:
+            raise SystemExit("required check, targets, and device must be provided together")
+        return None
+    if not isinstance(run_id, str) or not re.fullmatch(
+        r"check-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", run_id
+    ):
+        raise SystemExit("required check run ID is invalid")
+    if not isinstance(required_targets, list) or not required_targets:
+        raise SystemExit("required check needs at least one target")
+    if not isinstance(required_device, str):
+        raise SystemExit("required check device is missing")
+    result_path = check_root / run_id / "result.json"
+    if not result_path.is_file() or result_path.is_symlink():
+        raise SystemExit("required check result is missing")
+    document = json.loads(result_path.read_text())
+    expected_source = {
+        "project_sha": source["project_sha"],
+        "repositories": source["repositories"],
+        "manifest_sha256": source["manifest_sha256"],
+    }
+    sys.path.insert(0, "/opt/yrrp/project/scripts")
+    try:
+        from yrrp_release.checks import match_check_to_source
+
+        return match_check_to_source(
+            document,
+            expected_source,
+            required_targets,
+            required_device=required_device,
+        )
+    except (TypeError, ValueError) as error:
+        raise SystemExit(f"required check evidence is invalid: {error}") from error
+
+
 def acquire_nonblocking_lock():
     LOCK_PATH.touch(mode=0o600, exist_ok=True)
     lock = LOCK_PATH.open("r+")
@@ -307,6 +349,9 @@ def launch_worker(expected, ack_directory, signer_spawn=subprocess.Popen):
         source = capture_source(expected["project_sha"], expected["repositories"])
         if source["manifest_sha256"] != expected["manifest_sha256"]:
             raise SystemExit("revision-locked manifest SHA-256 does not match approval")
+        if channel.split("/", 1)[0] != expected.get("required_device"):
+            raise SystemExit("required check device does not match launch channel")
+        check = load_required_check(expected, source)
         validate_signer_entry()
         if not ack_directory.is_dir():
             raise SystemExit("launch acknowledgment channel was closed")
@@ -329,7 +374,12 @@ def launch_worker(expected, ack_directory, signer_spawn=subprocess.Popen):
         if lock is not None:
             lock.close()
         raise
-    acknowledgment = {"ok": True, "channel": channel, "source": source}
+    acknowledgment = {
+        "ok": True,
+        "channel": channel,
+        "source": source,
+        "source_checks": [check],
+    }
     if not write_launch_ack(ack_directory, acknowledgment):
         process.terminate()
         process.wait()
@@ -347,67 +397,6 @@ raise SystemExit(launch_worker(expected, ack_directory))
 '''
 
 REMOTE_PREPARE_SCRIPT = _REMOTE_COMMON + r'''
-import re
-
-CHECK_ROOT = Path("/opt/android/out/yrrp-checks")
-CHECK_RUN_PATTERN = re.compile(r"check-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}")
-
-
-def load_required_check(payload, source, check_root=None):
-    if check_root is None:
-        check_root = CHECK_ROOT
-    run_id = payload.get("required_check")
-    required_targets = payload.get("required_targets", [])
-    if run_id is None:
-        if required_targets:
-            raise SystemExit("required targets need a required check")
-        return None
-    if not isinstance(run_id, str) or not re.fullmatch(
-        r"check-[0-9]{8}-[0-9]{6}-[0-9a-f]{8}", run_id
-    ):
-        raise SystemExit("required check run ID is invalid")
-    if not isinstance(required_targets, list) or not required_targets:
-        raise SystemExit("required check needs at least one target")
-    if len(set(required_targets)) != len(required_targets):
-        raise SystemExit("required check targets contain duplicates")
-    result_path = check_root / run_id / "result.json"
-    if not result_path.is_file() or result_path.is_symlink():
-        raise SystemExit("required check result is missing")
-    document = json.loads(result_path.read_text())
-    if not isinstance(document, dict):
-        raise SystemExit("required check result is not a JSON object")
-    if document.get("run_id") != run_id:
-        raise SystemExit("required check result has wrong run ID")
-    if document.get("workspace") != "release" or document.get("result") != "passed":
-        raise SystemExit("required check did not pass in release workspace")
-    expected_source = {
-        "project_sha": source["project_sha"],
-        "repositories": source["repositories"],
-        "manifest_sha256": source["manifest_sha256"],
-    }
-    if document.get("source") != expected_source:
-        raise SystemExit("required check source does not match prepared source")
-    completed = set()
-    targets = document.get("targets")
-    if not isinstance(targets, list):
-        raise SystemExit("required check target evidence is invalid")
-    for target in targets:
-        if not isinstance(target, dict) or target.get("result") != "passed":
-            continue
-        ids = target.get("ids")
-        if not isinstance(ids, list) or not all(isinstance(value, str) for value in ids):
-            raise SystemExit("required check target IDs are invalid")
-        if target.get("executor") == "atest":
-            executed = target.get("executed_tests")
-            if isinstance(executed, bool) or not isinstance(executed, int) or executed <= 0:
-                raise SystemExit("required atest target did not execute tests")
-        completed.update(ids)
-    missing = [target for target in required_targets if target not in completed]
-    if missing:
-        raise SystemExit("required check is missing targets: " + ", ".join(missing))
-    return document
-
-
 def prepare_source(payload):
     reject_active_release()
     validate_signing_and_network()
@@ -504,6 +493,7 @@ print(json.dumps(
         "channel": acknowledgment["channel"],
         "log": str(log),
         "source": acknowledgment["source"],
+        "source_checks": acknowledgment["source_checks"],
     },
     sort_keys=True,
 ))
@@ -628,12 +618,14 @@ def prepare_release(
     *,
     required_check: str | None = None,
     required_targets: Sequence[str] = (),
+    required_device: str | None = None,
 ) -> dict[str, Any]:
     from .jobs import parse_run_id
-    from .targets import parse_targets
+    from .targets import parse_targets, validate_device
 
-    if (required_check is None) != (not required_targets):
-        raise ValueError("required check and required targets must be provided together")
+    gate_parts = (required_check is not None, bool(required_targets), required_device is not None)
+    if any(gate_parts) and not all(gate_parts):
+        raise ValueError("required check, targets, and device must be provided together")
     validated_targets: list[str] = []
     if required_check is not None:
         if parse_run_id(required_check) != "check":
@@ -641,6 +633,7 @@ def prepare_release(
         validated_targets = [
             target.id for target in parse_targets(list(required_targets))
         ]
+        required_device = validate_device(required_device)
     project_sha, repositories = _validated_request(project_sha, repositories)
     verify_local_project(project_sha)
     payload: dict[str, Any] = {
@@ -650,6 +643,7 @@ def prepare_release(
     if required_check is not None:
         payload["required_check"] = required_check
         payload["required_targets"] = validated_targets
+        payload["required_device"] = required_device
     return run_remote(REMOTE_PREPARE_SCRIPT, payload)
 
 
@@ -660,10 +654,22 @@ def launch_release(
     manifest_sha256: str,
     *,
     channel: str,
+    required_check: str,
+    required_targets: Sequence[str],
+    required_device: str,
 ) -> dict[str, Any]:
+    from .jobs import parse_run_id
+    from .targets import parse_targets, validate_device
+
     if approval != APPROVAL:
         raise ValueError(f"launch requires exact approval {APPROVAL!r}")
-    channel = Channel.parse(channel).name
+    parsed_channel = Channel.parse(channel)
+    device = validate_device(required_device)
+    if parsed_channel.device != device:
+        raise ValueError("required check device does not match launch channel")
+    if parse_run_id(required_check) != "check":
+        raise ValueError("required check must use a check run ID")
+    targets = [target.id for target in parse_targets(list(required_targets))]
     project_sha, repositories = _validated_request(project_sha, repositories)
     manifest_sha256 = validate_sha256(manifest_sha256, "manifest SHA-256")
     verify_local_project(project_sha)
@@ -673,7 +679,10 @@ def launch_release(
             "project_sha": project_sha,
             "repositories": repositories,
             "manifest_sha256": manifest_sha256,
-            "channel": channel,
+            "channel": parsed_channel.name,
+            "required_check": required_check,
+            "required_targets": targets,
+            "required_device": device,
         },
     )
 

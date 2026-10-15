@@ -34,12 +34,16 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         command.add_argument("--repo", action="append", default=[], metavar="PATH=SHA")
     prepare.add_argument("--require-check")
     prepare.add_argument("--require-target", action="append", default=[])
+    prepare.add_argument("--device")
     check.add_argument("--workspace", required=True, choices=("isolated", "release"))
     check.add_argument("--device", required=True)
     check.add_argument("--target", action="append", default=[])
     launch.add_argument("--approval", required=True)
     launch.add_argument("--manifest-sha256", required=True)
     launch.add_argument("--channel", required=True, metavar="DEVICE/TYPE")
+    launch.add_argument("--require-check", required=True)
+    launch.add_argument("--require-target", action="append", required=True)
+    launch.add_argument("--device", required=True)
     receipt = commands.add_parser("receipt")
     receipt.add_argument("--input", required=True, metavar="JSON-FILE-OR--")
     commands.add_parser("targets")
@@ -79,6 +83,7 @@ def run(arguments: argparse.Namespace) -> dict:
             repositories,
             required_check=arguments.require_check,
             required_targets=arguments.require_target,
+            required_device=arguments.device,
         )
     if arguments.command == "check":
         return start_check(
@@ -95,6 +100,9 @@ def run(arguments: argparse.Namespace) -> dict:
         repositories,
         manifest_sha256,
         channel=arguments.channel,
+        required_check=arguments.require_check,
+        required_targets=arguments.require_target,
+        required_device=arguments.device,
     )
 
 

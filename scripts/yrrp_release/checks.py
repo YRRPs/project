@@ -6,7 +6,11 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
-from .check_remote import CHECK_TARGET_SCRIPT, REMOTE_CHECK_SCRIPT
+from .check_remote import (
+    CHECK_TARGET_SCRIPT,
+    REMOTE_CHECK_INNER_SCRIPT,
+    REMOTE_CHECK_SCRIPT,
+)
 from .jobs import parse_run_id, paths_for_run
 from .launcher import (
     parse_repository_arguments,
@@ -138,6 +142,8 @@ def match_check_to_source(
     check: object,
     prepared_source: dict[str, object],
     required_targets: Sequence[str],
+    *,
+    required_device: str | None = None,
 ) -> dict[str, object]:
     if not required_targets:
         raise ValueError("at least one required target is needed")
@@ -145,6 +151,10 @@ def match_check_to_source(
     validated = validate_check_result(check)
     if validated["workspace"] != "release":
         raise ValueError("only release-workspace checks satisfy preparation")
+    if required_device is not None:
+        expected_device = validate_device(required_device)
+        if validated["device"] != expected_device:
+            raise ValueError("required check device does not match release device")
     if validated["result"] != "passed":
         raise ValueError("required check did not pass")
     expected_source = _validate_source(prepared_source)
