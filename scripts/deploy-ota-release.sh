@@ -25,7 +25,6 @@ ota=
 target_files=
 build_id=
 incremental=
-source_incremental=
 context=
 previous_exists=false
 previous_stopped=false

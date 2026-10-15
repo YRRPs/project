@@ -282,8 +282,7 @@ def verify_record_artifacts(
 
 
 def publish_deployment_record(record: object, signed_root: Path) -> Path:
-    paths = verify_record_artifacts(record, signed_root)
-    del paths
+    verify_record_artifacts(record, signed_root)
     validated = _mapping(record, "deployment record")
     channel = Channel.parse(_text(validated["channel"], "deployment record.channel"))
     build_id = _text(validated["build_id"], "deployment record.build_id")

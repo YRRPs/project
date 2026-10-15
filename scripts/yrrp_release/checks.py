@@ -209,8 +209,10 @@ def _validate_targets(
     for index, raw in enumerate(value):
         target = _mapping(raw, f"check result.targets[{index}]")
         executor = _text(target.get("executor"), f"check result.targets[{index}].executor")
-        expected_keys = TARGET_KEYS | ({"executed_tests"} if executor == "atest" else set())
-        _require_keys(target, frozenset(expected_keys), f"check result.targets[{index}]")
+        expected_keys = TARGET_KEYS
+        if executor == "atest":
+            expected_keys |= {"executed_tests"}
+        _require_keys(target, expected_keys, f"check result.targets[{index}]")
         validated_target = _validate_target(target, executor, index)
         for target_id in validated_target["ids"]:
             if target_id in seen:

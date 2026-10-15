@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import json
-
 from .launcher import _REMOTE_COMMON
 from .targets import TARGETS
 
@@ -332,8 +330,6 @@ REMOTE_CHECK_WORKER_SCRIPT = (
     + repr(REMOTE_CHECK_INNER_SCRIPT)
     + _REMOTE_CHECK_BODY
     + r'''
-import shutil
-
 payload = json.loads(sys.argv[1])
 run_id = sys.argv[2]
 ack_directory = Path(sys.argv[3])
