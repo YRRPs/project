@@ -310,6 +310,14 @@ class CliContractTest(unittest.TestCase):
         namespace["run"](arguments)
         self.assertEqual([((APPROVAL, SHA_A, {}, "b" * 64), {"channel": "salami/gapps"})], calls)
 
+    def test_cli_targets_returns_registry_without_remote_source_fields(self) -> None:
+        namespace = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))
+        arguments = namespace["parse_args"](["targets"])
+        result = namespace["run"](arguments)
+        self.assertEqual(["salami", "xueying"], result["devices"])
+        self.assertIn("m:ThemePicker", result["targets"])
+        self.assertFalse(hasattr(arguments, "project_sha"))
+
     def test_cli_prepare_takes_no_channel(self) -> None:
         parse_args = runpy.run_path(str(SCRIPTS / "yrrp-release.py"))["parse_args"]
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

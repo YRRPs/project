@@ -17,6 +17,7 @@ from yrrp_release.launcher import (
     validate_sha256,
 )
 from yrrp_release.receipt import write_receipt
+from yrrp_release.targets import list_targets
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -32,10 +33,13 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     launch.add_argument("--channel", required=True, metavar="DEVICE/TYPE")
     receipt = commands.add_parser("receipt")
     receipt.add_argument("--input", required=True, metavar="JSON-FILE-OR--")
+    commands.add_parser("targets")
     return parser.parse_args(argv)
 
 
 def run(arguments: argparse.Namespace) -> dict:
+    if arguments.command == "targets":
+        return list_targets()
     if arguments.command == "receipt":
         document = _load_receipt_input(arguments.input)
         return {"receipt": str(write_receipt(document))}
