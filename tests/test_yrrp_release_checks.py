@@ -357,6 +357,34 @@ class CheckLaunchTest(unittest.TestCase):
         self.assertIn('"--env", "HOME=/home/android"', REMOTE_CHECK_SCRIPT)
         self.assertIn('check_host + "/home:/home/android:rw"', REMOTE_CHECK_SCRIPT)
 
+    def test_check_containers_disable_repo_trace_and_git_index_refresh(self) -> None:
+        from yrrp_release.check_remote import REMOTE_CHECK_WORKER_SCRIPT
+
+        containers = []
+        for node in ast.walk(ast.parse(REMOTE_CHECK_WORKER_SCRIPT)):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id != "run":
+                    continue
+                arguments = node.args
+            elif isinstance(node, ast.List):
+                arguments = node.elts
+            else:
+                continue
+            values = [item.value for item in arguments if isinstance(item, ast.Constant)]
+            if values[:2] == ["docker", "run"] and "--env" in values:
+                containers.append(values)
+        self.assertEqual(2, len(containers))
+        for values in containers:
+            for setting in ("REPO_TRACE=0", "GIT_OPTIONAL_LOCKS=0"):
+                with self.subTest(home=values[values.index("--env") + 1], setting=setting):
+                    self.assertIn(setting, values)
+                    self.assertEqual("--env", values[values.index(setting) - 1])
+
+    def test_detached_worker_disables_repo_trace_and_git_index_refresh(self) -> None:
+        self.assertIn(
+            '"env", "REPO_TRACE=0", "GIT_OPTIONAL_LOCKS=0",', REMOTE_CHECK_SCRIPT
+        )
+
     def test_isolated_workspace_setup_preserves_managed_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workspace = Path(directory)

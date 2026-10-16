@@ -623,6 +623,8 @@ try:
         run(
             "docker", "run", "--rm", "--user", "950:950",
             "--env", "HOME=/check-workspace/home",
+            "--env", "REPO_TRACE=0",
+            "--env", "GIT_OPTIONAL_LOCKS=0",
             "-v", release_host + ":/opt/release-lower:ro",
             "-v", check_host + ":/check-workspace:rw",
             "-v", project_host + ":/opt/yrrp/project:ro",
@@ -633,6 +635,8 @@ try:
         command = [
             "docker", "run", "--rm", "--user", "950:950",
             "--env", "HOME=/home/android",
+            "--env", "REPO_TRACE=0",
+            "--env", "GIT_OPTIONAL_LOCKS=0",
             "-v", release_host + ":/opt/android:ro",
             "-v", release_host + ":/opt/release-lower:ro",
             "-v", check_host + "/out:/opt/android/out:rw",
@@ -717,6 +721,7 @@ run(
 try:
     run(
         "screen", "-L", "-Logfile", str(log), "-dmS", run_id,
+        "env", "REPO_TRACE=0", "GIT_OPTIONAL_LOCKS=0",
         "python3", "-c", REMOTE_CHECK_WORKER_SCRIPT,
         json.dumps(payload, sort_keys=True), run_id, str(ack_directory),
     )
