@@ -40,9 +40,9 @@ Preparation checks idle state, signing/network prerequisites, checkout cleanline
 
 ## Fixed checks and approval evidence
 
-Feature owners never access the builder. The release manager lists allowlisted IDs with `python3 scripts/yrrp-release.py targets`, runs tested PR heads with `--workspace isolated`, and runs actual merged SHAs with `--workspace release`. Follow every detached check with `python3 scripts/yrrp-release.py wait --run-id <run-id>`. The isolated checkout lives at `/mnt/fast/docker/android/check-workspace` and never becomes release source.
+Feature owners never access the builder. The release manager lists allowlisted IDs with `python3 scripts/yrrp-release.py targets`, runs tested PR heads with `--workspace isolated`, and runs actual merged SHAs with `--workspace release`. Follow every detached check with `python3 scripts/yrrp-release.py wait --run-id <run-id>`. An isolated check mounts the clean release checkout read-only, overlays only requested repositories from persistent shared clones, and writes only persistent isolated `out/`, home, repository overlays, ccache, and run evidence. It fingerprints the read-only release layer before and after each check.
 
-`m` proves compilation only. `atest` proves execution only with a positive test count. Before approval, run `prepare --require-check <release-run-id> --require-target <fixed-id> --device <device>` for every required target. Preparation rejects isolated, failed, stale, mismatched, incomplete, or wrong-device evidence. Launch repeats the same check ID, targets, and device and requires channel-device equality.
+`m` proves compilation only. `atest` evidence records executed, passed, failed, and ignored counts. The fixed Robolectric `atest` IDs remain runnable diagnostics but appear in `non_gating_targets`; they cannot satisfy `--require-target` while the Lineage platform-resource AssetManager blocker remains. Before approval, run `prepare --require-check <release-run-id> --require-target <fixed-id> --device <device>` for every gating target. Preparation rejects isolated, failed, stale, mismatched, incomplete, wrong-device, or non-gating evidence. Launch repeats the same check ID, targets, and device and requires channel-device equality.
 
 ## Detached operation and recreation
 

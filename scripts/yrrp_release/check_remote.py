@@ -72,39 +72,45 @@ _TARGET_REGISTRY = {
 
 ISOLATED_WORKSPACE_SETUP_SCRIPT = r'''
 import os
-import shutil
 import sys
 from pathlib import Path
 
 workspace = Path(sys.argv[1])
 uid = int(sys.argv[2])
 gid = int(sys.argv[3])
-for child in workspace.iterdir():
-    if child.is_dir() and not child.is_symlink():
-        shutil.rmtree(child)
-    else:
-        child.unlink()
 os.chown(workspace, uid, gid)
 workspace.chmod(0o755)
-home = workspace / ".home"
-home.mkdir(mode=0o700)
-os.chown(home, uid, gid)
-home.chmod(0o700)
+for name, mode in (("home", 0o700), ("out", 0o755), ("repos", 0o755)):
+    path = workspace / name
+    path.mkdir(mode=mode, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise SystemExit(f"isolated workspace {name} is not a directory")
+    os.chown(path, uid, gid)
+    path.chmod(mode)
 '''
 
 _REMOTE_CHECK_BODY = r'''
 import json
 import os
 import re
+import shutil
 import tempfile
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
 CHECK_ROOT = Path("/opt/android/out/yrrp-checks")
+LOWER_ANDROID = Path("/opt/release-lower")
+OVERLAY_ROOT = Path("/check-workspace/repos")
+OVERLAY_STATE = Path("/check-workspace/active-repositories.json")
 ATEST_PATTERN = re.compile(
-    r"^[^:\n]+: Passed: (?P<passed>[0-9]+), Failed: (?P<failed>[0-9]+), "
-    r"Ignored: (?P<ignored>[0-9]+)$", re.MULTILINE
+    r"^(?:[^:\n]+:\s*)?Passed:\s*(?P<passed>[0-9]+),\s*"
+    r"Failed:\s*(?P<failed>[0-9]+)"
+    r"(?:,\s*Ignored:\s*(?P<ignored>[0-9]+))?$",
+    re.MULTILINE,
+)
+ATEST_RESULT_LINE_PATTERN = re.compile(
+    r"\b(?P<outcome>PASSED|FAILED)\s*$", re.MULTILINE
 )
 
 
@@ -194,7 +200,7 @@ def ensure_isolated_result(payload, run_id, exit_code, check_root=None):
         timestamp = utc_now()
         try:
             atomic_json(result_path, {
-                "schema_version": 1,
+                "schema_version": 2,
                 "run_id": run_id,
                 "workspace": payload["workspace"],
                 "device": payload["device"],
@@ -252,17 +258,27 @@ def parse_target_results(run_directory, requested):
         }
         if executor == "atest":
             output = Path(output_name).read_text(errors="replace")
-            matches = list(ATEST_PATTERN.finditer(output))
-            executed = 0
-            if len(matches) == 1:
-                executed = sum(
-                    int(matches[0].group(name))
-                    for name in ("passed", "failed", "ignored")
-                )
-            if exit_code == 0 and executed == 0:
+            summaries = list(ATEST_PATTERN.finditer(output))
+            if summaries:
+                passed = sum(int(match.group("passed")) for match in summaries)
+                failed = sum(int(match.group("failed")) for match in summaries)
+                ignored = sum(int(match.group("ignored") or 0) for match in summaries)
+            else:
+                outcomes = [
+                    match.group("outcome")
+                    for match in ATEST_RESULT_LINE_PATTERN.finditer(output)
+                ]
+                passed = outcomes.count("PASSED")
+                failed = outcomes.count("FAILED")
+                ignored = 0
+            executed = passed + failed + ignored
+            if exit_code == 0 and (executed == 0 or failed > 0):
                 result["result"] = "failed"
                 result["exit_code"] = 65
             result["executed_tests"] = executed
+            result["passed_tests"] = passed
+            result["failed_tests"] = failed
+            result["ignored_tests"] = ignored
         results.append(result)
     flattened = [target_id for result in results for target_id in result["ids"]]
     if all(result["result"] == "passed" for result in results) and (
@@ -303,31 +319,165 @@ def fetch_repository_revision(root, remote_name, expected_sha):
     run("git", "checkout", "--detach", expected_sha, cwd=root)
 
 
-def synchronize_check_source(payload, initialize):
-    if initialize and not (ANDROID / ".repo").is_dir():
-        run(
-            "repo", "init", "-u", "https://github.com/YRRPs/android.git",
-            "-b", "lineage-23.2", cwd=ANDROID,
-        )
-        run("repo", "sync", "-c", "--no-tags", "--no-clone-bundle", cwd=ANDROID)
-    validate_all_repositories_clean()
-    manifest_remotes = manifest_repository_remotes(
-        output(REPO, "manifest", "-r", cwd=ANDROID)
+def release_tree_fingerprint(android):
+    repo = str(android / ".repo/repo/repo")
+    manifests = android / ".repo/manifests"
+    if output("git", "status", "--porcelain", cwd=manifests):
+        raise SystemExit("release manifest checkout is dirty")
+    local_directory = android / ".repo/local_manifests"
+    local_hashes = {}
+    if local_directory.is_dir():
+        for path in sorted(local_directory.iterdir()):
+            if path.is_symlink() or not path.is_file() or path.suffix != ".xml":
+                raise SystemExit(f"unsupported release local manifest entry: {path}")
+            local_hashes[path.name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    command = (
+        'actual=$(git rev-parse HEAD) || exit 1; '
+        'expected=$(git rev-parse "$REPO_LREV") || exit 1; '
+        'dirty=$(git status --porcelain); '
+        'if [ -n "$dirty" ] || [ "$actual" != "$expected" ]; then '
+        'printf "%s\\nactual=%s\\nexpected=%s\\n%s\\n" '
+        '"$REPO_PATH" "$actual" "$expected" "$dirty" >&2; exit 1; fi; '
+        'printf "%s\\t%s\\n" "$REPO_PATH" "$actual"'
     )
-    for relative, expected_sha in sorted(payload["repositories"].items()):
-        run(REPO, "sync", relative, cwd=ANDROID)
-        remote_name = manifest_remotes.get(relative)
-        if remote_name is None:
+    check = subprocess.run(
+        [repo, "forall", "-e", "-c", command],
+        cwd=android,
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode:
+        sys.stderr.write(check.stderr)
+        raise SystemExit("release checkout is not clean at manifest revisions")
+    manifest = output(repo, "manifest", "-r", cwd=android)
+    repository_lines = sorted(line for line in check.stdout.splitlines() if line)
+    return {
+        "manifest_sha256": hashlib.sha256(manifest.encode()).hexdigest(),
+        "local_manifests": local_hashes,
+        "repositories_sha256": hashlib.sha256(
+            "\n".join(repository_lines).encode()
+        ).hexdigest(),
+    }
+
+
+def overlay_path(overlay_root, relative):
+    path = Path(relative)
+    valid = (
+        not path.is_absolute()
+        and relative == "/".join(path.parts)
+        and path.parts
+        and all(part not in (".", "..") for part in path.parts)
+        and all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]*", part) for part in path.parts)
+    )
+    if not valid:
+        raise SystemExit(f"invalid overlay repository path: {relative}")
+    return overlay_root.joinpath(*path.parts)
+
+
+def load_overlay_state(active_path, overlay_root):
+    if not active_path.is_file():
+        return []
+    try:
+        active = json.loads(active_path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise SystemExit("isolated overlay state is invalid") from error
+    if not isinstance(active, list) or len(active) != len(set(active)):
+        raise SystemExit("isolated overlay state is invalid")
+    for relative in active:
+        if not isinstance(relative, str):
+            raise SystemExit("isolated overlay state is invalid")
+        overlay_path(overlay_root, relative)
+    return active
+
+
+def write_overlay_state(active_path, repositories):
+    atomic_json(active_path, sorted(repositories))
+
+
+def remove_stale_overlays(previous, requested, overlay_root):
+    for relative in sorted(set(previous) - set(requested)):
+        stale = overlay_path(overlay_root, relative)
+        if stale.is_symlink() or stale.is_file():
+            stale.unlink()
+        elif stale.is_dir():
+            shutil.rmtree(stale)
+        parent = stale.parent
+        while parent != overlay_root:
+            try:
+                parent.rmdir()
+            except OSError:
+                break
+            parent = parent.parent
+
+
+def prepare_overlay_repository(source, overlay, remote_name, expected_sha):
+    remote_url = output("git", "remote", "get-url", remote_name, cwd=source)
+    if overlay.is_symlink():
+        raise SystemExit(f"isolated overlay is a symlink: {overlay}")
+    if overlay.exists() and not (overlay / ".git").is_dir():
+        shutil.rmtree(overlay)
+    if not overlay.exists():
+        overlay.parent.mkdir(parents=True, exist_ok=True)
+        run("git", "clone", "--shared", "--no-checkout", str(source), str(overlay))
+    else:
+        run("git", "reset", "--hard", cwd=overlay)
+        run("git", "clean", "-ffd", cwd=overlay)
+    remotes = output("git", "remote", cwd=overlay).splitlines()
+    if remote_name in remotes:
+        run("git", "remote", "set-url", remote_name, remote_url, cwd=overlay)
+    else:
+        run("git", "remote", "add", remote_name, remote_url, cwd=overlay)
+    fetch_repository_revision(overlay, remote_name, expected_sha)
+    run("git", "clean", "-ffd", cwd=overlay)
+    if output("git", "status", "--porcelain", cwd=overlay):
+        raise SystemExit(f"isolated overlay checkout is dirty: {overlay}")
+
+
+def prepare_overlay_repositories(
+    repositories, manifest_remotes, lower_android, overlay_root, active_path
+):
+    previous = load_overlay_state(active_path, overlay_root)
+    for relative in repositories:
+        overlay_path(overlay_root, relative)
+        if manifest_remotes.get(relative) is None:
             raise SystemExit(f"repository is missing from resolved manifest: {relative}")
-        fetch_repository_revision(ANDROID / relative, remote_name, expected_sha)
+    remove_stale_overlays(previous, repositories, overlay_root)
+    # Track the planned overlays before creation so interrupted preparation is recoverable.
+    write_overlay_state(active_path, repositories)
+    for relative, expected_sha in sorted(repositories.items()):
+        prepare_overlay_repository(
+            lower_android / relative,
+            overlay_path(overlay_root, relative),
+            manifest_remotes[relative],
+            expected_sha,
+        )
+
+
+def synchronize_check_source(payload, synchronize=True):
+    validate_all_repositories_clean()
+    if synchronize:
+        manifest_remotes = manifest_repository_remotes(
+            output(REPO, "manifest", "-r", cwd=ANDROID)
+        )
+        for relative, expected_sha in sorted(payload["repositories"].items()):
+            run(REPO, "sync", relative, cwd=ANDROID)
+            remote_name = manifest_remotes.get(relative)
+            if remote_name is None:
+                raise SystemExit(f"repository is missing from resolved manifest: {relative}")
+            fetch_repository_revision(ANDROID / relative, remote_name, expected_sha)
     return capture_source(payload["project_sha"], payload["repositories"])
 
 
-def perform_check(payload, run_id, initialize=False):
+def perform_check(payload, run_id, synchronize=True, lower_android=None):
     run_directory = CHECK_ROOT / run_id
     started = utc_now()
     write_status(run_id, "source-sync")
-    source = synchronize_check_source(payload, initialize)
+    lower_before = (
+        release_tree_fingerprint(lower_android) if lower_android is not None else None
+    )
+    source = synchronize_check_source(payload, synchronize)
+    if lower_before is not None and source["manifest_sha256"] != lower_before["manifest_sha256"]:
+        raise SystemExit("overlay manifest does not match release lower layer")
     write_status(run_id, "targets")
     command = [
         "bash", "-lc", CHECK_TARGET_SCRIPT, "yrrp-check",
@@ -342,6 +492,10 @@ def perform_check(payload, run_id, initialize=False):
     final_source = capture_source(payload["project_sha"], payload["repositories"])
     if final_source["manifest_sha256"] != source["manifest_sha256"]:
         raise SystemExit("source manifest changed during check")
+    if lower_before is not None:
+        lower_after = release_tree_fingerprint(lower_android)
+        if lower_after != lower_before:
+            raise SystemExit("release lower layer changed during isolated check")
     exit_code = completed_process.returncode
     all_passed = bool(target_results) and all(
         target["result"] == "passed" for target in target_results
@@ -351,7 +505,7 @@ def perform_check(payload, run_id, initialize=False):
     result_name = "passed" if exit_code == 0 and all_passed else "failed"
     failure_reason = None if result_name == "passed" else f"check-exit-{exit_code}"
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": run_id,
         "workspace": payload["workspace"],
         "device": payload["device"],
@@ -373,6 +527,32 @@ def perform_check(payload, run_id, initialize=False):
     return exit_code
 '''
 
+ISOLATED_OVERLAY_PREP_SCRIPT = (
+    _REMOTE_COMMON
+    + "TARGET_REGISTRY = "
+    + repr(_TARGET_REGISTRY)
+    + "\nCHECK_TARGET_SCRIPT = "
+    + repr(CHECK_TARGET_SCRIPT)
+    + _REMOTE_CHECK_BODY
+    + r'''
+payload = json.loads(sys.argv[1])
+validate_payload(payload)
+validate_project(payload["project_sha"])
+release_tree_fingerprint(LOWER_ANDROID)
+lower_repo = str(LOWER_ANDROID / ".repo/repo/repo")
+manifest_remotes = manifest_repository_remotes(
+    output(lower_repo, "manifest", "-r", cwd=LOWER_ANDROID)
+)
+prepare_overlay_repositories(
+    payload["repositories"],
+    manifest_remotes,
+    LOWER_ANDROID,
+    OVERLAY_ROOT,
+    OVERLAY_STATE,
+)
+'''
+)
+
 REMOTE_CHECK_INNER_SCRIPT = (
     _REMOTE_COMMON
     + "TARGET_REGISTRY = "
@@ -385,7 +565,9 @@ payload = json.loads(sys.argv[1])
 run_id = sys.argv[2]
 validate_payload(payload)
 validate_project(payload["project_sha"])
-raise SystemExit(perform_check(payload, run_id, initialize=True))
+raise SystemExit(
+    perform_check(payload, run_id, synchronize=False, lower_android=LOWER_ANDROID)
+)
 '''
 )
 
@@ -397,6 +579,8 @@ REMOTE_CHECK_WORKER_SCRIPT = (
     + repr(CHECK_TARGET_SCRIPT)
     + "\nISOLATED_WORKSPACE_SETUP_SCRIPT = "
     + repr(ISOLATED_WORKSPACE_SETUP_SCRIPT)
+    + "\nISOLATED_OVERLAY_PREP_SCRIPT = "
+    + repr(ISOLATED_OVERLAY_PREP_SCRIPT)
     + "\nREMOTE_CHECK_INNER_SCRIPT = "
     + repr(REMOTE_CHECK_INNER_SCRIPT)
     + _REMOTE_CHECK_BODY
@@ -427,25 +611,45 @@ try:
         ).split()
         if len(inspection) != 2 or inspection[0] != "true":
             raise SystemExit("lineageos-builder is not running")
+        check_host = "/mnt/fast/docker/android/check-workspace"
+        release_host = "/mnt/fast/docker/android/workspace"
+        project_host = "/mnt/fast/docker/android/project"
         run(
             "docker", "run", "--rm", "--user", "0:0",
-            "-v", "/mnt/fast/docker/android/check-workspace:/check-workspace:rw",
+            "-v", check_host + ":/check-workspace:rw",
             "--entrypoint", "python3", inspection[1], "-c",
             ISOLATED_WORKSPACE_SETUP_SCRIPT, "/check-workspace", "950", "950",
         )
-        host_results = (
-            "/mnt/fast/docker/android/workspace/out/yrrp-checks/" + run_id
+        run(
+            "docker", "run", "--rm", "--user", "950:950",
+            "--env", "HOME=/check-workspace/home",
+            "-v", release_host + ":/opt/release-lower:ro",
+            "-v", check_host + ":/check-workspace:rw",
+            "-v", project_host + ":/opt/yrrp/project:ro",
+            "--entrypoint", "python3", inspection[1], "-c",
+            ISOLATED_OVERLAY_PREP_SCRIPT, json.dumps(payload, sort_keys=True),
         )
+        host_results = release_host + "/out/yrrp-checks/" + run_id
         command = [
             "docker", "run", "--rm", "--user", "950:950",
-            "--env", "HOME=/opt/android/.home",
-            "-v", "/mnt/fast/docker/android/check-workspace:/opt/android:rw",
+            "--env", "HOME=/home/android",
+            "-v", release_host + ":/opt/android:ro",
+            "-v", release_host + ":/opt/release-lower:ro",
+            "-v", check_host + "/out:/opt/android/out:rw",
+            "-v", check_host + "/home:/home/android:rw",
             "-v", "/mnt/fast/docker/android/ccache:/ccache:rw",
-            "-v", "/mnt/fast/docker/android/project:/opt/yrrp/project:ro",
+            "-v", project_host + ":/opt/yrrp/project:ro",
             "-v", host_results + ":" + str(CHECK_ROOT / run_id) + ":rw",
+        ]
+        for relative in sorted(payload["repositories"]):
+            command.extend([
+                "-v",
+                check_host + "/repos/" + relative + ":/opt/android/" + relative + ":rw",
+            ])
+        command.extend([
             "--entrypoint", "python3", inspection[1], "-c",
             REMOTE_CHECK_INNER_SCRIPT, json.dumps(payload, sort_keys=True), run_id,
-        ]
+        ])
         completed = run(*command, check=False)
         if completed.stdout:
             sys.stdout.write(completed.stdout)
@@ -463,7 +667,7 @@ except BaseException as error:
     result_path = CHECK_ROOT / run_id / "result.json"
     if not result_path.exists():
         atomic_json(result_path, {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": run_id,
             "workspace": payload.get("workspace", "release"),
             "device": payload.get("device", "salami"),

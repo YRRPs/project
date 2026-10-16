@@ -259,6 +259,32 @@ class PublicLauncherTest(unittest.TestCase):
         verify.assert_not_called()
         remote.assert_not_called()
 
+    @patch("yrrp_release.launcher.run_remote")
+    @patch("yrrp_release.launcher.verify_local_project")
+    def test_non_gating_robo_targets_never_reach_builder(self, verify, remote) -> None:
+        run_id = "check-20261015-123456-a1b2c3d4"
+        with self.assertRaisesRegex(ValueError, "non-gating"):
+            prepare_release(
+                SHA_A,
+                {},
+                required_check=run_id,
+                required_targets=("atest:ThemePickerRoboTests",),
+                required_device="salami",
+            )
+        with self.assertRaisesRegex(ValueError, "non-gating"):
+            launch_release(
+                APPROVAL,
+                SHA_A,
+                {},
+                "c" * 64,
+                channel="salami/gapps",
+                required_check=run_id,
+                required_targets=("atest:SystemUiRoboTests",),
+                required_device="salami",
+            )
+        verify.assert_not_called()
+        remote.assert_not_called()
+
     def test_launch_requires_exact_literal_approval(self) -> None:
         for approval in ("build and release", "Build and release ", "Build & release", ""):
             with self.subTest(approval=approval), self.assertRaisesRegex(

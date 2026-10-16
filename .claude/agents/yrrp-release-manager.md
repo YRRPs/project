@@ -91,9 +91,9 @@ After selected PR merges and merged project SHA capture, fetch origin and create
 
 ## Fixed source checks
 
-List allowed targets with `python3 scripts/yrrp-release.py targets`. Run each handoff's declared IDs before merge through `python3 scripts/yrrp-release.py check --workspace isolated --project-sha <project-sha> --repo <path>=<tested-head-sha> --device <device> --target <fixed-id>`, then follow it with `python3 scripts/yrrp-release.py wait --run-id <returned-run-id>`. Feature owners never access the builder.
+List allowed targets with `python3 scripts/yrrp-release.py targets`. Treat IDs under `non_gating_targets` as diagnostic only; never pass them through `--require-target`. Run each handoff's declared gating IDs before merge through `python3 scripts/yrrp-release.py check --workspace isolated --project-sha <project-sha> --repo <path>=<tested-head-sha> --device <device> --target <fixed-id>`, then follow it with `python3 scripts/yrrp-release.py wait --run-id <returned-run-id>`. Feature owners never access the builder.
 
-After merge, repeat the same target IDs through `python3 scripts/yrrp-release.py check --workspace release --project-sha <project-sha> --repo <path>=<merged-sha> --device <device> --target <fixed-id>` and wait again. `m` proves compilation only. `atest` proves execution only when evidence records a positive test count. Isolated evidence never satisfies release approval.
+After merge, repeat the same gating target IDs through `python3 scripts/yrrp-release.py check --workspace release --project-sha <project-sha> --repo <path>=<merged-sha> --device <device> --target <fixed-id>` and wait again. `m` proves compilation only. `atest` evidence records passed, failed, ignored, and total execution counts. Isolated evidence never satisfies release approval.
 
 ## Exact prepare and approval
 

@@ -8,6 +8,7 @@ from typing import Any
 
 from .check_remote import (
     CHECK_TARGET_SCRIPT,
+    ISOLATED_OVERLAY_PREP_SCRIPT,
     ISOLATED_WORKSPACE_SETUP_SCRIPT,
     REMOTE_CHECK_INNER_SCRIPT,
     REMOTE_CHECK_SCRIPT,
@@ -21,12 +22,16 @@ from .launcher import (
     validate_sha256,
     verify_local_project,
 )
-from .targets import parse_targets, validate_device
+from .targets import parse_gating_targets, parse_targets, validate_device
 
 ATEST_SUMMARY_PATTERN = re.compile(
-    r"^[^:\n]+: Passed: (?P<passed>[0-9]+), Failed: (?P<failed>[0-9]+), "
-    r"Ignored: (?P<ignored>[0-9]+)$",
+    r"^(?:[^:\n]+:\s*)?Passed:\s*(?P<passed>[0-9]+),\s*"
+    r"Failed:\s*(?P<failed>[0-9]+)"
+    r"(?:,\s*Ignored:\s*(?P<ignored>[0-9]+))?$",
     re.MULTILINE,
+)
+ATEST_RESULT_LINE_PATTERN = re.compile(
+    r"\b(?P<outcome>PASSED|FAILED)\s*$", re.MULTILINE
 )
 CHECK_KEYS = frozenset(
     {
@@ -47,6 +52,9 @@ CHECK_KEYS = frozenset(
 SOURCE_KEYS = frozenset({"project_sha", "repositories", "manifest_sha256"})
 TARGET_KEYS = frozenset(
     {"ids", "executor", "argv", "result", "exit_code", "started_at", "completed_at"}
+)
+ATEST_COUNT_KEYS = frozenset(
+    {"executed_tests", "passed_tests", "failed_tests", "ignored_tests"}
 )
 
 
@@ -98,21 +106,39 @@ def _validate_acknowledgment(
     return copy.deepcopy(acknowledgment)
 
 
-def parse_atest_result(output: str) -> int:
-    matches = list(ATEST_SUMMARY_PATTERN.finditer(output))
-    if len(matches) != 1:
-        raise ValueError("atest output must contain exactly one execution summary")
-    values = (int(matches[0].group(name)) for name in ("passed", "failed", "ignored"))
-    count = sum(values)
-    if count <= 0:
+def parse_atest_counts(output: str) -> dict[str, int]:
+    summaries = list(ATEST_SUMMARY_PATTERN.finditer(output))
+    if summaries:
+        passed = sum(int(match.group("passed")) for match in summaries)
+        failed = sum(int(match.group("failed")) for match in summaries)
+        ignored = sum(int(match.group("ignored") or 0) for match in summaries)
+    else:
+        outcomes = [
+            match.group("outcome") for match in ATEST_RESULT_LINE_PATTERN.finditer(output)
+        ]
+        passed = outcomes.count("PASSED")
+        failed = outcomes.count("FAILED")
+        ignored = 0
+    executed = passed + failed + ignored
+    if executed <= 0:
         raise ValueError("atest executed zero tests")
-    return count
+    return {
+        "passed": passed,
+        "failed": failed,
+        "ignored": ignored,
+        "executed": executed,
+    }
+
+
+def parse_atest_result(output: str) -> int:
+    return parse_atest_counts(output)["executed"]
 
 
 def validate_check_result(document: object) -> dict[str, object]:
     check = _mapping(document, "check result")
     _require_keys(check, CHECK_KEYS, "check result")
-    if check["schema_version"] != 1:
+    schema_version = check["schema_version"]
+    if schema_version not in (1, 2):
         raise ValueError("check result has unsupported schema version")
     run_id = _text(check["run_id"], "check result.run_id")
     if parse_run_id(run_id) != "check":
@@ -122,7 +148,9 @@ def validate_check_result(document: object) -> dict[str, object]:
     validate_device(_text(check["device"], "check result.device"))
     source = _validate_source(check["source"])
     result = _result(check["result"], "check result.result")
-    targets = _validate_targets(check["targets"], allow_empty=result == "failed")
+    targets = _validate_targets(
+        check["targets"], schema_version, allow_empty=result == "failed"
+    )
     started = _timestamp(check["started_at"], "check result.started_at")
     completed = _timestamp(check["completed_at"], "check result.completed_at")
     if completed < started:
@@ -148,7 +176,8 @@ def match_check_to_source(
 ) -> dict[str, object]:
     if not required_targets:
         raise ValueError("at least one required target is needed")
-    required = tuple(target.id for target in parse_targets(list(required_targets)))
+    parsed_required = parse_gating_targets(list(required_targets))
+    required = tuple(target.id for target in parsed_required)
     validated = validate_check_result(check)
     if validated["workspace"] != "release":
         raise ValueError("only release-workspace checks satisfy preparation")
@@ -199,7 +228,7 @@ def _validate_source(value: object) -> dict[str, object]:
 
 
 def _validate_targets(
-    value: object, *, allow_empty: bool = False
+    value: object, schema_version: int, *, allow_empty: bool = False
 ) -> list[dict[str, object]]:
     if not isinstance(value, list):
         raise TypeError("check result.targets must be a list")
@@ -212,9 +241,11 @@ def _validate_targets(
         executor = _text(target.get("executor"), f"check result.targets[{index}].executor")
         expected_keys = TARGET_KEYS
         if executor == "atest":
-            expected_keys |= {"executed_tests"}
+            expected_keys |= (
+                ATEST_COUNT_KEYS if schema_version == 2 else {"executed_tests"}
+            )
         _require_keys(target, expected_keys, f"check result.targets[{index}]")
-        validated_target = _validate_target(target, executor, index)
+        validated_target = _validate_target(target, executor, index, schema_version)
         for target_id in validated_target["ids"]:
             if target_id in seen:
                 raise ValueError(f"duplicate check target ID: {target_id}")
@@ -224,7 +255,7 @@ def _validate_targets(
 
 
 def _validate_target(
-    target: dict[str, Any], executor: str, index: int
+    target: dict[str, Any], executor: str, index: int, schema_version: int
 ) -> dict[str, object]:
     label = f"check result.targets[{index}]"
     ids_value = target["ids"]
@@ -259,6 +290,19 @@ def _validate_target(
         if executed < 0 or (result == "passed" and executed == 0):
             raise ValueError(f"{label} has invalid executed test count")
         validated["executed_tests"] = executed
+        if schema_version == 2:
+            counts = {
+                name: _exit_code(target[f"{name}_tests"], f"{label}.{name}_tests")
+                for name in ("passed", "failed", "ignored")
+            }
+            if any(value < 0 for value in counts.values()):
+                raise ValueError(f"{label} has negative test outcome count")
+            if sum(counts.values()) != executed:
+                raise ValueError(f"{label} test outcome counts do not match executed tests")
+            if result == "passed" and counts["failed"]:
+                raise ValueError(f"{label} passed with failed tests")
+            for name, value in counts.items():
+                validated[f"{name}_tests"] = value
     return validated
 
 

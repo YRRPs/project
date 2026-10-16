@@ -40,7 +40,7 @@ Stop if busy. Never remove, replace, or bypass the lock. Read-only inspection is
 
 List allowed IDs with `python3 scripts/yrrp-release.py targets`. Only the release manager runs checks. Use `check --workspace isolated` for tested PR heads and `check --workspace release` for actual merged SHAs. Both accept only fixed target IDs and return a generated run ID, status path, and log path. Follow either with `python3 scripts/yrrp-release.py wait --run-id <returned-run-id>`.
 
-The isolated worker uses `/mnt/fast/docker/android/check-workspace`, shared ccache, and a disposable sibling container. It never mounts release source or output as its Android workspace. The release check uses `/opt/android`; only its successful exact source evidence can satisfy `prepare --require-check ... --require-target ...`. `m` evidence proves compilation. `atest` evidence proves execution only when it records a positive test count.
+The isolated worker uses a disposable sibling container with the release checkout mounted read-only. Persistent shared clones overlay only requested repositories; isolated `out/`, home, ccache, and evidence remain writable. The worker fingerprints the lower release tree before and after execution and fails if it is dirty, off its manifest revisions, or changes. The release check uses `/opt/android`; only its successful exact source evidence can satisfy `prepare --require-check ... --require-target ...`. `m` evidence proves compilation. `atest` evidence records passed, failed, ignored, and total execution counts. IDs listed under `non_gating_targets` are diagnostic only and cannot satisfy release preparation.
 
 ## Build, screen, and evidence
 
