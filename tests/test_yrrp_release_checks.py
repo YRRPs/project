@@ -103,6 +103,124 @@ def valid_result() -> dict:
     }
 
 
+class OverlayManifestTest(unittest.TestCase):
+    def setUp(self) -> None:
+        nodes = [
+            node for node in ast.parse(REMOTE_CHECK_INNER_SCRIPT).body
+            if isinstance(node, ast.FunctionDef)
+        ]
+        self.namespace = {"ET": ET, "re": re, "Path": Path}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), "remote", "exec"), self.namespace)
+        self.lower = (
+            '<manifest><remote name="yrrp" fetch="https://example.invalid"/>'
+            '<default remote="yrrp" revision="main"/>'
+            f'<project name="app" path="apps/app" revision="{SHA_A}" groups="pdk">'
+            '<linkfile src="a" dest="b"/><copyfile src="c" dest="d"/>'
+            '</project>'
+            f'<project name="dep" revision="{SHA_A}"/></manifest>'
+        )
+        self.overlay = self.lower.replace(f'revision="{SHA_A}" groups=', f'revision="{SHA_B}" groups=')
+
+    def compare(self, overlay, lower=None):
+        self.assertTrue("validate_overlay_manifest" in self.namespace)
+        self.namespace["validate_overlay_manifest"](
+            self.lower if lower is None else lower, overlay, {"apps/app": SHA_B}
+        )
+
+    def test_allows_only_requested_head_and_formatting_differences(self) -> None:
+        self.compare(self.overlay.replace('name="app" path="apps/app"', 'path="apps/app" name="app"').replace('><', '>\n  <'))
+
+    def test_rejects_wrong_missing_duplicate_and_unrequested_revisions(self) -> None:
+        root = ET.fromstring(self.overlay)
+        missing = copy.deepcopy(root)
+        missing.remove(missing.find("project"))
+        duplicate = copy.deepcopy(root)
+        duplicate.append(copy.deepcopy(duplicate.find("project")))
+        cases = [
+            self.lower,
+            ET.tostring(missing, encoding="unicode"),
+            ET.tostring(duplicate, encoding="unicode"),
+            self.overlay.replace(f'name="dep" revision="{SHA_A}"', f'name="dep" revision="{SHA_B}"'),
+        ]
+        for changed in cases:
+            with self.subTest(changed=changed), self.assertRaises(SystemExit):
+                self.compare(changed)
+
+    def test_rejects_other_xml_changes(self) -> None:
+        for old, new in (
+            ('fetch="https://example.invalid"', 'fetch="https://other.invalid"'),
+            ('path="apps/app"', 'path="apps/other"'),
+            ('name="app"', 'name="other"'),
+            ('groups="pdk"', 'groups="other"'),
+            ('revision="main"', 'revision="other"'),
+            ('src="a"', 'src="other"'),
+            ('dest="d"', 'dest="other"'),
+            ('<linkfile', '<unknown'),
+            ('</project>', '<annotation name="extra" value="x"/></project>'),
+        ):
+            with self.subTest(attribute=old), self.assertRaises(SystemExit):
+                self.compare(self.overlay.replace(old, new))
+
+    def test_rejects_nested_projects_even_when_both_samples_match(self) -> None:
+        nested = self.overlay.replace('</project>', '<project name="nested" revision="' + SHA_A + '"/></project>')
+        with self.assertRaises(SystemExit):
+            self.compare(nested, nested)
+
+    def test_perform_check_uses_captured_manifest_and_preserves_stability_checks(self) -> None:
+        import hashlib
+        from types import SimpleNamespace
+        digest = lambda xml: hashlib.sha256(xml.encode()).hexdigest()
+        source = {"manifest_sha256": digest(self.overlay), "manifest_xml": self.overlay,
+                  "project_sha": SHA_A, "repositories": {"apps/app": SHA_B}}
+        fingerprint = {"manifest_sha256": digest(self.lower)}
+        comparisons = []
+        captures = []
+        self.namespace.update({
+            "CHECK_ROOT": Path("/unused"), "ANDROID": Path("/android"),
+            "CHECK_TARGET_SCRIPT": "", "utc_now": lambda: "now",
+            "write_status": lambda *args: None,
+            "release_tree_fingerprint": lambda path: dict(fingerprint),
+            "output": lambda *args, **kwargs: self.lower,
+            "hashlib": hashlib,
+            "synchronize_check_source": lambda *args, **kwargs: (captures.append(kwargs) or dict(source)),
+            "capture_source": lambda *args: dict(source),
+            "validate_overlay_manifest": lambda *args: comparisons.append(args),
+            "run": lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+            "parse_target_results": lambda *args: [{"result": "passed"}],
+            "atomic_json": lambda *args, **kwargs: None,
+        })
+        payload = {"project_sha": SHA_A, "repositories": {"apps/app": SHA_B},
+                   "targets": ["m:ThemePicker"], "device": "salami", "workspace": "isolated"}
+        self.assertEqual(0, self.namespace["perform_check"](payload, RUN_ID, False, Path("/lower")))
+        self.assertEqual([{"include_manifest": True}], captures)
+        self.assertEqual([(self.lower, self.overlay, payload["repositories"])], comparisons)
+        self.namespace["output"] = lambda *args, **kwargs: self.overlay
+        with self.assertRaisesRegex(SystemExit, "lower manifest changed"):
+            self.namespace["perform_check"](payload, RUN_ID, False, Path("/lower"))
+        self.namespace["output"] = lambda *args, **kwargs: self.lower
+        self.namespace["capture_source"] = lambda *args: dict(source, manifest_sha256="changed")
+        with self.assertRaisesRegex(SystemExit, "source manifest changed"):
+            self.namespace["perform_check"](payload, RUN_ID, False, Path("/lower"))
+        self.namespace["capture_source"] = lambda *args: dict(source)
+        fingerprints = iter([fingerprint, dict(fingerprint, repositories_sha256="changed")])
+        self.namespace["release_tree_fingerprint"] = lambda path: next(fingerprints)
+        with self.assertRaisesRegex(SystemExit, "lower layer changed"):
+            self.namespace["perform_check"](payload, RUN_ID, False, Path("/lower"))
+
+    def test_rejects_invalid_and_ambiguous_lower_manifests(self) -> None:
+        root = ET.fromstring(self.lower)
+        duplicate = copy.deepcopy(root)
+        duplicate.append(copy.deepcopy(duplicate.find("project")))
+        for lower in (
+            "<manifest>",
+            self.lower.replace(f'revision="{SHA_A}"', 'revision="main"'),
+            ET.tostring(duplicate, encoding="unicode"),
+            self.lower.replace('path="apps/app"', 'path="../app"'),
+        ):
+            with self.subTest(lower=lower), self.assertRaises(SystemExit):
+                self.compare(self.overlay, lower)
+
+
 class AtestResultTest(unittest.TestCase):
     def test_requires_positive_execution_count(self) -> None:
         self.assertEqual(12, parse_atest_result(SUCCESS))
