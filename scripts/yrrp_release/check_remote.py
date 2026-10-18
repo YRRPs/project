@@ -453,7 +453,56 @@ def prepare_overlay_repositories(
         )
 
 
-def synchronize_check_source(payload, synchronize=True):
+def manifest_structure(element):
+    # Ignore whitespace-only text and attribute order; keep child order and all other content.
+    text = element.text if element.text and element.text.strip() else ""
+    tail = element.tail if element.tail and element.tail.strip() else ""
+    return (
+        element.tag, tuple(sorted(element.attrib.items())), text, tail,
+        tuple(manifest_structure(child) for child in element),
+    )
+
+
+def revision_locked_projects(manifest_xml):
+    try:
+        parser = ET.XMLParser(target=ET.TreeBuilder(insert_comments=True, insert_pis=True))
+        manifest = ET.fromstring(manifest_xml, parser=parser)
+    except ET.ParseError as error:
+        raise SystemExit("resolved repo manifest is invalid XML") from error
+    if manifest.tag != "manifest":
+        raise SystemExit("resolved repo manifest has invalid root")
+    projects = manifest.findall("project")
+    if len(projects) != len(list(manifest.iter("project"))):
+        raise SystemExit("nested manifest projects are unsupported for overlays")
+    by_path = {}
+    for project in projects:
+        relative = project.get("path") or project.get("name")
+        if not relative:
+            raise SystemExit("resolved repo manifest project has no path")
+        overlay_path(Path("/unused"), relative)
+        if relative in by_path:
+            raise SystemExit(f"resolved repo manifest has duplicate path: {relative}")
+        if not re.fullmatch(r"[0-9a-f]{40}", project.get("revision", "")):
+            raise SystemExit(f"manifest project is not revision locked: {relative}")
+        by_path[relative] = project
+    return manifest, by_path
+
+
+def validate_overlay_manifest(lower_xml, overlay_xml, repositories):
+    lower, lower_projects = revision_locked_projects(lower_xml)
+    overlay, overlay_projects = revision_locked_projects(overlay_xml)
+    for relative, expected_sha in repositories.items():
+        if relative not in lower_projects or relative not in overlay_projects:
+            raise SystemExit(f"requested project missing from manifest: {relative}")
+        project = overlay_projects[relative]
+        if project.get("revision") != expected_sha:
+            raise SystemExit(f"overlay manifest revision mismatch: {relative}")
+        project.set("revision", lower_projects[relative].get("revision"))
+    if manifest_structure(lower) != manifest_structure(overlay):
+        raise SystemExit("overlay manifest metadata differs from release lower layer")
+
+
+def synchronize_check_source(payload, synchronize=True, include_manifest=False):
     validate_all_repositories_clean()
     if synchronize:
         manifest_remotes = manifest_repository_remotes(
@@ -465,7 +514,9 @@ def synchronize_check_source(payload, synchronize=True):
             if remote_name is None:
                 raise SystemExit(f"repository is missing from resolved manifest: {relative}")
             fetch_repository_revision(ANDROID / relative, remote_name, expected_sha)
-    return capture_source(payload["project_sha"], payload["repositories"])
+    return capture_source(
+        payload["project_sha"], payload["repositories"], include_manifest=include_manifest
+    )
 
 
 def perform_check(payload, run_id, synchronize=True, lower_android=None):
@@ -475,9 +526,16 @@ def perform_check(payload, run_id, synchronize=True, lower_android=None):
     lower_before = (
         release_tree_fingerprint(lower_android) if lower_android is not None else None
     )
-    source = synchronize_check_source(payload, synchronize)
-    if lower_before is not None and source["manifest_sha256"] != lower_before["manifest_sha256"]:
-        raise SystemExit("overlay manifest does not match release lower layer")
+    source = synchronize_check_source(
+        payload, synchronize, include_manifest=lower_before is not None
+    )
+    if lower_before is not None:
+        lower_xml = output(
+            str(lower_android / ".repo/repo/repo"), "manifest", "-r", cwd=lower_android
+        )
+        if hashlib.sha256(lower_xml.encode()).hexdigest() != lower_before["manifest_sha256"]:
+            raise SystemExit("release lower manifest changed during capture")
+        validate_overlay_manifest(lower_xml, source["manifest_xml"], payload["repositories"])
     write_status(run_id, "targets")
     command = [
         "bash", "-lc", CHECK_TARGET_SCRIPT, "yrrp-check",
