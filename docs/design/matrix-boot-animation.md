@@ -145,7 +145,8 @@ Logcat tag `YrrpMatrix` carries the same decision:
 - `config style=<matrix|lineage>/<prop|default> fullIntro=<0|1>/<prop|default> shutdown=<0|1>`
 - `route=<STOCK|EXIT> blockedBy=STYLE_LINEAGE`, or `init ok panel=<w>x<h> displays=<n>`, or
   `init failed reason=<ASSET_ATLAS|ASSET_LOGO|COMPILE|LINK|GL> fallback=<STOCK|EXIT>`
-- `shader compile failed …` or `program link failed …` with the driver's info log
+- `shader compile failed …` or `program link failed …` with the driver's info log, under tag
+  `YrrpGl` since the Windows XP style added the shared `YrrpGlProgram`
 - `exit observed t=<s> exitT=<s> deferred=<0|1>` (boot only)
 - `end outcome=<COMPLETED|EXIT_PENDING|SWAP_FAILED> frames=<n> avgFrameMs=<x> maxFrameMs=<x> durationS=<s>`
 
