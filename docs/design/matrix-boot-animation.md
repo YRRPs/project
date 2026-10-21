@@ -35,11 +35,11 @@ and **LineageOS**. **Finish intro** sits behind the Matrix row's gear. See
 
 | Property | Values | Default | Read as |
 |---|---|---|---|
-| `persist.yrrp.bootanim.style` | `matrix`, `lineage` | `matrix` | Exact `lineage` is LineageOS; anything else, unset or empty included, is Matrix. |
+| `persist.yrrp.bootanim.style` | `matrix`, `lineage`, `xp` | `matrix` | Exact `lineage` is LineageOS; exact `xp` is Windows XP (`xp-boot-animation.md`); anything else, unset or empty included, is Matrix. |
 | `persist.yrrp.bootanim.full_intro` | `true`, `false` | `true` | `false` or `0` is off; `true` or `1` is on; anything else is on. |
 
 `YrrpMatrixConfig` in `bootanimation` and `YrrpBootAnimationStore` in Settings parse both values
-with the same rules. Settings writes only `matrix`, `lineage`, `true` and `false`, and never
+with the same rules. Settings writes only `matrix`, `lineage`, `xp`, `true` and `false`, and never
 rewrites a stored value on read. A newer style value on an older build reads as Matrix.
 
 The values are device-wide system properties, not per-user `Settings.Secure` keys: no settings
@@ -142,10 +142,11 @@ status properties, which the next boot clears.
 
 Logcat tag `YrrpMatrix` carries the same decision:
 
-- `config style=<matrix|lineage>/<prop|default> fullIntro=<0|1>/<prop|default> shutdown=<0|1>`
+- `config style=<matrix|lineage|xp>/<prop|default> fullIntro=<0|1>/<prop|default> shutdown=<0|1>`
 - `route=<STOCK|EXIT> blockedBy=STYLE_LINEAGE`, or `init ok panel=<w>x<h> displays=<n>`, or
   `init failed reason=<ASSET_ATLAS|ASSET_LOGO|COMPILE|LINK|GL> fallback=<STOCK|EXIT>`
-- `shader compile failed …` or `program link failed …` with the driver's info log
+- `shader compile failed …` or `program link failed …` with the driver's info log, under tag
+  `YrrpGl` since the Windows XP style added the shared `YrrpGlProgram`
 - `exit observed t=<s> exitT=<s> deferred=<0|1>` (boot only)
 - `end outcome=<COMPLETED|EXIT_PENDING|SWAP_FAILED> frames=<n> avgFrameMs=<x> maxFrameMs=<x> durationS=<s>`
 

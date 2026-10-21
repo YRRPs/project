@@ -7,7 +7,7 @@ The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, t
 - Settings home page: a **YRRPs** tile in its own group at the top. The group order is `-150` in the standard layout (before Account at `-140`) and `-140` in the expressive layout (before Connectivity at `-130`). The tile highlight key is `yrrp_menu_key`, so System keeps `menu_key_system`.
 - YRRPs hub (`YrrpSettings`, root key `yrrp_settings_screen`):
   - **Audio** → **Pulse** (On/Off), opening `YrrpPulseSettings`.
-  - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`, and **Boot animation** (Matrix/LineageOS), opening `YrrpBootAnimationSettings`, and **Fold animation** (Stock/Pixel/Duo), opening `YrrpFoldAnimationSettings`. The Fold animation row and page exist on foldables only.
+  - **Animations** → **Screen-off animation** (Stock/CRT), opening `YrrpScreenOffAnimationSettings`, and **Boot animation** (Matrix/LineageOS/Windows XP), opening `YrrpBootAnimationSettings`, and **Fold animation** (Stock/Pixel/Duo), opening `YrrpFoldAnimationSettings`. The Fold animation row and page exist on foldables only.
   - **Network** → **Ad blocking** (On/Off), opening `YrrpAdBlockSettings`.
   - Category headers are `searchable="false"`.
 - Pulse page (`yrrp_pulse_settings_screen`), laid out like **System > Gestures > Navigation mode**:
@@ -39,11 +39,12 @@ The YRRPs page in LineageOS Settings controls Pulse, the screen-off animation, t
   ├ intro                              non-searchable
   ├ [Style]                            non-searchable category
   │ ├ Matrix   Finish intro summary    | gear → Finish intro dialog (OK/Cancel, one checkbox)
-  │ └ LineageOS
+  │ ├ LineageOS
+  │ └ Windows XP
   └ footer                             non-searchable, "Changes apply the next time…"
   ```
 
-  The Matrix row summary reads "Always plays the full intro" or "Ends as soon as the phone is ready". The gear works in either style and never changes the style; OK writes only `persist.yrrp.bootanim.full_intro`. Cancel, back and outside tap write nothing. The hub row summary names the stored style. See `matrix-boot-animation.md`.
+  The Matrix row summary reads "Always plays the full intro" or "Ends as soon as the phone is ready". The gear works in either style and never changes the style; OK writes only `persist.yrrp.bootanim.full_intro`. Cancel, back and outside tap write nothing. The hub row summary names the stored style. See `matrix-boot-animation.md` and `xp-boot-animation.md`.
 
 - Fold animation page (`yrrp_fold_animation_settings_screen`):
 
@@ -113,7 +114,7 @@ The boot animation choice is the one exception to the per-user `Settings.Secure`
 
 | Property | Default | Read | Write |
 |---|---|---|---|
-| `persist.yrrp.bootanim.style` | `matrix` | exact `lineage` is LineageOS; anything else, unset included, is Matrix | `matrix` or `lineage`, other values rejected |
+| `persist.yrrp.bootanim.style` | `matrix` | exact `lineage` is LineageOS, exact `xp` is Windows XP; anything else, unset included, is Matrix | `matrix`, `lineage` or `xp`, other values rejected |
 | `persist.yrrp.bootanim.full_intro` | `true` | `false` or `0` is off; anything else, unset included, is on | `true` or `false` |
 
 Properties have no change observer. The rows refresh on page resume and after their own writes; an external `adb shell setprop` while the page is open shows only after the page resumes. The `system_app` sepolicy grant lives in `android_vendor_extra`.
@@ -187,6 +188,7 @@ Add another nesting level only when a category becomes crowded and after user ap
 - **2026-10-11 — Property-backed boot animation:** the boot animation style and Finish intro are device-wide `persist.yrrp.bootanim.*` properties, not per-user `Settings.Secure` keys, because no settings provider runs while `bootanimation` starts. Approved exception to the per-user Secure-key rule.
 - **2026-10-11 — Boot animation hierarchy:** **YRRPs → Animations → Boot animation**, a page with a non-searchable intro, a non-searchable **Style** category holding the **Matrix** and **LineageOS** radio rows, and a non-searchable footer. Approved by the user.
 - **2026-10-11 — Finish intro gear:** Finish intro sits behind the Matrix row's gear as an OK/Cancel dialog with one checkbox. The gear works in either style and never changes the style; OK writes only `full_intro`.
+- **2026-10-21 — Windows XP row:** the Boot animation page gains a third radio row, **Windows XP**, below **LineageOS**, writing `persist.yrrp.bootanim.style=xp`. It has no gear. Approved by the user.
 - **2026-10-11 — No property observer:** property-backed rows refresh on resume and after their own writes; there is no live observer for properties.
 - **2026-10-12 — Fold animation hierarchy:** YRRPs → Animations → Fold animation, radio page with intro, Style category, and footer; foldables only. Approved by the user.
 - **2026-10-12 — Fold animation default:** Stock, preserving today's behavior.
