@@ -120,9 +120,12 @@ These lines carry no user data.
 
 ## Status
 
+- Issue: YRRPs/project#112.
 - Framework: `YRRPs/android_frameworks_base` branch `feat/xp-boot-animation`, base `656622dc1e1c`.
+  PR: https://github.com/YRRPs/android_frameworks_base/pull/21 (draft).
 - Settings: `YRRPs/android_packages_apps_Settings` branch `feat/xp-boot-animation`, base
-  `fc421630d6`.
+  `fc421630d6`. PR: https://github.com/YRRPs/android_packages_apps_Settings/pull/18 (draft).
+- Docs: https://github.com/YRRPs/project/pull/113 (draft).
 - Device acceptance: pending the first release with both PRs.
 
 ## Differences from the spec
