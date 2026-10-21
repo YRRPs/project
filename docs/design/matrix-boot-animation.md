@@ -118,6 +118,12 @@ are `product_internal_prop`, so only core domains may use them.
 `bootanimation`; init restarts the `animation` class during shutdown only when that property is
 true, and then also skips `TurnOffBacklight()`.
 
+`bootanimation` treats a run as shutdown when `sys.shutdown.requested` or `sys.powerctl` is
+non-empty. Lineage 23.2 init never stores `sys.powerctl` (`init/property_service.cpp`
+`PropertySet`), so it always reads empty; `ShutdownThread` sets `sys.shutdown.requested` before
+power-off. Until YRRPs/project#114 was fixed, every shutdown run took the boot route. A
+shutdown that bypasses `ShutdownThread`, such as `adb reboot`, still reads as a boot.
+
 ```bash
 adb shell getprop ro.init.shutdown_animation   # must print true
 ```
