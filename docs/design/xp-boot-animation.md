@@ -29,7 +29,8 @@ fallback rules in `matrix-boot-animation.md`.
   appears no later than with stock.
 - **Shutdown and reboot:** one static frame until power-off: a `#5A7EDC` body, `#00309C` bands at
   the top (10 %) and bottom (12 %) with light and orange gradient lines, the XP logo, and white
-  "Windows is shutting down...". The look is approximate; no verified reference exists. An exit
+  "Windows is shutting down...". The look is approximate; no verified reference exists. The frame
+  is drawn once, and again only if a display's surface is recreated (a resize). An exit
   request during shutdown stops the renderer with `EXIT_PENDING`, as Matrix does.
 
 ## Setting
@@ -66,8 +67,8 @@ feature reads `xp` as Matrix. No new property or SELinux rule exists.
   - `YrrpXpLayout`: `xpBarSpan(step)`, `xpLayout(W, H)`, `xpBarBlit`, `xpQuad`.
   - `YrrpXpTimeline`: step from elapsed nanoseconds, one draw per 80 ms tick (once on shutdown),
     wake time, exit outcome.
-- The renderer swaps only when the step changes, about 12.5 times a second, and polls for exit
-  every 16.67 ms.
+- The renderer draws a frame (one swap per display) only when the step changes, about 12.5 times a
+  second, or when a display's surface was recreated. It polls for exit every 16.67 ms.
 
 ## Assets
 
@@ -98,7 +99,7 @@ The shared `sys.yrrp.bootanim.*` properties carry the XP decision:
 | `sys.yrrp.bootanim.config` | `style=xp/prop fullIntro=… shutdown=<0|1>` |
 | `sys.yrrp.bootanim.route` | `XP`, or `STOCK` / `EXIT` after an init failure |
 | `sys.yrrp.bootanim.blocked_by` | `none`, `ASSET_XP_BOOT`, `ASSET_XP_BAR`, `ASSET_XP_SHUTDOWN`, `COMPILE`, `LINK`, `GL` |
-| `sys.yrrp.bootanim.result` | `outcome=<COMPLETED|EXIT_PENDING|SWAP_FAILED> frames=<swaps> avgMs=<gap> maxMs=<gap>` |
+| `sys.yrrp.bootanim.result` | `outcome=<COMPLETED|EXIT_PENDING|SWAP_FAILED> frames=<frames drawn> avgMs=<gap> maxMs=<gap>` |
 
 On boot, `avgMs` near 80 means the bar kept its cadence; a large `maxMs` marks a stall.
 
