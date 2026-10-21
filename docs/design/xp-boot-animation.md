@@ -126,7 +126,11 @@ These lines carry no user data.
 - Settings: `YRRPs/android_packages_apps_Settings` branch `feat/xp-boot-animation`, base
   `fc421630d6`. PR: https://github.com/YRRPs/android_packages_apps_Settings/pull/18 (draft).
 - Docs: https://github.com/YRRPs/project/pull/113 (draft).
-- Device acceptance: pending the first release with both PRs.
+- Device acceptance: boot passed on `salami/gapps 20261021-221526`. The power-menu shutdown
+  failed there: the shutdown run took the boot route and drew the XP boot screen, because
+  `bootanimation` read shutdown from `sys.powerctl`, which Lineage 23.2 init never stores
+  (YRRPs/project#114). The fix also reads `sys.shutdown.requested`; see
+  `matrix-boot-animation.md`.
 
 ## Differences from the spec
 
@@ -141,7 +145,9 @@ These lines carry no user data.
 - Shader compilation on device, and that `BootAnimationXp.cpp` builds in the tree: locally it is
   only syntax-checked against a stub of `BootAnimation.h`.
 - The 80 ms cadence under boot load.
-- The shutdown screen from the power menu until power-off.
+- The shutdown screen from the power menu until power-off, and that `sys.shutdown.requested`
+  is set when `bootanim` starts. `adb reboot` bypasses `ShutdownThread` and still shows the
+  boot screen.
 - The Settings rows on device; the Robolectric tests are compiled, not run, by
   `m:SettingsRoboTests`.
 - No `avc: denied` lines for `bootanim`, `system_app` or `shell`.
