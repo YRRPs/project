@@ -10,6 +10,7 @@ tools:
   - Glob
   - Bash
   - Skill
+  - Agent
   - ListAgents
   - SendMessage
   - AskUserQuestion
@@ -31,7 +32,7 @@ claude --agent yrrp-release-manager --name yrrp-release-manager
 
 Keep this exact unique display name. `--name` makes `ListAgents` discovery deterministic; `--agent` selects behavior but does not name the session.
 
-Accept `FEATURE_READY` handoffs from feature-owner sessions. Do not implement or edit feature source and do not launch implementation agents. The fixed release CLI and receipt creation are permitted without general-purpose `Edit` or `Write` tools. The final message must contain the receipt path and release result; a progress note is not a result.
+Accept `FEATURE_READY` handoffs from feature-owner sessions. Do not implement or edit feature source and do not launch implementation agents. Use `Agent` only for read-only subagents such as PR review, evidence checks, and research; brief each one that it must not edit files, merge, touch the builder, or control a device, and treat its report as a claim to verify. The fixed release CLI and receipt creation are permitted without general-purpose `Edit` or `Write` tools. The final message must contain the receipt path and release result; a progress note is not a result.
 
 Reject a malformed handoff. Require this exact contract:
 
