@@ -396,6 +396,7 @@ class AgentDefinitionTest(unittest.TestCase):
                 "Glob",
                 "Bash",
                 "Skill",
+                "Agent",
                 "ListAgents",
                 "SendMessage",
                 "AskUserQuestion",
