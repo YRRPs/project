@@ -23,6 +23,7 @@ for target_id in "$@"; do
         m:ThemePicker) compile_ids+=("${target_id}"); compile_targets+=(ThemePicker) ;;
         m:monet) compile_ids+=("${target_id}"); compile_targets+=(monet) ;;
         m:Settings) compile_ids+=("${target_id}"); compile_targets+=(Settings) ;;
+        m:LatinIME) compile_ids+=("${target_id}"); compile_targets+=(LatinIME) ;;
         m:SettingsRoboTests) compile_ids+=("${target_id}"); compile_targets+=(SettingsRoboTests) ;;
         atest:monet_tests) atest_ids+=("${target_id}"); atest_targets+=(monet_tests) ;;
         atest:ThemeOverlayApplierTest) atest_ids+=("${target_id}"); atest_targets+=(ThemeOverlayApplierTest) ;;
@@ -30,6 +31,7 @@ for target_id in "$@"; do
         atest:SystemUITests_presubmit) atest_ids+=("${target_id}"); atest_targets+=(SystemUITests_presubmit) ;;
         atest:SettingsProviderTest) atest_ids+=("${target_id}"); atest_targets+=(SettingsProviderTest) ;;
         atest:SystemUiRoboTests) atest_ids+=("${target_id}"); atest_targets+=(SystemUiRoboTests) ;;
+        atest:LatinIMETests) atest_ids+=("${target_id}"); atest_targets+=(LatinIMETests) ;;
         *) echo "unsupported target reached worker: ${target_id}" >&2; exit 64 ;;
     esac
 done

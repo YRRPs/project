@@ -17,12 +17,15 @@ class Target:
 
 
 _TARGET_VALUES = (
+    # LatinIMETests has no recorded clean baseline on this tree yet.
+    Target("atest:LatinIMETests", "atest", "LatinIMETests", gating=False),
     Target("atest:SettingsProviderTest", "atest", "SettingsProviderTest"),
     Target("atest:SystemUITests_presubmit", "atest", "SystemUITests_presubmit"),
     Target("atest:SystemUiRoboTests", "atest", "SystemUiRoboTests", gating=False),
     Target("atest:ThemeOverlayApplierTest", "atest", "ThemeOverlayApplierTest"),
     Target("atest:ThemePickerRoboTests", "atest", "ThemePickerRoboTests", gating=False),
     Target("atest:monet_tests", "atest", "monet_tests"),
+    Target("m:LatinIME", "m", "LatinIME"),
     Target("m:Settings", "m", "Settings"),
     Target("m:SettingsProvider", "m", "SettingsProvider"),
     Target("m:SettingsRoboTests", "m", "SettingsRoboTests"),
