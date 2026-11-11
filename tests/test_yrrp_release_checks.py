@@ -18,6 +18,7 @@ SCRIPTS = ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from yrrp_release.targets import TARGETS
 from yrrp_release.checks import (
     CHECK_TARGET_SCRIPT,
     ISOLATED_OVERLAY_PREP_SCRIPT,
@@ -1102,6 +1103,16 @@ class CheckLaunchTest(unittest.TestCase):
         self.assertIn('run_one m "${compile_csv}"', CHECK_TARGET_SCRIPT)
         self.assertIn('atest "${atest_targets[${suite_index}]}"', CHECK_TARGET_SCRIPT)
 
+    def test_target_script_has_one_case_arm_per_registered_target(self) -> None:
+        array_prefix = {"m": "compile", "atest": "atest"}
+        for target in TARGETS.values():
+            prefix = array_prefix[target.executor]
+            arm = (
+                f'{target.id}) {prefix}_ids+=("${{target_id}}"); '
+                f"{prefix}_targets+=({target.argument}) ;;"
+            )
+            with self.subTest(target=target.id):
+                self.assertEqual(1, CHECK_TARGET_SCRIPT.count(arm))
 
 if __name__ == "__main__":
     unittest.main()

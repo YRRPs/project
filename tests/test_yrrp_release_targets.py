@@ -23,12 +23,14 @@ class TargetRegistryTest(unittest.TestCase):
         self.assertEqual(("salami", "xueying"), SUPPORTED_DEVICES)
         self.assertEqual(
             [
+                "atest:LatinIMETests",
                 "atest:SettingsProviderTest",
                 "atest:SystemUITests_presubmit",
                 "atest:SystemUiRoboTests",
                 "atest:ThemeOverlayApplierTest",
                 "atest:ThemePickerRoboTests",
                 "atest:monet_tests",
+                "m:LatinIME",
                 "m:Settings",
                 "m:SettingsProvider",
                 "m:SettingsRoboTests",
@@ -44,6 +46,7 @@ class TargetRegistryTest(unittest.TestCase):
                 "devices": ["salami", "xueying"],
                 "targets": list(TARGETS),
                 "non_gating_targets": [
+                    "atest:LatinIMETests",
                     "atest:SystemUiRoboTests",
                     "atest:ThemePickerRoboTests",
                 ],
@@ -56,6 +59,11 @@ class TargetRegistryTest(unittest.TestCase):
         self.assertFalse(TARGETS["atest:ThemePickerRoboTests"].gating)
         self.assertTrue(TARGETS["m:SettingsRoboTests"].gating)
         self.assertTrue(TARGETS["atest:SystemUITests_presubmit"].gating)
+
+    def test_latinime_suite_is_diagnostic_and_build_is_gating(self) -> None:
+        # LatinIMETests has no recorded clean baseline on this tree yet.
+        self.assertFalse(TARGETS["atest:LatinIMETests"].gating)
+        self.assertTrue(TARGETS["m:LatinIME"].gating)
 
     def test_parses_fixed_targets_without_free_arguments(self) -> None:
         parsed = parse_targets(["m:ThemePicker", "atest:ThemePickerRoboTests"])
